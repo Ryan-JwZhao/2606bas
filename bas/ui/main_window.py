@@ -394,6 +394,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.started_at = 0.0
         self._last_preview_update_ts = 0.0
         self._preview_fps_limit = 15.0
+        self._last_metrics_update_ts = 0.0
+        self._metrics_fps_limit = 5.0
+        self._last_heavy_ui_update_ts = 0.0
+        self._heavy_ui_fps_limit = 3.0
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -1188,10 +1192,14 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if now - self._last_preview_update_ts >= 1.0 / max(1.0, self._preview_fps_limit):
             self._update_preview(out)
             self._last_preview_update_ts = now
-        self._update_stats(out)
-        self._update_plan(out)
         self._update_events(out)
-        self._update_module_status(out)
+        if now - self._last_metrics_update_ts >= 1.0 / max(1.0, self._metrics_fps_limit):
+            self._update_stats(out)
+            self._last_metrics_update_ts = now
+        if now - self._last_heavy_ui_update_ts >= 1.0 / max(1.0, self._heavy_ui_fps_limit):
+            self._update_plan(out)
+            self._update_module_status(out)
+            self._last_heavy_ui_update_ts = now
         self._refresh_projection()
 
     def _update_preview(self, out: PipelineOutput) -> None:
@@ -1216,11 +1224,22 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def _refresh_preview_pixmap(self) -> None:
         if self._last_preview_bgr is None:
             return
-        rgb = cv2.cvtColor(self._last_preview_bgr, cv2.COLOR_BGR2RGB)
+        image = self._last_preview_bgr
+        target = self.preview_label.size()
+        target_w = max(1, int(target.width()))
+        target_h = max(1, int(target.height()))
+        h0, w0 = image.shape[:2]
+        scale = min(target_w / max(1, w0), target_h / max(1, h0), 1.0)
+        if scale < 1.0:
+            image = cv2.resize(
+                image,
+                (max(1, int(w0 * scale)), max(1, int(h0 * scale))),
+                interpolation=cv2.INTER_AREA,
+            )
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         h, w = rgb.shape[:2]
         qimg = QtGui.QImage(rgb.data, w, h, 3 * w, QtGui.QImage.Format_RGB888).copy()
-        pix = QtGui.QPixmap.fromImage(qimg)
-        self.preview_label.setPixmap(pix.scaled(self.preview_label.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        self.preview_label.setPixmap(QtGui.QPixmap.fromImage(qimg))
 
     def _update_stats(self, out: PipelineOutput) -> None:
         elapsed = max(1e-6, time.perf_counter() - self.started_at)

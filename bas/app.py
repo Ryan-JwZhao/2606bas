@@ -58,6 +58,9 @@ class RuntimePipeline:
         self.overlay_builder = OverlayBuilder(config.projection, self.calibration, star_formula=star_formula)
         self.recorder: Optional[ReplayRecorder] = ReplayRecorder(config.replay) if config.replay.enabled else None
         self._last_tracks: Optional[TracksFrame] = None
+        self._last_state: Optional[MatchStateFrame] = None
+        self._last_plan: Optional[ShotPlan] = None
+        self._last_overlay: Optional[ProjectionOverlay] = None
         LOGGER.info("Capture opened: %s", self.capture.info())
         LOGGER.info("Calibration version: %s", self.calibration.calib_version)
 
@@ -69,19 +72,28 @@ class RuntimePipeline:
         self._update_table_geometry_for_frame(frame)
         mask = self._camera_table_mask(frame)
         detections = self.detector.process(frame, mask_polygon=mask)
-        if detections.detector_version.endswith(":cached") and self._last_tracks is not None:
+        cached = detections.detector_version.endswith(":cached")
+        if cached and self._last_tracks is not None:
             tracks = replace(self._last_tracks, frame_id=frame.frame_id, ts_cam_ns=frame.ts_cam_ns, latency_ms=0.0)
         else:
             tracks = self._enrich_tracks_with_table_units(self.tracker.update(detections))
             self._last_tracks = tracks
-        self.state_machine.set_table_context(
-            inner_polygon_mm=self.calibration.table.inner_polygon_mm,
-            pockets_mm=self.calibration.table.pockets_mm,
-            ball_diameter_mm=self.calibration.table.ball_diameter_mm,
-        )
-        state = self.state_machine.update(tracks)
-        plan = self.planner.plan(state)
-        overlay = self.overlay_builder.from_plan(plan)
+        if cached and self._last_state is not None and self._last_plan is not None and self._last_overlay is not None:
+            state = replace(self._last_state, frame_id=frame.frame_id, ts_cam_ns=frame.ts_cam_ns, events=[])
+            plan = replace(self._last_plan, frame_id=frame.frame_id, ts_cam_ns=frame.ts_cam_ns)
+            overlay = replace(self._last_overlay, frame_id=frame.frame_id)
+        else:
+            self.state_machine.set_table_context(
+                inner_polygon_mm=self.calibration.table.inner_polygon_mm,
+                pockets_mm=self.calibration.table.pockets_mm,
+                ball_diameter_mm=self.calibration.table.ball_diameter_mm,
+            )
+            state = self.state_machine.update(tracks)
+            plan = self.planner.plan(state)
+            overlay = self.overlay_builder.from_plan(plan)
+            self._last_state = state
+            self._last_plan = plan
+            self._last_overlay = overlay
         out = PipelineOutput(frame=frame, detections=detections, tracks=tracks, state=state, plan=plan, overlay=overlay)
         self._record(out)
         return out
