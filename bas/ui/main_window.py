@@ -85,6 +85,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self.detector_backend = QtWidgets.QComboBox()
         self.detector_backend.addItems(["disabled", "ultralytics", "debug_color"])
         self.detector_backend.setCurrentText(config.detector.backend)
+        self.detect_interval = self._spin(int(config.detector.detect_interval_frames), 1, 12)
+        self.detect_fps_limit = self._dspin(float(config.detector.detect_fps_limit_hz), 0.0, 30.0, 0.5)
         self.proj_screen = QtWidgets.QComboBox()
         for idx, screen in enumerate(QtWidgets.QApplication.screens()):
             geo = screen.geometry()
@@ -109,6 +111,8 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("工业相机畸变矫正", distortion_box)
         form.addRow("工业相机曝光", exposure_box)
         form.addRow("检测后端", self.detector_backend)
+        form.addRow("检测间隔(帧)", self.detect_interval)
+        form.addRow("检测频率上限(Hz)", self.detect_fps_limit)
         form.addRow("outline.json", self.outline_path)
         form.addRow("inline.json", self.inline_path)
         form.addRow("pocket.json", self.pocket_path)
@@ -193,6 +197,8 @@ class SettingsDialog(QtWidgets.QDialog):
         config.camera.exposure_auto = self.exposure_auto.isChecked()
         config.camera.exposure_level = int(self.exposure_level.value())
         config.detector.backend = self.detector_backend.currentText()
+        config.detector.detect_interval_frames = int(self.detect_interval.value())
+        config.detector.detect_fps_limit_hz = float(self.detect_fps_limit.value())
         config.geometry.outline_path = self.outline_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.geometry.inline_path = self.inline_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.geometry.pocket_path = self.pocket_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
@@ -386,6 +392,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._ui_scale = 1.0
         self.frame_count = 0
         self.started_at = 0.0
+        self._last_preview_update_ts = 0.0
+        self._preview_fps_limit = 15.0
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._tick)
@@ -819,7 +827,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         }
         if self.last_output is not None:
             payload["last_output"] = {
-                "frame": to_jsonable(self.last_output.frame),
+                "frame": self._diagnostic_frame_payload(self.last_output.frame),
                 "detections": to_jsonable(self.last_output.detections),
                 "tracks": to_jsonable(self.last_output.tracks),
                 "state": to_jsonable(self.last_output.state),
@@ -829,6 +837,16 @@ class OperatorWindow(QtWidgets.QMainWindow):
         with path.open("w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         self._append_log(f"诊断快照已导出: {path}")
+
+    def _diagnostic_frame_payload(self, frame) -> dict[str, object]:
+        payload = to_jsonable(frame)
+        image = getattr(frame, "image", None)
+        if image is not None:
+            payload["image"] = {
+                "shape": list(image.shape),
+                "dtype": str(image.dtype),
+            }
+        return payload
 
     def _module_status_payload(self) -> list[dict[str, str]]:
         rows = []
@@ -1166,7 +1184,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
             return
         self.last_output = out
         self.frame_count += 1
-        self._update_preview(out)
+        now = time.perf_counter()
+        if now - self._last_preview_update_ts >= 1.0 / max(1.0, self._preview_fps_limit):
+            self._update_preview(out)
+            self._last_preview_update_ts = now
         self._update_stats(out)
         self._update_plan(out)
         self._update_events(out)

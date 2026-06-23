@@ -47,12 +47,17 @@ class RuntimePipeline:
             config.geometry.inline_path,
             config.geometry.pocket_path,
         )
-        self.detector = DetectService(create_detector(config.detector))
+        self.detector = DetectService(
+            create_detector(config.detector),
+            detect_interval_frames=config.detector.detect_interval_frames,
+            detect_fps_limit_hz=config.detector.detect_fps_limit_hz,
+        )
         self.tracker = TemporalTracker(config.tracker)
         self.state_machine = MatchStateMachine(config.state)
         self.planner = GeometryPhysicsPlanner(config.planner, self.calibration)
         self.overlay_builder = OverlayBuilder(config.projection, self.calibration, star_formula=star_formula)
         self.recorder: Optional[ReplayRecorder] = ReplayRecorder(config.replay) if config.replay.enabled else None
+        self._last_tracks: Optional[TracksFrame] = None
         LOGGER.info("Capture opened: %s", self.capture.info())
         LOGGER.info("Calibration version: %s", self.calibration.calib_version)
 
@@ -64,7 +69,11 @@ class RuntimePipeline:
         self._update_table_geometry_for_frame(frame)
         mask = self._camera_table_mask(frame)
         detections = self.detector.process(frame, mask_polygon=mask)
-        tracks = self._enrich_tracks_with_table_units(self.tracker.update(detections))
+        if detections.detector_version.endswith(":cached") and self._last_tracks is not None:
+            tracks = replace(self._last_tracks, frame_id=frame.frame_id, ts_cam_ns=frame.ts_cam_ns, latency_ms=0.0)
+        else:
+            tracks = self._enrich_tracks_with_table_units(self.tracker.update(detections))
+            self._last_tracks = tracks
         self.state_machine.set_table_context(
             inner_polygon_mm=self.calibration.table.inner_polygon_mm,
             pockets_mm=self.calibration.table.pockets_mm,

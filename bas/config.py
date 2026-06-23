@@ -39,6 +39,8 @@ class DetectorConfig:
     tile_overlap: float = 0.15
     max_det_per_tile: int = 128
     batch_size: int = 4
+    detect_interval_frames: int = 1
+    detect_fps_limit_hz: float = 10.0
 
 
 @dataclass

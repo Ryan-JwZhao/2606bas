@@ -29,6 +29,8 @@ class UserSettings:
     detector_backend: Optional[str] = None
     model_path: Optional[str] = None
     class_file_path: Optional[str] = None
+    detect_interval_frames: Optional[int] = None
+    detect_fps_limit_hz: Optional[float] = None
     outline_path: Optional[str] = None
     inline_path: Optional[str] = None
     pocket_path: Optional[str] = None
@@ -87,6 +89,10 @@ class UserSettings:
             config.detector.model_path = self.model_path
         if self.class_file_path:
             config.detector.class_file_path = self.class_file_path
+        if self.detect_interval_frames is not None:
+            config.detector.detect_interval_frames = max(1, int(self.detect_interval_frames))
+        if self.detect_fps_limit_hz is not None:
+            config.detector.detect_fps_limit_hz = max(0.0, float(self.detect_fps_limit_hz))
         if self.outline_path:
             config.geometry.outline_path = self.outline_path
         if self.inline_path:
@@ -125,6 +131,8 @@ class UserSettings:
             detector_backend=config.detector.backend,
             model_path=config.detector.model_path,
             class_file_path=config.detector.class_file_path,
+            detect_interval_frames=config.detector.detect_interval_frames,
+            detect_fps_limit_hz=config.detector.detect_fps_limit_hz,
             outline_path=config.geometry.outline_path,
             inline_path=config.geometry.inline_path,
             pocket_path=config.geometry.pocket_path,

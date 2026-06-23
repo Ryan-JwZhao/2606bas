@@ -64,6 +64,8 @@ detector:
 
 `requirements-yolo.txt` 固定使用 PyTorch CUDA 12.8 轮子，已验证可驱动 RTX 5080。`python -m bas doctor` 会显示 `module:torch`、`torch.version.cuda` 和当前 CUDA 设备名。
 
+实时运行时默认限制 YOLO 检测频率为 `10Hz`，并在中间帧复用上一轮检测/跟踪结果，以保持 1080p MJPG 采集和 UI 预览的帧率。需要更高检测密度时，可在设置页调整“检测间隔(帧)”和“检测频率上限(Hz)”。
+
 UI 中的“设置”会保存到 `local_settings/user_settings.json`，该文件已被 `.gitignore` 忽略。设置页支持：
 
 - 台球模型路径
