@@ -11,6 +11,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ..app import PipelineOutput, RuntimePipeline
 from ..calibration import create_calibration_service
+from ..calibration.charuco import CharucoBoardSpec, render_charuco_board
 from ..capture import probe_cameras
 from ..config import AppConfig
 from ..geometry import TableGeometryLoader
@@ -18,7 +19,7 @@ from ..logging_config import configure_logging
 from ..perception import create_detector
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
-from ..schemas import OverlayLine, ProjectionOverlay
+from ..schemas import MatchPhase, OverlayLine, ProjectionOverlay
 from ..user_settings import UserSettings
 
 LOGGER = logging.getLogger(__name__)
@@ -266,6 +267,83 @@ class SettingsDialog(QtWidgets.QDialog):
         self.star_offset_y.setValue(self.star_offset_y.value() + dy * step)
 
 
+class ProjectorCalibrationDialog(QtWidgets.QDialog):
+    def __init__(self, operator: "OperatorWindow", calibration, parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent or operator)
+        self.operator = operator
+        self.calibration = calibration
+        self.setWindowTitle("投影仪校正向导")
+        self.resize(840, 680)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        title = QtWidgets.QLabel("投影仪校正")
+        title.setObjectName("title")
+        layout.addWidget(title)
+
+        steps = QtWidgets.QPlainTextEdit()
+        steps.setReadOnly(True)
+        steps.setPlainText(
+            "\n".join(
+                [
+                    "1. 先确认相机内参 ChArUco 标定文件有效，投影仪分辨率和屏幕编号正确。",
+                    "2. 在台面放置主标定板，点击“显示 ChArUco 校正码”或“显示编码网格”，让相机采集 >=20 个不同平移/俯仰姿态。",
+                    "3. 在六个袋口、两条长边中段、近投影端、远投影端放置 10-14 张 A6/A7 小 ChArUco 纸板，采集局部精修数据。",
+                    "4. 用外部标定脚本生成或替换 projection_calibration.json，再点击“显示当前校正结果”检查桌面多边形和对应点。",
+                    "5. 点击“显示残差箭头”检查局部误差方向；近端、远端、袋口区域都应有控制点覆盖。",
+                    "6. 最终验收需查看 holdout：图像重投影 mean/P95、台面毫米 median/P95、分区 P95 和误差随距离梯度。",
+                ]
+            )
+        )
+        layout.addWidget(steps, 1)
+
+        button_grid = QtWidgets.QGridLayout()
+        actions = [
+            ("打开投影窗口", self.operator.ensure_projection_window_for_operator),
+            ("显示 ChArUco 校正码", self.operator.show_projector_charuco_code),
+            ("显示编码网格", self.operator.show_projector_encoded_grid),
+            ("显示当前校正结果", lambda: self.operator.show_projector_calibration_result(self.calibration)),
+            ("显示残差箭头", lambda: self.operator.show_projector_residual_overlay(self.calibration)),
+            ("恢复实时投影", self.operator.resume_runtime_projection),
+        ]
+        for idx, (text, slot) in enumerate(actions):
+            button = QtWidgets.QPushButton(text)
+            button.clicked.connect(slot)
+            button_grid.addWidget(button, idx // 3, idx % 3)
+        layout.addLayout(button_grid)
+
+        self.result = QtWidgets.QLabel(self._summary_text())
+        self.result.setObjectName("bestShot")
+        self.result.setWordWrap(True)
+        layout.addWidget(self.result)
+
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _summary_text(self) -> str:
+        projection = self.calibration.projection
+        stats = projection.calibration_error_stats()
+        lines = [
+            f"文件: {projection.source_path or '未设置'}",
+            f"模式: {projection.mode} | 投影尺寸: {projection.projector_size[0]}x{projection.projector_size[1]}",
+            f"对应点: {projection.cam_points.shape[0]} | 局部残差控制点: {projection.residual_field.control_points_cam.shape[0]}",
+            f"桌面多边形点: {projection.table_polygon_proj.shape[0]} | 有效: {'是' if projection.is_valid else '否'}",
+        ]
+        if stats:
+            p95 = stats.get("p95_px", stats.get("max_px", 0.0))
+            verdict = "通过预检查" if p95 <= 3.0 else "需要复核/重标定"
+            lines.append(
+                "像素误差: "
+                f"mean={stats.get('mean_px', 0.0):.2f}px, "
+                f"median={stats.get('median_px', 0.0):.2f}px, "
+                f"p95={p95:.2f}px, max={stats.get('max_px', 0.0):.2f}px | {verdict}"
+            )
+        else:
+            lines.append("像素误差: 当前 JSON 没有可统计的 paired correspondences。")
+        lines.append("注意: 像素误差只是预检查，正式验收还需要独立 holdout 的毫米误差、分区误差和距离梯度。")
+        return "\n".join(lines)
+
+
 class OperatorWindow(QtWidgets.QMainWindow):
     BASE_WIDTH = 1420
     BASE_HEIGHT = 860
@@ -279,6 +357,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.projection_window: Optional[ProjectionWindow] = None
         self.last_output: Optional[PipelineOutput] = None
         self._last_preview_bgr: Optional[np.ndarray] = None
+        self._projection_calibration_mode = False
         self._ui_scale = 1.0
         self.frame_count = 0
         self.started_at = 0.0
@@ -293,6 +372,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._sync_controls_from_config()
         self._apply_scale(force=True)
         self._set_running(False)
+        self._update_module_status()
         self._append_log("就绪")
 
     def _build_ui(self) -> None:
@@ -385,6 +465,37 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
         self.right_panel = self._panel()
         self.right_layout = QtWidgets.QVBoxLayout(self.right_panel)
+        self.right_layout.addWidget(self._section_label("模块状态"))
+        self.module_status = QtWidgets.QTableWidget(0, 3)
+        self.module_status.setHorizontalHeaderLabels(["模块", "状态", "细节"])
+        self.module_status.horizontalHeader().setStretchLastSection(True)
+        self.module_status.verticalHeader().setVisible(False)
+        self.module_status.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.module_status.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.right_layout.addWidget(self.module_status)
+        self._module_rows = {}
+        for name in ["采集", "检测", "跟踪", "状态机", "规划", "投影", "回放", "标定"]:
+            self._add_module_row(name)
+
+        self.right_layout.addWidget(self._section_label("状态机人工介入"))
+        self.manual_phase_combo = QtWidgets.QComboBox()
+        self.manual_phase_combo.addItems([phase.value for phase in MatchPhase])
+        self.force_phase_btn = self._button("强制状态")
+        self.hold_state_btn = self._button("冻结状态机")
+        self.snapshot_state_btn = self._button("确认当前布局稳定")
+        self.reset_state_btn = self._button("重置状态机")
+        self.clear_review_btn = self._button("清除复核标记")
+        self.force_phase_btn.clicked.connect(self.force_state_phase)
+        self.hold_state_btn.clicked.connect(self.toggle_state_hold)
+        self.snapshot_state_btn.clicked.connect(self.snapshot_stable_layout)
+        self.reset_state_btn.clicked.connect(self.reset_state_machine)
+        self.clear_review_btn.clicked.connect(self.clear_state_review_flags)
+        self.right_layout.addWidget(self._field("目标状态", self.manual_phase_combo))
+        manual_grid = QtWidgets.QGridLayout()
+        for idx, button in enumerate([self.force_phase_btn, self.hold_state_btn, self.snapshot_state_btn, self.reset_state_btn, self.clear_review_btn]):
+            manual_grid.addWidget(button, idx // 2, idx % 2)
+        self.right_layout.addLayout(manual_grid)
+
         self.right_layout.addWidget(self._section_label("最佳路线"))
         self.best_label = QtWidgets.QLabel("无")
         self.best_label.setObjectName("bestShot")
@@ -447,6 +558,27 @@ class OperatorWindow(QtWidgets.QMainWindow):
         box.metric_layout = layout  # type: ignore[attr-defined]
         return box
 
+    def _add_module_row(self, name: str) -> None:
+        row = self.module_status.rowCount()
+        self.module_status.insertRow(row)
+        self._module_rows[name] = row
+        for col, value in enumerate([name, "待机", "--"]):
+            item = QtWidgets.QTableWidgetItem(value)
+            item.setFlags(item.flags() & ~QtCore.Qt.ItemIsEditable)
+            self.module_status.setItem(row, col, item)
+
+    def _set_module_status(self, name: str, status: str, detail: str = "") -> None:
+        row = self._module_rows.get(name)
+        if row is None:
+            return
+        values = [name, status, detail or "--"]
+        for col, value in enumerate(values):
+            item = self.module_status.item(row, col)
+            if item is None:
+                item = QtWidgets.QTableWidgetItem()
+                self.module_status.setItem(row, col, item)
+            item.setText(value)
+
     def _scale_for_size(self) -> float:
         return float(max(0.92, min(1.55, min(self.width() / self.BASE_WIDTH, self.height() / self.BASE_HEIGHT))))
 
@@ -470,9 +602,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.right_layout.setContentsMargins(px(14), px(14), px(14), px(14))
         self.right_layout.setSpacing(px(10))
         self.sidebar.setFixedWidth(px(275))
-        self.right_panel.setFixedWidth(px(330))
+        self.right_panel.setFixedWidth(px(390))
         self.preview_label.setMinimumSize(px(620), px(390))
         self.log_box.setMaximumHeight(px(130))
+        self.module_status.setMaximumHeight(px(190))
+        self.module_status.verticalHeader().setDefaultSectionSize(px(22))
         self.candidates.verticalHeader().setDefaultSectionSize(px(30))
         for metric in [self.fps_metric, self.det_metric, self.track_metric, self.phase_metric]:
             metric.metric_layout.setContentsMargins(px(12), px(9), px(12), px(9))  # type: ignore[attr-defined]
@@ -527,7 +661,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         QPushButton:hover {{ background: #2b2b2b; border-color: #666666; }}
         QPushButton:pressed {{ background: #171717; }}
         QPushButton:disabled {{ color: #777777; background: #181818; border-color: #303030; }}
-        QComboBox, QSpinBox {{
+        QComboBox, QSpinBox, QDoubleSpinBox {{
             background: #111111;
             border: 1px solid #444444;
             border-radius: {px(2)}px;
@@ -576,6 +710,208 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def _save_user_settings(self) -> None:
         UserSettings.from_config(self.config, self.star_formula.to_dict()).save()
 
+    def _state_machine_or_none(self):
+        if self.pipeline is None:
+            self._append_log("状态机尚未启动，请先开始采集")
+            return None
+        return self.pipeline.state_machine
+
+    def _last_frame_marker(self) -> tuple[int, int]:
+        if self.last_output is None:
+            return 0, 0
+        return int(self.last_output.frame.frame_id), int(self.last_output.frame.ts_cam_ns)
+
+    @QtCore.pyqtSlot()
+    def force_state_phase(self) -> None:
+        sm = self._state_machine_or_none()
+        if sm is None:
+            return
+        frame_id, ts_cam_ns = self._last_frame_marker()
+        phase = self.manual_phase_combo.currentText()
+        sm.force_phase(phase, frame_id=frame_id, ts_cam_ns=ts_cam_ns, reason="operator_ui")
+        self._append_log(f"已人工强制状态机进入 {phase}")
+        self._update_module_status(self.last_output)
+
+    @QtCore.pyqtSlot()
+    def toggle_state_hold(self) -> None:
+        sm = self._state_machine_or_none()
+        if sm is None:
+            return
+        frame_id, ts_cam_ns = self._last_frame_marker()
+        enabled = not sm.operator_hold
+        sm.set_operator_hold(enabled, frame_id=frame_id, ts_cam_ns=ts_cam_ns, reason="operator_ui")
+        self.hold_state_btn.setText("恢复自动状态机" if enabled else "冻结状态机")
+        self._append_log("状态机已冻结，实时检测仍会记录但不自动推进" if enabled else "状态机已恢复自动推进")
+        self._update_module_status(self.last_output)
+
+    @QtCore.pyqtSlot()
+    def snapshot_stable_layout(self) -> None:
+        sm = self._state_machine_or_none()
+        if sm is None:
+            return
+        if self.last_output is None:
+            self._append_log("当前没有可确认的布局帧")
+            return
+        sm.snapshot_layout(self.last_output.tracks)
+        sm.force_phase(MatchPhase.STABLE_IDLE, frame_id=self.last_output.frame.frame_id, ts_cam_ns=self.last_output.frame.ts_cam_ns, reason="operator_stable_layout")
+        self._append_log(f"已确认当前布局稳定: {len(self.last_output.tracks.tracks)} 条轨迹")
+        self._update_module_status(self.last_output)
+
+    @QtCore.pyqtSlot()
+    def reset_state_machine(self) -> None:
+        sm = self._state_machine_or_none()
+        if sm is None:
+            return
+        sm.reset()
+        self.hold_state_btn.setText("冻结状态机")
+        self.event_list.clear()
+        self._append_log("状态机已重置")
+        self._update_module_status(self.last_output)
+
+    @QtCore.pyqtSlot()
+    def clear_state_review_flags(self) -> None:
+        sm = self._state_machine_or_none()
+        if sm is None:
+            return
+        frame_id, ts_cam_ns = self._last_frame_marker()
+        sm.clear_review_flags(frame_id=frame_id, ts_cam_ns=ts_cam_ns)
+        self._append_log("已清除进洞/异常复核标记")
+        self._update_module_status(self.last_output)
+
+    def ensure_projection_window_for_operator(self) -> None:
+        self._projection_calibration_mode = True
+        self._ensure_projection_window()
+        self.projection_btn.setText("停止投影")
+        self._append_log("投影窗口已打开，当前处于校正模式")
+        self._update_module_status(self.last_output)
+
+    def resume_runtime_projection(self) -> None:
+        self._projection_calibration_mode = False
+        self._refresh_projection()
+        self._append_log("投影已恢复实时 overlay")
+        self._update_module_status(self.last_output)
+
+    def show_projector_charuco_code(self) -> None:
+        self.ensure_projection_window_for_operator()
+        used_fallback = False
+        try:
+            image = render_charuco_board(
+                CharucoBoardSpec(squares_x=10, squares_y=7, square_length_m=0.035, marker_length_m=0.026),
+                int(self.config.projection.projector_width),
+                int(self.config.projection.projector_height),
+            )
+        except Exception as exc:
+            image = self._encoded_grid_image()
+            used_fallback = True
+            self._append_log(f"ChArUco 生成失败，已改用编码网格: {exc}")
+        if self.projection_window is not None:
+            self.projection_window.set_image(image)
+        self._append_log("已显示编码网格" if used_fallback else "已显示全屏 ChArUco 校正码")
+
+    def show_projector_encoded_grid(self) -> None:
+        self.ensure_projection_window_for_operator()
+        image = self._encoded_grid_image()
+        if self.projection_window is not None:
+            self.projection_window.set_image(image)
+        self._append_log("已显示编码网格/定位十字")
+
+    def show_projector_calibration_result(self, calibration=None) -> None:
+        self.ensure_projection_window_for_operator()
+        calibration = calibration or create_calibration_service(
+            self.config.calibration,
+            frame_undistorted=bool(self.config.camera.distortion_correction_enabled),
+        )
+        overlay = self._projector_calibration_overlay(calibration)
+        if self.projection_window is not None:
+            self.projection_window.set_overlay(overlay)
+        stats = calibration.projection.calibration_error_stats()
+        if stats:
+            self._append_log(
+                "投影校正结果已显示: "
+                f"mean={stats.get('mean_px', 0.0):.2f}px "
+                f"p95={stats.get('p95_px', stats.get('max_px', 0.0)):.2f}px"
+            )
+        else:
+            self._append_log("投影校正结果已显示，但当前文件没有误差统计")
+
+    def show_projector_residual_overlay(self, calibration=None) -> None:
+        self.ensure_projection_window_for_operator()
+        calibration = calibration or create_calibration_service(
+            self.config.calibration,
+            frame_undistorted=bool(self.config.camera.distortion_correction_enabled),
+        )
+        overlay = self._projector_calibration_overlay(calibration)
+        controls = np.asarray(calibration.projection.residual_field.control_points_cam, dtype=np.float32).reshape((-1, 2))
+        offsets = np.asarray(calibration.projection.residual_field.offsets_proj, dtype=np.float32).reshape((-1, 2))
+        if controls.shape[0] > 0 and controls.shape == offsets.shape:
+            base = calibration.projection.camera_to_projector_points(controls, refined=False).astype(np.float32)
+            refined = base + offsets
+            for idx, (a, b) in enumerate(zip(base[:80], refined[:80])):
+                start = (float(a[0]), float(a[1]))
+                end = (float(b[0]), float(b[1]))
+                overlay.lines.append(OverlayLine(points=[start, end], color=(0, 80, 255), width=2, label=f"r{idx}"))
+                overlay.circles.append((end, 5.0, (0, 80, 255)))
+            self._append_log(f"已显示 {min(80, controls.shape[0])} 个局部残差箭头")
+        else:
+            self._append_log("当前校正文件没有局部残差控制点，已显示基础校正结果")
+        if self.projection_window is not None:
+            self.projection_window.set_overlay(overlay)
+
+    def _encoded_grid_image(self) -> np.ndarray:
+        w = int(self.config.projection.projector_width)
+        h = int(self.config.projection.projector_height)
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        img[:] = (8, 8, 8)
+        step_x = max(40, w // 16)
+        step_y = max(40, h // 10)
+        for x in range(0, w + 1, step_x):
+            color = (70, 70, 70) if (x // step_x) % 2 else (140, 140, 140)
+            cv2.line(img, (x, 0), (x, h), color, 1, cv2.LINE_AA)
+            cv2.putText(img, str(x), (min(w - 70, x + 4), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 1, cv2.LINE_AA)
+        for y in range(0, h + 1, step_y):
+            color = (70, 70, 70) if (y // step_y) % 2 else (140, 140, 140)
+            cv2.line(img, (0, y), (w, y), color, 1, cv2.LINE_AA)
+            cv2.putText(img, str(y), (8, min(h - 10, y + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 1, cv2.LINE_AA)
+        for x, y, label in [(w // 2, h // 2, "C"), (40, 40, "LT"), (w - 40, 40, "RT"), (w - 40, h - 40, "RB"), (40, h - 40, "LB")]:
+            cv2.drawMarker(img, (x, y), (0, 255, 255), cv2.MARKER_CROSS, 34, 2, cv2.LINE_AA)
+            cv2.putText(img, label, (x + 12, y - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
+        return img
+
+    def _update_module_status(self, out: Optional[PipelineOutput] = None) -> None:
+        projection_state = "校正模式" if self._projection_calibration_mode else ("运行中" if self.projection_window is not None else "关闭")
+        self._set_module_status("投影", projection_state, f"{self.config.projection.projector_width}x{self.config.projection.projector_height}")
+        self._set_module_status("回放", "启用" if self.config.replay.enabled else "关闭", self.config.replay.directory)
+        if self.pipeline is None:
+            self._set_module_status("采集", "离线", self.config.camera.backend)
+            self._set_module_status("检测", "待机", self.config.detector.backend)
+            self._set_module_status("跟踪", "待机", "TemporalTracker")
+            self._set_module_status("状态机", "待机", "自动")
+            self._set_module_status("规划", "待机", "GeometryPhysics")
+            self._set_module_status("标定", "未加载", self.config.calibration.projection_file or "未设置")
+            self.hold_state_btn.setText("冻结状态机")
+            return
+        info = self.pipeline.capture.info()
+        self._set_module_status("采集", "运行中", f"{info.backend} {info.width}x{info.height}@{info.fps:.0f}")
+        calib = self.pipeline.calibration
+        self._set_module_status(
+            "标定",
+            "有效" if calib.projection.is_valid else "缺失",
+            f"cam={'Y' if calib.camera.is_valid else 'N'} proj={'Y' if calib.projection.is_valid else 'N'}",
+        )
+        detector_version = getattr(self.pipeline.detector.detector, "version", self.config.detector.backend)
+        det_detail = detector_version if out is None else f"{out.detections.latency_ms:.1f}ms / {len(out.detections.detections)}"
+        self._set_module_status("检测", "运行中", det_detail)
+        track_detail = self.pipeline.tracker.version if out is None else f"{out.tracks.latency_ms:.1f}ms / {len(out.tracks.tracks)}"
+        self._set_module_status("跟踪", "运行中", track_detail)
+        state_hold = "冻结" if self.pipeline.state_machine.operator_hold else "自动"
+        state_detail = state_hold if out is None else f"{out.state.phase} / conf {out.state.confidence:.2f}"
+        self._set_module_status("状态机", state_hold, state_detail)
+        plan_detail = self.pipeline.planner.version if out is None else f"{len(out.plan.candidates)} 候选"
+        self._set_module_status("规划", "运行中" if self.config.planner.enabled else "关闭", plan_detail)
+        if self.pipeline.recorder is not None:
+            self._set_module_status("回放", "记录中", self.pipeline.recorder.session_id)
+        self.hold_state_btn.setText("恢复自动状态机" if self.pipeline.state_machine.operator_hold else "冻结状态机")
+
     @QtCore.pyqtSlot()
     def initialize_graphics_image_module(self) -> None:
         self._sync_config_from_controls()
@@ -600,6 +936,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 f"{getattr(detector, 'version', 'unknown')} | {geometry_state} | "
                 f"{camera_state} | {projection_state}"
             )
+            self._set_module_status("检测", "已加载", getattr(detector, "version", "unknown"))
+            self._set_module_status("标定", "有效" if calibration.projection.is_valid else "缺失", f"{camera_state} / {projection_state}")
         except Exception as exc:
             self._append_log(f"图形图像模块初始化失败: {exc}")
             QtWidgets.QMessageBox.critical(self, "初始化失败", str(exc))
@@ -608,28 +946,19 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def calibrate_projector(self) -> None:
         self._sync_config_from_controls()
         self._save_user_settings()
-        self._append_log("正在加载投影仪校正")
+        self._append_log("正在打开投影仪校正向导")
         try:
             calibration = create_calibration_service(
                 self.config.calibration,
                 frame_undistorted=bool(self.config.camera.distortion_correction_enabled),
             )
-            if not calibration.projection.is_valid:
-                raise RuntimeError(f"投影校正文件无效: {self.config.calibration.projection_file}")
-            self._ensure_projection_window()
-            self.projection_btn.setText("停止投影")
-            overlay = self._projector_calibration_overlay(calibration)
-            if self.projection_window is not None:
-                self.projection_window.set_overlay(overlay)
-            stats = calibration.projection.calibration_error_stats()
-            if stats:
-                self._append_log(
-                    "投影仪校正已显示: "
-                    f"mean={stats.get('mean_px', 0.0):.2f}px "
-                    f"p95={stats.get('p95_px', stats.get('max_px', 0.0)):.2f}px"
-                )
+            if calibration.projection.is_valid:
+                self.show_projector_calibration_result(calibration)
             else:
-                self._append_log("投影仪校正已显示")
+                self.show_projector_encoded_grid()
+                self._append_log(f"投影校正文件无效或缺失: {self.config.calibration.projection_file}")
+            dialog = ProjectorCalibrationDialog(self, calibration, self)
+            dialog.exec_()
         except Exception as exc:
             self._append_log(f"投影仪校正失败: {exc}")
             QtWidgets.QMessageBox.critical(self, "投影仪校正失败", str(exc))
@@ -682,6 +1011,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.started_at = time.perf_counter()
         self.timer.start(max(1, int(1000 / max(1, self.config.camera.fps))))
         self._set_running(True)
+        self._update_module_status()
         self._append_log("采集已启动")
 
     def stop_pipeline(self) -> None:
@@ -692,6 +1022,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             finally:
                 self.pipeline = None
         self._set_running(False)
+        self._update_module_status()
         self._append_log("采集已停止")
 
     @QtCore.pyqtSlot()
@@ -729,14 +1060,17 @@ class OperatorWindow(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot()
     def toggle_projection_window(self) -> None:
         if self.projection_window is None:
+            self._projection_calibration_mode = False
             self._ensure_projection_window()
             self.projection_btn.setText("停止投影")
             self._append_log("投影已启动")
         else:
             self.projection_window.close()
             self.projection_window = None
+            self._projection_calibration_mode = False
             self.projection_btn.setText("开始投影")
             self._append_log("投影已停止")
+        self._update_module_status(self.last_output)
 
     def _ensure_projection_window(self) -> None:
         if self.projection_window is not None:
@@ -748,6 +1082,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     def _refresh_projection(self) -> None:
         if self.projection_window is None:
+            return
+        if self._projection_calibration_mode:
             return
         if self.last_output is not None:
             self.projection_window.set_overlay(self.last_output.overlay)
@@ -772,6 +1108,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._update_stats(out)
         self._update_plan(out)
         self._update_events(out)
+        self._update_module_status(out)
         self._refresh_projection()
 
     def _update_preview(self, out: PipelineOutput) -> None:
