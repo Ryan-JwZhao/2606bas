@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local runtime output
+logs/
+outputs/
+replays/
+session_*/
+bas.log
+captures/
+snapshots/
+videos/
+recordings/
+debug_frames/
+tmp/
+temp/
+
+# Models and generated inference engines
+models/
+weights/
+*.pt
+*.pth
+*.onnx
+*.engine
+*.plan
+*.trt
+*.torchscript
+
+# Large media/data
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.wmv
+*.h264
+*.h265
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.tiff
+*.npy
+*.npz
+*.parquet
+*.sqlite
+*.sqlite3
+*.db
+
+# Calibration and machine-local SDK drops
+calib/
+local_calib/
+example/
+Nori_Xvision_Development_Kit*/
+
+# IDE/OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

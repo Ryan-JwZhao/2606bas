@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "billiards-assistance-system"
+version = "0.1.0"
+description = "Modular billiards vision, tracking, planning, projection, and replay system."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26,<3.0",
+  "opencv-python>=4.9.0.80",
+  "PyQt5>=5.15.10",
+  "PyYAML>=6.0.1",
+]
+
+[project.optional-dependencies]
+inference = ["ultralytics>=8.3.0"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+bas = "bas.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bas*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+

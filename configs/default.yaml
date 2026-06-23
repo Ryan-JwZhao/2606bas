@@ -1,0 +1,75 @@
+camera:
+  backend: synthetic  # auto | nori | opencv | video | synthetic
+  camera_id: overhead_main
+  device_index: 0
+  width: 1920
+  height: 1080
+  fps: 30
+  video_path:
+  nori_sdk_root:
+  nori_device_id:
+  exposure_auto: false
+  exposure_level: -6
+
+detector:
+  backend: debug_color  # disabled | debug_color | ultralytics
+  model_path:
+  class_names: [cue, solid, stripe, black, cue_stick]
+  conf: 0.25
+  iou: 0.50
+  device: auto
+  tile_size: 1280
+  tile_overlap: 0.15
+  max_det_per_tile: 128
+  batch_size: 4
+
+tracker:
+  high_conf: 0.45
+  low_conf: 0.12
+  max_lost_frames: 18
+  vote_window: 24
+  match_distance_px: 90.0
+  match_iou: 0.08
+  velocity_smoothing: 0.35
+
+calibration:
+  # You can point these to the existing 2604 calibration files.
+  camera_file: C:/CodeProject/2604BilliardsAssistanceSystem/calib/calibration_opencv.yaml
+  projection_file: C:/CodeProject/2604BilliardsAssistanceSystem/presets/projection_calibration.json
+  table_width_mm: 2540.0
+  table_height_mm: 1270.0
+  ball_diameter_mm: 57.15
+
+state:
+  still_speed_px_s: 25.0
+  moving_speed_px_s: 65.0
+  stable_frames: 12
+  armed_frames: 4
+  settle_frames: 18
+  anomaly_frames: 8
+
+planner:
+  enabled: true
+  max_cut_angle_deg: 80.0
+  top_k: 5
+  cue_path_margin_mm: 4.0
+  object_path_margin_mm: 4.0
+  collision_padding_mm: 2.0
+
+projection:
+  enabled: true
+  projector_width: 1280
+  projector_height: 800
+  screen_index: 1
+  fullscreen: true
+
+replay:
+  enabled: true
+  directory: replays
+  write_video: false
+  write_debug_frames: false
+
+logging:
+  directory: logs
+  level: INFO
+

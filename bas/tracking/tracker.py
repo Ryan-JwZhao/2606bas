@@ -1,0 +1,168 @@
+from __future__ import annotations
+
+import time
+from collections import Counter, deque
+from dataclasses import dataclass, field
+from typing import Deque, Dict, List, Optional, Tuple
+
+import numpy as np
+
+from ..config import TrackerConfig
+from ..schemas import Detection, DetectionsFrame, TrackObservation, TracksFrame
+from ..utils import clamp, group_from_class, iou_xyxy
+
+
+@dataclass
+class _Track:
+    track_id: int
+    bbox: Tuple[float, float, float, float]
+    center: np.ndarray
+    radius_px: float
+    confidence: float
+    votes: Deque[str]
+    last_ts_ns: int
+    velocity: np.ndarray = field(default_factory=lambda: np.zeros((2,), dtype=np.float32))
+    age: int = 1
+    lost_frames: int = 0
+
+    @property
+    def stable_class(self) -> str:
+        if not self.votes:
+            return "unknown"
+        return Counter(self.votes).most_common(1)[0][0]
+
+
+class TemporalTracker:
+    version = "temporal_centroid_v1"
+
+    def __init__(self, config: TrackerConfig):
+        self.config = config
+        self._tracks: Dict[int, _Track] = {}
+        self._next_id = 1
+
+    def reset(self) -> None:
+        self._tracks.clear()
+        self._next_id = 1
+
+    def update(self, detections_frame: DetectionsFrame) -> TracksFrame:
+        start = time.perf_counter()
+        detections = [d for d in detections_frame.detections if d.conf >= self.config.low_conf]
+        matches, unmatched_tracks, unmatched_dets = self._match(detections, detections_frame.ts_cam_ns)
+
+        for tid, did in matches:
+            self._update_track(self._tracks[tid], detections[did], detections_frame.ts_cam_ns)
+
+        for tid in list(unmatched_tracks):
+            tr = self._tracks.get(tid)
+            if tr is None:
+                continue
+            tr.lost_frames += 1
+            dt = max(1e-6, (detections_frame.ts_cam_ns - tr.last_ts_ns) / 1e9)
+            tr.center = tr.center + tr.velocity * min(dt, 0.1)
+            x1, y1, x2, y2 = tr.bbox
+            w = x2 - x1
+            h = y2 - y1
+            tr.bbox = (
+                float(tr.center[0] - w * 0.5),
+                float(tr.center[1] - h * 0.5),
+                float(tr.center[0] + w * 0.5),
+                float(tr.center[1] + h * 0.5),
+            )
+            if tr.lost_frames > self.config.max_lost_frames:
+                del self._tracks[tid]
+
+        for did in unmatched_dets:
+            det = detections[did]
+            if det.conf < self.config.high_conf:
+                continue
+            center = np.asarray(det.center, dtype=np.float32)
+            tid = self._next_id
+            self._next_id += 1
+            self._tracks[tid] = _Track(
+                track_id=tid,
+                bbox=tuple(float(v) for v in det.bbox),
+                center=center,
+                radius_px=float(det.radius_px),
+                confidence=float(det.conf),
+                votes=deque([det.cls_name], maxlen=int(self.config.vote_window)),
+                last_ts_ns=detections_frame.ts_cam_ns,
+            )
+
+        observations = [self._to_observation(tr) for tr in sorted(self._tracks.values(), key=lambda t: t.track_id)]
+        latency_ms = (time.perf_counter() - start) * 1000.0
+        return TracksFrame(
+            frame_id=detections_frame.frame_id,
+            ts_cam_ns=detections_frame.ts_cam_ns,
+            tracks=observations,
+            tracker_version=self.version,
+            latency_ms=float(latency_ms),
+        )
+
+    def _match(self, detections: List[Detection], ts_ns: int) -> Tuple[List[Tuple[int, int]], set[int], set[int]]:
+        unmatched_tracks = set(self._tracks.keys())
+        unmatched_dets = set(range(len(detections)))
+        if not self._tracks or not detections:
+            return [], unmatched_tracks, unmatched_dets
+        candidates: List[Tuple[float, int, int]] = []
+        for tid, track in self._tracks.items():
+            dt = max(0.0, (ts_ns - track.last_ts_ns) / 1e9)
+            predicted = track.center + track.velocity * min(dt, 0.2)
+            for did, det in enumerate(detections):
+                center = np.asarray(det.center, dtype=np.float32)
+                dist = float(np.linalg.norm(center - predicted))
+                dist_score = 1.0 - clamp(dist / max(1.0, self.config.match_distance_px), 0.0, 1.0)
+                iou_score = iou_xyxy(track.bbox, det.bbox)
+                cls_bonus = 0.1 if det.cls_name == track.stable_class else 0.0
+                score = 0.58 * dist_score + 0.32 * iou_score + cls_bonus + 0.10 * float(det.conf)
+                if dist <= self.config.match_distance_px or iou_score >= self.config.match_iou:
+                    candidates.append((score, tid, did))
+        candidates.sort(reverse=True, key=lambda x: x[0])
+        matches: List[Tuple[int, int]] = []
+        used_tracks: set[int] = set()
+        used_dets: set[int] = set()
+        for score, tid, did in candidates:
+            if tid in used_tracks or did in used_dets:
+                continue
+            if score < 0.10:
+                continue
+            used_tracks.add(tid)
+            used_dets.add(did)
+            matches.append((tid, did))
+        unmatched_tracks -= used_tracks
+        unmatched_dets -= used_dets
+        return matches, unmatched_tracks, unmatched_dets
+
+    def _update_track(self, track: _Track, det: Detection, ts_ns: int) -> None:
+        new_center = np.asarray(det.center, dtype=np.float32)
+        dt = max(1e-6, (ts_ns - track.last_ts_ns) / 1e9)
+        instant_v = (new_center - track.center) / dt
+        alpha = float(clamp(self.config.velocity_smoothing, 0.0, 1.0))
+        track.velocity = (1.0 - alpha) * track.velocity + alpha * instant_v
+        track.center = new_center
+        track.bbox = tuple(float(v) for v in det.bbox)
+        track.radius_px = float(det.radius_px)
+        track.confidence = float(det.conf)
+        track.votes.append(det.cls_name)
+        track.last_ts_ns = int(ts_ns)
+        track.age += 1
+        track.lost_frames = 0
+
+    def _to_observation(self, track: _Track) -> TrackObservation:
+        stable = track.stable_class
+        quality = float(track.confidence) * (0.72 ** max(0, track.lost_frames))
+        visibility = "visible" if track.lost_frames == 0 else "occluded"
+        return TrackObservation(
+            track_id=track.track_id,
+            bbox=track.bbox,
+            center_px=(float(track.center[0]), float(track.center[1])),
+            radius_px=float(track.radius_px),
+            cls_name=stable,
+            group=group_from_class(stable),
+            confidence=float(track.confidence),
+            velocity_px_s=(float(track.velocity[0]), float(track.velocity[1])),
+            quality=quality,
+            age=int(track.age),
+            lost_frames=int(track.lost_frames),
+            visibility=visibility,
+        )
+
