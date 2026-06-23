@@ -401,6 +401,13 @@ class NoriProtocolController:
         if ret != NORI_OK:
             raise RuntimeError(f"Nori_Xvision_SetCameraTerminalControl failed: 0x{ret:04X}")
 
+    def trigger_single_auto_exposure(self, device_id: int) -> None:
+        self.ensure_initialized()
+        assert self._dll is not None
+        ret = int(self._dll.Nori_Xvision_SetSingleAutoExposure(ctypes.c_uint32(int(device_id))))
+        if ret != NORI_OK:
+            raise RuntimeError(f"Nori_Xvision_SetSingleAutoExposure failed: 0x{ret:04X}")
+
     def shutdown(self) -> None:
         for device_id in list(self._active_video_devices):
             self.close_video_stream(device_id, ignore_errors=True)
@@ -521,4 +528,3 @@ def open_nori_capture(
     except Exception:
         controller.shutdown()
         return None
-

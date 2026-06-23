@@ -10,12 +10,15 @@ import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ..app import PipelineOutput, RuntimePipeline
+from ..calibration import create_calibration_service
 from ..capture import probe_cameras
 from ..config import AppConfig
+from ..geometry import TableGeometryLoader
 from ..logging_config import configure_logging
+from ..perception import create_detector
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
-from ..schemas import ProjectionOverlay
+from ..schemas import OverlayLine, ProjectionOverlay
 from ..user_settings import UserSettings
 
 LOGGER = logging.getLogger(__name__)
@@ -42,9 +45,31 @@ class SettingsDialog(QtWidgets.QDialog):
         self.class_file_path = self._path_row(config.detector.class_file_path, "类别文件 (*.txt *.json);;所有文件 (*.*)")
         self.video_path = self._path_row(config.camera.video_path, "视频文件 (*.mp4 *.avi *.mov *.mkv);;所有文件 (*.*)")
         self.nori_sdk_root = self._dir_row(config.camera.nori_sdk_root)
+        self.distortion_enabled = QtWidgets.QCheckBox("启用")
+        self.distortion_enabled.setChecked(bool(config.camera.distortion_correction_enabled))
+        self.distortion_file = self._path_row(config.camera.distortion_correction_file, "OpenCV 标定文件 (*.yaml *.yml *.xml);;所有文件 (*.*)")
+        distortion_box = QtWidgets.QWidget()
+        distortion_layout = QtWidgets.QHBoxLayout(distortion_box)
+        distortion_layout.setContentsMargins(0, 0, 0, 0)
+        distortion_layout.addWidget(self.distortion_enabled)
+        distortion_layout.addWidget(self.distortion_file, 1)
+        self.exposure_auto = QtWidgets.QCheckBox("自动曝光")
+        self.exposure_auto.setChecked(bool(config.camera.exposure_auto))
+        self.exposure_level = self._spin(int(config.camera.exposure_level if config.camera.exposure_level is not None else -5), -10, 0)
+        self.exposure_level.setEnabled(not self.exposure_auto.isChecked())
+        self.exposure_auto.toggled.connect(lambda checked: self.exposure_level.setEnabled(not checked))
+        exposure_box = QtWidgets.QWidget()
+        exposure_layout = QtWidgets.QHBoxLayout(exposure_box)
+        exposure_layout.setContentsMargins(0, 0, 0, 0)
+        exposure_layout.addWidget(self.exposure_auto)
+        exposure_layout.addWidget(QtWidgets.QLabel("手动档位"))
+        exposure_layout.addWidget(self.exposure_level)
+        exposure_layout.addStretch(1)
         self.outline_path = self._path_row(config.geometry.outline_path, "JSON (*.json);;所有文件 (*.*)")
         self.inline_path = self._path_row(config.geometry.inline_path, "JSON (*.json);;所有文件 (*.*)")
         self.pocket_path = self._path_row(config.geometry.pocket_path, "JSON (*.json);;所有文件 (*.*)")
+        self.camera_calibration_file = self._path_row(config.calibration.camera_file, "OpenCV 标定文件 (*.yaml *.yml *.xml);;所有文件 (*.*)")
+        self.projection_calibration_file = self._path_row(config.calibration.projection_file, "投影校正文件 (*.json);;所有文件 (*.*)")
         self.detector_backend = QtWidgets.QComboBox()
         self.detector_backend.addItems(["disabled", "ultralytics", "debug_color"])
         self.detector_backend.setCurrentText(config.detector.backend)
@@ -69,10 +94,14 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("类别文件路径", self.class_file_path)
         form.addRow("视频文件路径", self.video_path)
         form.addRow("Nori SDK 目录", self.nori_sdk_root)
+        form.addRow("工业相机畸变矫正", distortion_box)
+        form.addRow("工业相机曝光", exposure_box)
         form.addRow("检测后端", self.detector_backend)
         form.addRow("outline.json", self.outline_path)
         form.addRow("inline.json", self.inline_path)
         form.addRow("pocket.json", self.pocket_path)
+        form.addRow("相机标定文件", self.camera_calibration_file)
+        form.addRow("投影校正文件", self.projection_calibration_file)
         form.addRow("默认投影设备", self.proj_screen)
         form.addRow("默认投影分辨率", proj_size)
         tabs.addTab(general, "基础")
@@ -147,10 +176,16 @@ class SettingsDialog(QtWidgets.QDialog):
         config.detector.class_file_path = self.class_file_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.camera.video_path = self.video_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.camera.nori_sdk_root = self.nori_sdk_root.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        config.camera.distortion_correction_enabled = self.distortion_enabled.isChecked()
+        config.camera.distortion_correction_file = self.distortion_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        config.camera.exposure_auto = self.exposure_auto.isChecked()
+        config.camera.exposure_level = int(self.exposure_level.value())
         config.detector.backend = self.detector_backend.currentText()
         config.geometry.outline_path = self.outline_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.geometry.inline_path = self.inline_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.geometry.pocket_path = self.pocket_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        config.calibration.camera_file = self.camera_calibration_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        config.calibration.projection_file = self.projection_calibration_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.projection.screen_index = int(self.proj_screen.currentData() or 0)
         config.projection.projector_width = int(self.proj_w.value())
         config.projection.projector_height = int(self.proj_h.value())
@@ -287,13 +322,17 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.side_layout = QtWidgets.QVBoxLayout(self.sidebar)
         self.capture_btn = self._button("开始采集")
         self.projection_btn = self._button("开始投影")
+        self.init_module_btn = self._button("初始化图形图像模块")
+        self.projector_calib_btn = self._button("校正投影仪")
         self.settings_btn = self._button("设置")
         self.probe_btn = self._button("探测相机")
         self.capture_btn.clicked.connect(self.toggle_capture)
         self.projection_btn.clicked.connect(self.toggle_projection_window)
+        self.init_module_btn.clicked.connect(self.initialize_graphics_image_module)
+        self.projector_calib_btn.clicked.connect(self.calibrate_projector)
         self.settings_btn.clicked.connect(self.open_settings)
         self.probe_btn.clicked.connect(self.probe_camera_devices)
-        for btn in [self.capture_btn, self.projection_btn, self.settings_btn, self.probe_btn]:
+        for btn in [self.capture_btn, self.projection_btn, self.init_module_btn, self.projector_calib_btn, self.settings_btn, self.probe_btn]:
             self.side_layout.addWidget(btn)
         self.side_layout.addSpacing(6)
 
@@ -538,6 +577,90 @@ class OperatorWindow(QtWidgets.QMainWindow):
         UserSettings.from_config(self.config, self.star_formula.to_dict()).save()
 
     @QtCore.pyqtSlot()
+    def initialize_graphics_image_module(self) -> None:
+        self._sync_config_from_controls()
+        self._save_user_settings()
+        self._append_log("正在初始化图形图像模块")
+        try:
+            calibration = create_calibration_service(
+                self.config.calibration,
+                frame_undistorted=bool(self.config.camera.distortion_correction_enabled),
+            )
+            geometry = TableGeometryLoader.load_optional(
+                self.config.geometry.outline_path,
+                self.config.geometry.inline_path,
+                self.config.geometry.pocket_path,
+            )
+            detector = create_detector(self.config.detector)
+            geometry_state = "几何已加载" if not geometry.is_empty else "几何为空"
+            camera_state = "相机标定有效" if calibration.camera.is_valid else "相机标定无效"
+            projection_state = "投影校正有效" if calibration.projection.is_valid else "投影校正无效"
+            self._append_log(
+                "图形图像模块已初始化: "
+                f"{getattr(detector, 'version', 'unknown')} | {geometry_state} | "
+                f"{camera_state} | {projection_state}"
+            )
+        except Exception as exc:
+            self._append_log(f"图形图像模块初始化失败: {exc}")
+            QtWidgets.QMessageBox.critical(self, "初始化失败", str(exc))
+
+    @QtCore.pyqtSlot()
+    def calibrate_projector(self) -> None:
+        self._sync_config_from_controls()
+        self._save_user_settings()
+        self._append_log("正在加载投影仪校正")
+        try:
+            calibration = create_calibration_service(
+                self.config.calibration,
+                frame_undistorted=bool(self.config.camera.distortion_correction_enabled),
+            )
+            if not calibration.projection.is_valid:
+                raise RuntimeError(f"投影校正文件无效: {self.config.calibration.projection_file}")
+            self._ensure_projection_window()
+            self.projection_btn.setText("停止投影")
+            overlay = self._projector_calibration_overlay(calibration)
+            if self.projection_window is not None:
+                self.projection_window.set_overlay(overlay)
+            stats = calibration.projection.calibration_error_stats()
+            if stats:
+                self._append_log(
+                    "投影仪校正已显示: "
+                    f"mean={stats.get('mean_px', 0.0):.2f}px "
+                    f"p95={stats.get('p95_px', stats.get('max_px', 0.0)):.2f}px"
+                )
+            else:
+                self._append_log("投影仪校正已显示")
+        except Exception as exc:
+            self._append_log(f"投影仪校正失败: {exc}")
+            QtWidgets.QMessageBox.critical(self, "投影仪校正失败", str(exc))
+
+    def _projector_calibration_overlay(self, calibration) -> ProjectionOverlay:
+        size = (int(self.config.projection.projector_width), int(self.config.projection.projector_height))
+        overlay = ProjectionOverlay(overlay_id="projector_calibration", frame_id=0, projector_size=size)
+        poly = np.asarray(calibration.projection.table_polygon_proj, dtype=np.float32).reshape((-1, 2))
+        if poly.shape[0] >= 3:
+            closed = [(float(x), float(y)) for x, y in np.vstack([poly, poly[0]])]
+            overlay.lines.append(OverlayLine(points=closed, color=(255, 255, 255), width=3, label="table"))
+        points = np.asarray(calibration.projection.proj_points, dtype=np.float32).reshape((-1, 2))
+        if points.shape[0] == 0 and poly.shape[0] >= 3:
+            points = poly
+        for idx, point in enumerate(points[:60]):
+            x, y = float(point[0]), float(point[1])
+            overlay.circles.append(((x, y), 7.0, (0, 220, 255)))
+            overlay.labels.append(((x + 10.0, y - 10.0), f"P{idx}", (220, 255, 255)))
+        if poly.shape[0] < 3 and points.shape[0] == 0:
+            w, h = size
+            overlay.lines.append(
+                OverlayLine(
+                    points=[(40.0, 40.0), (w - 40.0, 40.0), (w - 40.0, h - 40.0), (40.0, h - 40.0), (40.0, 40.0)],
+                    color=(255, 255, 255),
+                    width=3,
+                    label="fallback",
+                )
+            )
+        return overlay
+
+    @QtCore.pyqtSlot()
     def toggle_capture(self) -> None:
         if self.pipeline is None:
             self.start_pipeline()
@@ -714,6 +837,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.device_spin.setEnabled(not running)
         self.resolution_combo.setEnabled(not running)
         self.fps_combo.setEnabled(not running)
+        self.init_module_btn.setEnabled(not running)
         self.replay_check.setEnabled(not running)
         self.status_label.setText("运行中" if running else "离线")
 

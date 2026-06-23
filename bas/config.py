@@ -20,8 +20,10 @@ class CameraConfig:
     video_path: Optional[str] = None
     nori_sdk_root: Optional[str] = None
     nori_device_id: Optional[int] = None
-    exposure_auto: Optional[bool] = None
-    exposure_level: Optional[int] = None
+    exposure_auto: Optional[bool] = False
+    exposure_level: Optional[int] = -5
+    distortion_correction_enabled: bool = True
+    distortion_correction_file: Optional[str] = "C:/CodeProject/2604BilliardsAssistanceSystem/calib/intrinsics_opencv.yaml"
 
 
 @dataclass
@@ -160,6 +162,9 @@ class AppConfig:
         if self.camera.nori_sdk_root:
             p = resolve_path(self.camera.nori_sdk_root, base=base)
             self.camera.nori_sdk_root = str(p) if p else None
+        if self.camera.distortion_correction_file:
+            p = resolve_path(self.camera.distortion_correction_file, base=base)
+            self.camera.distortion_correction_file = str(p) if p else None
         if self.detector.model_path:
             p = resolve_path(self.detector.model_path, base=base)
             self.detector.model_path = str(p) if p else None

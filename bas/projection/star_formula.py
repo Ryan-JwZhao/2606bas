@@ -10,36 +10,36 @@ import numpy as np
 
 @dataclass
 class StarFormulaConfig:
-    enabled: bool = False
-    inset_left_pct: float = 0.0
-    inset_right_pct: float = 0.0
+    enabled: bool = True
+    inset_left_pct: float = 1.2
+    inset_right_pct: float = -0.6
     inset_top_pct: float = 0.0
-    inset_bottom_pct: float = 0.0
-    label_offset_tb_pct: float = 6.0
-    label_offset_lr_pct: float = 8.0
-    offset_x_px: float = 0.0
-    offset_y_px: float = 0.0
-    scale_x_pct: float = 100.0
-    scale_y_pct: float = 100.0
-    angle_deg: float = 0.0
+    inset_bottom_pct: float = 0.4
+    label_offset_tb_pct: float = 11.0
+    label_offset_lr_pct: float = 9.0
+    offset_x_px: float = -10.0
+    offset_y_px: float = 25.0
+    scale_x_pct: float = 107.0
+    scale_y_pct: float = 105.0
+    angle_deg: float = -1.7
 
     @classmethod
     def from_mapping(cls, payload: Optional[Dict[str, Any]]) -> "StarFormulaConfig":
         data = payload or {}
-        legacy = _as_float(data.get("label_offset_pct"), 6.0)
+        legacy = _as_float(data.get("label_offset_pct"), 11.0)
         return cls(
-            enabled=_as_bool(data.get("enabled"), False),
-            inset_left_pct=_as_float(data.get("inset_left_pct"), 0.0),
-            inset_right_pct=_as_float(data.get("inset_right_pct"), 0.0),
+            enabled=_as_bool(data.get("enabled"), True),
+            inset_left_pct=_as_float(data.get("inset_left_pct"), 1.2),
+            inset_right_pct=_as_float(data.get("inset_right_pct"), -0.6),
             inset_top_pct=_as_float(data.get("inset_top_pct"), 0.0),
-            inset_bottom_pct=_as_float(data.get("inset_bottom_pct"), 0.0),
+            inset_bottom_pct=_as_float(data.get("inset_bottom_pct"), 0.4),
             label_offset_tb_pct=_as_float(data.get("label_offset_tb_pct"), legacy),
-            label_offset_lr_pct=_as_float(data.get("label_offset_lr_pct"), max(legacy, 8.0)),
-            offset_x_px=_as_float(data.get("offset_x_px"), 0.0),
-            offset_y_px=_as_float(data.get("offset_y_px"), 0.0),
-            scale_x_pct=_as_float(data.get("scale_x_pct"), 100.0),
-            scale_y_pct=_as_float(data.get("scale_y_pct"), 100.0),
-            angle_deg=_as_float(data.get("angle_deg"), 0.0),
+            label_offset_lr_pct=_as_float(data.get("label_offset_lr_pct"), max(legacy, 9.0)),
+            offset_x_px=_as_float(data.get("offset_x_px"), -10.0),
+            offset_y_px=_as_float(data.get("offset_y_px"), 25.0),
+            scale_x_pct=_as_float(data.get("scale_x_pct"), 107.0),
+            scale_y_pct=_as_float(data.get("scale_y_pct"), 105.0),
+            angle_deg=_as_float(data.get("angle_deg"), -1.7),
         )
 
     def clamp_for_projection(self, proj_w: int, proj_h: int) -> "StarFormulaConfig":
@@ -192,4 +192,3 @@ def _wrap_angle_deg(angle_deg: float) -> float:
     while angle < -180.0:
         angle += 360.0
     return angle
-

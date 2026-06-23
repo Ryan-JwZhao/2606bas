@@ -3,6 +3,10 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, Tuple
 
+import cv2
+import numpy as np
+
+from ..calibration.camera import CameraCalibration
 from ..config import CameraConfig
 from ..schemas import FramePacket
 from ..utils import monotonic_ns
@@ -14,10 +18,11 @@ LOGGER = logging.getLogger(__name__)
 
 
 class CaptureService:
-    def __init__(self, source: CaptureSource, camera_id: str):
+    def __init__(self, source: CaptureSource, camera_id: str, frame_distortion_corrected: bool = False):
         self.source = source
         self.camera_id = camera_id
         self.frame_id = 0
+        self.frame_distortion_corrected = bool(frame_distortion_corrected)
 
     def read(self) -> Optional[FramePacket]:
         ok, frame, meta = self.source.read()
@@ -40,17 +45,90 @@ class CaptureService:
         self.source.release()
 
 
+class DistortionCorrectedCapture:
+    def __init__(self, source: CaptureSource, calibration: CameraCalibration):
+        self._source = source
+        self._calibration = calibration
+        self._map_size: Tuple[int, int] = (0, 0)
+        self._map1: Optional[np.ndarray] = None
+        self._map2: Optional[np.ndarray] = None
+
+    def is_opened(self) -> bool:
+        return self._source.is_opened()
+
+    def read(self) -> Tuple[bool, Optional[np.ndarray], dict[str, object]]:
+        ok, frame, meta = self._source.read()
+        if not ok or frame is None:
+            return ok, frame, meta
+        corrected = self._undistort(frame)
+        out_meta = dict(meta)
+        out_meta["distortion_correction"] = True
+        out_meta["distortion_file"] = self._calibration.source_path
+        return True, corrected, out_meta
+
+    def release(self) -> None:
+        self._source.release()
+
+    def info(self):
+        info = self._source.info()
+        meta = dict(info.metadata)
+        meta["distortion_correction"] = True
+        meta["distortion_file"] = self._calibration.source_path
+        info.metadata = meta
+        return info
+
+    def _undistort(self, frame: np.ndarray) -> np.ndarray:
+        h, w = frame.shape[:2]
+        size = (int(w), int(h))
+        if self._map1 is None or self._map2 is None or self._map_size != size:
+            k_scaled = self._calibration.scaled_camera_matrix(w, h)
+            if k_scaled is None or self._calibration.distortion_coefficients is None:
+                return frame
+            self._map1, self._map2 = cv2.initUndistortRectifyMap(
+                k_scaled,
+                np.asarray(self._calibration.distortion_coefficients, dtype=np.float64),
+                None,
+                k_scaled,
+                size,
+                cv2.CV_16SC2,
+            )
+            self._map_size = size
+        return cv2.remap(
+            frame,
+            self._map1,
+            self._map2,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+        )
+
+
 def create_capture_service(config: CameraConfig) -> CaptureService:
     backend = str(config.backend or "auto").lower()
     source: CaptureSource
+    frame_distortion_corrected = False
+
+    def finish(src: CaptureSource) -> CaptureService:
+        nonlocal frame_distortion_corrected
+        if bool(config.distortion_correction_enabled):
+            calibration = CameraCalibration.load_opencv_yaml(config.distortion_correction_file)
+            if calibration.is_valid:
+                src = DistortionCorrectedCapture(src, calibration)
+                frame_distortion_corrected = True
+            else:
+                LOGGER.warning(
+                    "Camera distortion correction requested but calibration is invalid or missing: %s",
+                    config.distortion_correction_file,
+                )
+        return CaptureService(src, camera_id=config.camera_id, frame_distortion_corrected=frame_distortion_corrected)
+
     if backend == "synthetic":
         source = SyntheticCapture(config.width, config.height, config.fps, camera_id=config.camera_id)
-        return CaptureService(source, camera_id=config.camera_id)
+        return finish(source)
     if backend == "video":
         if not config.video_path:
             raise ValueError("camera.video_path is required when camera.backend=video")
         source = VideoFileCapture(config.video_path, camera_id=config.camera_id)
-        return CaptureService(source, camera_id=config.camera_id)
+        return finish(source)
     if backend in {"auto", "nori"}:
         nori = open_nori_capture(
             device_index=config.device_index,
@@ -67,16 +145,16 @@ def create_capture_service(config: CameraConfig) -> CaptureService:
                     controller = nori._controller  # SDK-only runtime control.
                     if config.exposure_auto is not None:
                         controller.set_auto_exposure(nori._device_id, bool(config.exposure_auto))
-                    if config.exposure_level is not None:
+                    if config.exposure_level is not None and not bool(config.exposure_auto):
                         controller.set_manual_exposure_level(nori._device_id, int(config.exposure_level))
                 except Exception as exc:
                     LOGGER.warning("Failed to apply Nori exposure settings: %s", exc)
-            return CaptureService(nori, camera_id=config.camera_id)
+            return finish(nori)
         if backend == "nori":
             raise RuntimeError("Nori camera requested but no MJPG SDK stream could be opened.")
         LOGGER.info("Nori SDK stream unavailable; falling back to OpenCV capture.")
     source = OpenCVCapture(config.device_index, config.width, config.height, config.fps, camera_id=config.camera_id)
-    return CaptureService(source, camera_id=config.camera_id)
+    return finish(source)
 
 
 def probe_cameras(max_index: int = 12, nori_sdk_root: str | None = None) -> List[Tuple[str, int, int, int, float]]:
@@ -94,4 +172,3 @@ def probe_cameras(max_index: int = 12, nori_sdk_root: str | None = None) -> List
     except Exception:
         pass
     return rows
-

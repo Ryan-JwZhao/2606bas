@@ -22,12 +22,18 @@ class UserSettings:
     fps: Optional[int] = None
     video_path: Optional[str] = None
     nori_sdk_root: Optional[str] = None
+    exposure_auto: Optional[bool] = None
+    exposure_level: Optional[int] = None
+    distortion_correction_enabled: Optional[bool] = None
+    distortion_correction_file: Optional[str] = None
     detector_backend: Optional[str] = None
     model_path: Optional[str] = None
     class_file_path: Optional[str] = None
     outline_path: Optional[str] = None
     inline_path: Optional[str] = None
     pocket_path: Optional[str] = None
+    camera_calibration_file: Optional[str] = None
+    projection_calibration_file: Optional[str] = None
     projection_screen_index: Optional[int] = None
     projection_width: Optional[int] = None
     projection_height: Optional[int] = None
@@ -67,6 +73,14 @@ class UserSettings:
             config.camera.video_path = self.video_path
         if self.nori_sdk_root:
             config.camera.nori_sdk_root = self.nori_sdk_root
+        if self.exposure_auto is not None:
+            config.camera.exposure_auto = bool(self.exposure_auto)
+        if self.exposure_level is not None:
+            config.camera.exposure_level = max(-10, min(0, int(self.exposure_level)))
+        if self.distortion_correction_enabled is not None:
+            config.camera.distortion_correction_enabled = bool(self.distortion_correction_enabled)
+        if self.distortion_correction_file:
+            config.camera.distortion_correction_file = self.distortion_correction_file
         if self.detector_backend:
             config.detector.backend = self.detector_backend
         if self.model_path:
@@ -79,6 +93,10 @@ class UserSettings:
             config.geometry.inline_path = self.inline_path
         if self.pocket_path:
             config.geometry.pocket_path = self.pocket_path
+        if self.camera_calibration_file:
+            config.calibration.camera_file = self.camera_calibration_file
+        if self.projection_calibration_file:
+            config.calibration.projection_file = self.projection_calibration_file
         if self.projection_screen_index is not None:
             config.projection.screen_index = int(self.projection_screen_index)
         if self.projection_width is not None:
@@ -100,16 +118,21 @@ class UserSettings:
             fps=config.camera.fps,
             video_path=config.camera.video_path,
             nori_sdk_root=config.camera.nori_sdk_root,
+            exposure_auto=config.camera.exposure_auto,
+            exposure_level=config.camera.exposure_level,
+            distortion_correction_enabled=config.camera.distortion_correction_enabled,
+            distortion_correction_file=config.camera.distortion_correction_file,
             detector_backend=config.detector.backend,
             model_path=config.detector.model_path,
             class_file_path=config.detector.class_file_path,
             outline_path=config.geometry.outline_path,
             inline_path=config.geometry.inline_path,
             pocket_path=config.geometry.pocket_path,
+            camera_calibration_file=config.calibration.camera_file,
+            projection_calibration_file=config.calibration.projection_file,
             projection_screen_index=config.projection.screen_index,
             projection_width=config.projection.projector_width,
             projection_height=config.projection.projector_height,
             replay_enabled=config.replay.enabled,
             star_formula=dict(star_formula or {}),
         )
-

@@ -62,12 +62,16 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.command == "inspect-calib":
         configure_logging(cfg.logging.directory, cfg.logging.level)
-        service = create_calibration_service(cfg.calibration)
+        service = create_calibration_service(
+            cfg.calibration,
+            frame_undistorted=bool(cfg.camera.distortion_correction_enabled),
+        )
         summary = {
             "calib_version": service.calib_version,
             "camera_valid": service.camera.is_valid,
             "camera_image_size": service.camera.image_size,
             "camera_source": service.camera.source_path,
+            "frame_undistorted": service.frame_undistorted,
             "projection_valid": service.projection.is_valid,
             "projection_source": service.projection.source_path,
             "projection_mode": service.projection.mode,

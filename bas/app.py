@@ -38,7 +38,10 @@ class RuntimePipeline:
     def __init__(self, config: AppConfig, star_formula: StarFormulaConfig | None = None):
         self.config = config
         self.capture: CaptureService = create_capture_service(config.camera)
-        self.calibration: CalibrationService = create_calibration_service(config.calibration)
+        self.calibration: CalibrationService = create_calibration_service(
+            config.calibration,
+            frame_undistorted=self.capture.frame_distortion_corrected,
+        )
         self.geometry: TableGeometry = TableGeometryLoader.load_optional(
             config.geometry.outline_path,
             config.geometry.inline_path,

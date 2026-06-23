@@ -33,6 +33,7 @@ class CalibrationService:
     camera: CameraCalibration
     projection: ProjectionCalibration
     table: TableModel
+    frame_undistorted: bool = False
 
     @property
     def calib_version(self) -> str:
@@ -42,7 +43,7 @@ class CalibrationService:
         return self.camera.undistort(frame)
 
     def camera_px_to_projector_px(self, points: np.ndarray) -> np.ndarray:
-        undistorted = self.camera.undistort_points(points) if self.camera.is_valid else ensure_numpy_points(points)
+        undistorted = self.camera.undistort_points(points) if self.camera.is_valid and not self.frame_undistorted else ensure_numpy_points(points)
         return self.projection.camera_to_projector_points(undistorted)
 
     def camera_px_to_table_mm(self, points: np.ndarray) -> np.ndarray:
@@ -84,7 +85,7 @@ class CalibrationService:
         return float(np.linalg.norm(mm[1] - mm[0]))
 
 
-def create_calibration_service(config: CalibrationConfig) -> CalibrationService:
+def create_calibration_service(config: CalibrationConfig, frame_undistorted: bool = False) -> CalibrationService:
     camera = CameraCalibration.load_opencv_yaml(config.camera_file)
     projection = ProjectionCalibration.load_json(config.projection_file)
     table = TableModel(
@@ -94,5 +95,4 @@ def create_calibration_service(config: CalibrationConfig) -> CalibrationService:
         inner_polygon_mm=default_inner_polygon(float(config.table_width_mm), float(config.table_height_mm)),
         pockets_mm=default_pockets(float(config.table_width_mm), float(config.table_height_mm)),
     )
-    return CalibrationService(camera=camera, projection=projection, table=table)
-
+    return CalibrationService(camera=camera, projection=projection, table=table, frame_undistorted=bool(frame_undistorted))

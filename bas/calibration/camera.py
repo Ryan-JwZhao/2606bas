@@ -34,6 +34,8 @@ class CameraCalibration:
             height = int(fs.getNode("image_height").real() or 0)
             K = _read_matrix(fs, "camera_matrix")
             D = _read_matrix(fs, "distortion_coefficients")
+            if D is None:
+                D = _read_matrix(fs, "distortion_coeffs")
             R = _read_matrix(fs, "rotation_matrix")
             rvec = _read_matrix(fs, "rvec")
             tvec = _read_matrix(fs, "tvec")
@@ -68,6 +70,22 @@ class CameraCalibration:
             return image
         return cv2.undistort(image, self.camera_matrix, self.distortion_coefficients)
 
+    def scaled_camera_matrix(self, frame_width: int, frame_height: int) -> Optional[np.ndarray]:
+        if self.camera_matrix is None:
+            return None
+        k = np.asarray(self.camera_matrix, dtype=np.float64).copy()
+        src_w, src_h = self.image_size
+        if src_w > 0 and src_h > 0 and (int(src_w) != int(frame_width) or int(src_h) != int(frame_height)):
+            sx = float(frame_width) / float(max(1, src_w))
+            sy = float(frame_height) / float(max(1, src_h))
+            k[0, 0] *= sx
+            k[0, 1] *= sx
+            k[0, 2] *= sx
+            k[1, 0] *= sy
+            k[1, 1] *= sy
+            k[1, 2] *= sy
+        return k
+
     def undistort_points(self, points: np.ndarray) -> np.ndarray:
         pts = np.asarray(points, dtype=np.float32).reshape((-1, 1, 2))
         if not self.is_valid or pts.size == 0:
@@ -94,4 +112,3 @@ def _read_real(fs: cv2.FileStorage, name: str) -> Optional[float]:
         return float(node.real())
     except Exception:
         return None
-
