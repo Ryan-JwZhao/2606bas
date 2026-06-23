@@ -2,19 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
-from pathlib import Path
 from typing import Optional
 
-from .app import run_headless, run_qt
-from .calibration import create_calibration_service, format_holdout_report, verify_holdout_file
-from .capture import probe_cameras
 from .config import AppConfig
-from .dependency_check import dependency_report
-from .logging_config import configure_logging
-from .replay import ReplayReader
-from .schemas import to_jsonable
-from .ui import run_operator_ui
 from .user_settings import UserSettings
 
 
@@ -50,14 +40,21 @@ def main(argv: Optional[list[str]] = None) -> int:
     cfg = UserSettings.load().apply_to_config(AppConfig.load(args.config)).resolve_paths()
 
     if args.command in {None, "ui"}:
+        from .ui import run_operator_ui
+
         return run_operator_ui(cfg)
 
     if args.command == "run":
+        from .app import run_headless, run_qt
+
         if args.command == "run" and args.headless:
             return run_headless(cfg, max_frames=args.max_frames)
         return run_qt(cfg)
 
     if args.command == "probe-cameras":
+        from .capture import probe_cameras
+        from .logging_config import configure_logging
+
         configure_logging(cfg.logging.directory, cfg.logging.level)
         rows = probe_cameras(max_index=args.max_index, nori_sdk_root=cfg.camera.nori_sdk_root)
         if not rows:
@@ -68,6 +65,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if args.command == "doctor":
+        from .dependency_check import dependency_report
+
         rows = dependency_report()
         if args.json:
             print(json.dumps(rows, ensure_ascii=False, indent=2))
@@ -78,6 +77,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 1 if any(row["status"] == "missing" for row in rows) else 0
 
     if args.command == "inspect-calib":
+        from .calibration import create_calibration_service
+        from .logging_config import configure_logging
+        from .schemas import to_jsonable
+
         configure_logging(cfg.logging.directory, cfg.logging.level)
         service = create_calibration_service(
             cfg.calibration,
@@ -100,6 +103,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if args.command == "verify-calib":
+        from .calibration import create_calibration_service, format_holdout_report, verify_holdout_file
+        from .logging_config import configure_logging
+
         configure_logging(cfg.logging.directory, cfg.logging.level)
         service = create_calibration_service(
             cfg.calibration,
@@ -111,6 +117,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if args.command == "replay-summary":
+        from .replay import ReplayReader
+
         counts: dict[str, int] = {}
         last_frame = -1
         for event in ReplayReader(args.path).iter_events():
@@ -126,6 +134,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     if args.command == "smoke-run":
+        from .app import run_headless
+
         cfg.camera.backend = "synthetic"
         cfg.detector.backend = "debug_color"
         cfg.replay.enabled = True

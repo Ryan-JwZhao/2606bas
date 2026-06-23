@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .config import AppConfig
+from .runtime_env import prepare_runtime_environment
 from .user_settings import UserSettings
 
 
@@ -28,7 +29,7 @@ def needs_yolo_dependencies() -> bool:
 
 
 def yolo_dependencies_available() -> bool:
-    return _has_module("ultralytics")
+    return _yolo_import_status()[0] == "ok"
 
 
 def dependency_report() -> list[dict[str, str]]:
@@ -41,6 +42,14 @@ def dependency_report() -> list[dict[str, str]]:
     for module in ["numpy", "cv2", "PyQt5", "yaml"]:
         add(f"module:{module}", "ok" if _has_module(module) else "missing")
 
+    backend = str(cfg.detector.backend or "disabled").lower()
+    add("detector_backend", "ok", backend)
+    if backend in {"ultralytics", "yolo"}:
+        add("module:ultralytics", *_yolo_import_status())
+        add("detector.device", *_device_status(str(cfg.detector.device or "auto")))
+        _check_path(rows, "detector.model_path", cfg.detector.model_path)
+        _check_path(rows, "detector.class_file_path", cfg.detector.class_file_path)
+
     if _has_module("cv2"):
         try:
             import cv2  # type: ignore
@@ -48,14 +57,6 @@ def dependency_report() -> list[dict[str, str]]:
             add("opencv:aruco", "ok" if hasattr(cv2, "aruco") else "warning", "ChArUco uses encoded-grid fallback when unavailable.")
         except Exception as exc:
             add("opencv:aruco", "warning", str(exc))
-
-    backend = str(cfg.detector.backend or "disabled").lower()
-    add("detector_backend", "ok", backend)
-    if backend in {"ultralytics", "yolo"}:
-        add("module:ultralytics", "ok" if yolo_dependencies_available() else "missing", "Install with requirements-yolo.txt.")
-        add("detector.device", *_device_status(str(cfg.detector.device or "auto")))
-        _check_path(rows, "detector.model_path", cfg.detector.model_path)
-        _check_path(rows, "detector.class_file_path", cfg.detector.class_file_path)
 
     _check_path(rows, "camera.distortion_correction_file", cfg.camera.distortion_correction_file, optional=not cfg.camera.distortion_correction_enabled)
     _check_path(rows, "calibration.camera_file", cfg.calibration.camera_file, optional=True)
@@ -72,6 +73,19 @@ def _check_path(rows: list[dict[str, str]], name: str, value: str | None, option
         return
     exists = Path(value).exists()
     rows.append({"name": name, "status": "ok" if exists else ("warning" if optional else "missing"), "detail": value})
+
+
+def _yolo_import_status() -> tuple[str, str]:
+    if not _has_module("ultralytics"):
+        return "missing", "Run Setup_Environment.cmd or install requirements-yolo.txt."
+    try:
+        prepare_runtime_environment()
+        import ultralytics  # type: ignore
+
+        version = getattr(ultralytics, "__version__", "unknown")
+        return "ok", str(version)
+    except Exception as exc:
+        return "warning", f"{type(exc).__name__}: {exc}"
 
 
 def _device_status(device: str) -> tuple[str, str]:

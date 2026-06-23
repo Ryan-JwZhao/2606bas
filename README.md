@@ -8,6 +8,12 @@
 
 双击根目录的 `Start_BAS.cmd` 可以直接打开桌面控制台 UI。默认不再启用 synthetic 虚拟画面；真实使用时在 UI 里选择 `auto`、`nori`、`opencv` 或 `video`。
 
+环境固定后，`Start_BAS.cmd` 不会创建虚拟环境，也不会安装依赖，只负责设置本地运行目录并快速打开 UI。首次部署或依赖变更时再运行一次：
+
+```powershell
+.\Setup_Environment.cmd
+```
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
@@ -49,7 +55,7 @@ detector:
   class_names: [cue, solid, stripe, black, cue_stick]
 ```
 
-`Start_BAS.cmd` 会先安装基础依赖；如果当前 `local_settings/user_settings.json` 或默认配置中的检测后端是 `ultralytics`，会再检查并安装 `requirements-yolo.txt`。如果手动启动或网络安装失败，可执行：
+`Start_BAS.cmd` 不做依赖安装。若当前 `local_settings/user_settings.json` 或默认配置中的检测后端是 `ultralytics`，请确保已经完成一次性环境配置。手动检查可执行：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-yolo.txt

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -11,7 +10,7 @@ import cv2
 import numpy as np
 
 from ..config import DetectorConfig
-from ..paths import PROJECT_ROOT
+from ..runtime_env import prepare_runtime_environment
 from ..schemas import Detection
 from ..utils import clamp, default_inference_device, iou_xyxy
 
@@ -92,14 +91,24 @@ class UltralyticsDetector(Detector):
         max_det_per_tile: int,
         batch_size: int,
     ):
-        _prepare_optional_dependency_dirs()
+        prepare_runtime_environment()
         try:
             from ultralytics import YOLO
+        except ModuleNotFoundError as exc:
+            if exc.name != "ultralytics":
+                raise RuntimeError(
+                    f"Ultralytics 已安装，但缺少运行依赖：{exc.name}。"
+                    "请先运行一次 Setup_Environment.cmd，或重新安装 requirements-yolo.txt。"
+                ) from exc
+            raise RuntimeError(
+                "当前检测后端为 Ultralytics，但当前 .venv 未安装 YOLO 推理依赖。"
+                "请先运行一次 Setup_Environment.cmd，或手动执行："
+                r".\.venv\Scripts\python.exe -m pip install -r requirements-yolo.txt"
+            ) from exc
         except Exception as exc:
             raise RuntimeError(
-                "当前检测后端为 Ultralytics，但未安装 YOLO 推理依赖。"
-                "请重新运行 Start_BAS.cmd，或手动执行："
-                r".\.venv\Scripts\python.exe -m pip install -r requirements-yolo.txt"
+                "Ultralytics 已安装，但导入失败。"
+                f"原始错误：{type(exc).__name__}: {exc}"
             ) from exc
         if not Path(model_path).exists():
             raise FileNotFoundError(f"Ultralytics model file does not exist: {model_path}")
@@ -258,19 +267,6 @@ def _resolve_ultralytics_device(device: str) -> str:
         LOGGER.warning("Requested CUDA device %s is unavailable; falling back to CPU.", requested)
         return "cpu"
     return str(device)
-
-
-def _prepare_optional_dependency_dirs() -> None:
-    local = PROJECT_ROOT / "local_settings"
-    yolo_dir = local / "ultralytics"
-    mpl_dir = local / "matplotlib"
-    for path in [yolo_dir, mpl_dir]:
-        try:
-            path.mkdir(parents=True, exist_ok=True)
-        except Exception:
-            continue
-    os.environ.setdefault("YOLO_CONFIG_DIR", str(yolo_dir))
-    os.environ.setdefault("MPLCONFIGDIR", str(mpl_dir))
 
 
 def _load_class_names(path: str) -> List[str]:
