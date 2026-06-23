@@ -11,6 +11,7 @@
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements-yolo.txt  # 使用 Ultralytics/YOLO 时需要
 .\.venv\Scripts\python.exe -m bas smoke-run --frames 90
 ```
 
@@ -18,6 +19,7 @@ python -m venv .venv
 
 ```powershell
 .\.venv\Scripts\python.exe -m bas probe-cameras
+.\.venv\Scripts\python.exe -m bas doctor
 .\.venv\Scripts\python.exe -m bas inspect-calib
 .\.venv\Scripts\python.exe -m bas verify-calib C:\path\to\holdout.json
 .\.venv\Scripts\python.exe -m bas ui
@@ -45,6 +47,13 @@ detector:
   backend: ultralytics
   model_path: C:/path/to/model.pt
   class_names: [cue, solid, stripe, black, cue_stick]
+```
+
+`Start_BAS.cmd` 会先安装基础依赖；如果当前 `local_settings/user_settings.json` 或默认配置中的检测后端是 `ultralytics`，会再检查并安装 `requirements-yolo.txt`。如果手动启动或网络安装失败，可执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-yolo.txt
+.\.venv\Scripts\python.exe -m bas doctor
 ```
 
 UI 中的“设置”会保存到 `local_settings/user_settings.json`，该文件已被 `.gitignore` 忽略。设置页支持：

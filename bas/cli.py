@@ -10,6 +10,7 @@ from .app import run_headless, run_qt
 from .calibration import create_calibration_service, format_holdout_report, verify_holdout_file
 from .capture import probe_cameras
 from .config import AppConfig
+from .dependency_check import dependency_report
 from .logging_config import configure_logging
 from .replay import ReplayReader
 from .schemas import to_jsonable
@@ -30,6 +31,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     p_probe = sub.add_parser("probe-cameras", help="List OpenCV and Nori MJPG cameras.")
     p_probe.add_argument("--max-index", type=int, default=12)
+
+    p_doctor = sub.add_parser("doctor", help="Check runtime dependencies and configured file paths.")
+    p_doctor.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
     p_calib = sub.add_parser("inspect-calib", help="Print loaded calibration summary.")
 
@@ -62,6 +66,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         for backend, idx, width, height, fps in rows:
             print(f"{backend:10s} id={idx:<3d} {width}x{height} @ {fps:.2f}fps")
         return 0
+
+    if args.command == "doctor":
+        rows = dependency_report()
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+        else:
+            for row in rows:
+                detail = f" {row['detail']}" if row.get("detail") else ""
+                print(f"{row['status']:8s} {row['name']}{detail}")
+        return 1 if any(row["status"] == "missing" for row in rows) else 0
 
     if args.command == "inspect-calib":
         configure_logging(cfg.logging.directory, cfg.logging.level)

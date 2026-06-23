@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -10,6 +11,7 @@ import cv2
 import numpy as np
 
 from ..config import DetectorConfig
+from ..paths import PROJECT_ROOT
 from ..schemas import Detection
 from ..utils import clamp, default_inference_device, iou_xyxy
 
@@ -90,10 +92,17 @@ class UltralyticsDetector(Detector):
         max_det_per_tile: int,
         batch_size: int,
     ):
+        _prepare_optional_dependency_dirs()
         try:
             from ultralytics import YOLO
         except Exception as exc:
-            raise RuntimeError("Ultralytics detector requires `pip install ultralytics`.") from exc
+            raise RuntimeError(
+                "当前检测后端为 Ultralytics，但未安装 YOLO 推理依赖。"
+                "请重新运行 Start_BAS.cmd，或手动执行："
+                r".\.venv\Scripts\python.exe -m pip install -r requirements-yolo.txt"
+            ) from exc
+        if not Path(model_path).exists():
+            raise FileNotFoundError(f"Ultralytics model file does not exist: {model_path}")
         self.model = YOLO(model_path)
         try:
             self.model.fuse()
@@ -102,7 +111,7 @@ class UltralyticsDetector(Detector):
         self.class_names = list(class_names)
         self.conf = float(clamp(conf, 0.01, 0.99))
         self.iou = float(clamp(iou, 0.01, 0.99))
-        self.device = default_inference_device() if str(device).lower() in {"", "auto"} else str(device)
+        self.device = _resolve_ultralytics_device(device)
         self.tile_size = int(max(320, tile_size))
         self.tile_overlap = float(clamp(tile_overlap, 0.0, 0.8))
         self.max_det_per_tile = int(max(1, max_det_per_tile))
@@ -207,6 +216,8 @@ def create_detector(config: DetectorConfig) -> Detector:
     if backend in {"ultralytics", "yolo"}:
         if not config.model_path:
             raise ValueError("detector.model_path is required for Ultralytics detector.")
+        if config.class_file_path and not Path(config.class_file_path).exists():
+            raise FileNotFoundError(f"Detector class file does not exist: {config.class_file_path}")
         return UltralyticsDetector(
             model_path=config.model_path,
             class_names=class_names,
@@ -219,6 +230,47 @@ def create_detector(config: DetectorConfig) -> Detector:
             batch_size=config.batch_size,
         )
     raise ValueError(f"Unsupported detector backend: {config.backend}")
+
+
+def _resolve_ultralytics_device(device: str) -> str:
+    requested = str(device or "auto").strip().lower()
+    if requested in {"", "auto"}:
+        return default_inference_device()
+    if requested in {"cpu", "mps"}:
+        return requested
+    try:
+        import torch  # type: ignore
+
+        cuda_available = bool(torch.cuda.is_available())
+        cuda_count = int(torch.cuda.device_count()) if cuda_available else 0
+    except Exception:
+        cuda_available = False
+        cuda_count = 0
+    if requested.isdigit():
+        idx = int(requested)
+        if cuda_available and idx < cuda_count:
+            return requested
+        LOGGER.warning("Requested CUDA device %s is unavailable; falling back to CPU.", requested)
+        return "cpu"
+    if requested.startswith("cuda"):
+        if cuda_available:
+            return requested
+        LOGGER.warning("Requested CUDA device %s is unavailable; falling back to CPU.", requested)
+        return "cpu"
+    return str(device)
+
+
+def _prepare_optional_dependency_dirs() -> None:
+    local = PROJECT_ROOT / "local_settings"
+    yolo_dir = local / "ultralytics"
+    mpl_dir = local / "matplotlib"
+    for path in [yolo_dir, mpl_dir]:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            continue
+    os.environ.setdefault("YOLO_CONFIG_DIR", str(yolo_dir))
+    os.environ.setdefault("MPLCONFIGDIR", str(mpl_dir))
 
 
 def _load_class_names(path: str) -> List[str]:

@@ -18,6 +18,7 @@ logs/
 outputs/
 replays/
 local_settings/
+Ultralytics/
 user_settings.json
 session_*/
 bas.log
