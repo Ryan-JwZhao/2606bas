@@ -400,7 +400,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._heavy_ui_fps_limit = 3.0
 
         self.timer = QtCore.QTimer(self)
+        self.timer.setSingleShot(True)
         self.timer.timeout.connect(self._tick)
+        self._frame_busy = False
 
         self.setWindowTitle("BAS Control Console")
         self.resize(self.BASE_WIDTH, self.BASE_HEIGHT)
@@ -826,6 +828,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "config": to_jsonable(self.config),
             "star_formula": self.star_formula.to_dict(),
+            "runtime": self._runtime_diagnostic_payload(),
             "module_status": self._module_status_payload(),
             "last_output": None,
         }
@@ -851,6 +854,20 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 "dtype": str(image.dtype),
             }
         return payload
+
+    def _runtime_diagnostic_payload(self) -> dict[str, object]:
+        elapsed = max(1e-6, time.perf_counter() - self.started_at) if self.started_at > 0.0 else 0.0
+        return {
+            "frame_count": int(self.frame_count),
+            "elapsed_s": float(elapsed),
+            "avg_fps": float(self.frame_count / elapsed) if elapsed > 0.0 else 0.0,
+            "timer_single_shot": bool(self.timer.isSingleShot()),
+            "timer_active": bool(self.timer.isActive()),
+            "frame_busy": bool(self._frame_busy),
+            "preview_fps_limit": float(self._preview_fps_limit),
+            "metrics_fps_limit": float(self._metrics_fps_limit),
+            "heavy_ui_fps_limit": float(self._heavy_ui_fps_limit),
+        }
 
     def _module_status_payload(self) -> list[dict[str, str]]:
         rows = []
@@ -1093,13 +1110,18 @@ class OperatorWindow(QtWidgets.QMainWindow):
             return
         self.frame_count = 0
         self.started_at = time.perf_counter()
-        self.timer.start(max(1, int(1000 / max(1, self.config.camera.fps))))
+        self._frame_busy = False
+        self._last_preview_update_ts = 0.0
+        self._last_metrics_update_ts = 0.0
+        self._last_heavy_ui_update_ts = 0.0
+        self.timer.start(0)
         self._set_running(True)
         self._update_module_status()
         self._append_log("采集已启动")
 
     def stop_pipeline(self) -> None:
         self.timer.stop()
+        self._frame_busy = False
         if self.pipeline is not None:
             try:
                 self.pipeline.close()
@@ -1180,27 +1202,36 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.projection_window.set_overlay(overlay)
 
     def _tick(self) -> None:
+        if self._frame_busy:
+            self.timer.start(0)
+            return
         if self.pipeline is None:
             return
-        out = self.pipeline.step()
-        if out is None:
-            self.stop_pipeline()
-            return
-        self.last_output = out
-        self.frame_count += 1
-        now = time.perf_counter()
-        if now - self._last_preview_update_ts >= 1.0 / max(1.0, self._preview_fps_limit):
-            self._update_preview(out)
-            self._last_preview_update_ts = now
-        self._update_events(out)
-        if now - self._last_metrics_update_ts >= 1.0 / max(1.0, self._metrics_fps_limit):
-            self._update_stats(out)
-            self._last_metrics_update_ts = now
-        if now - self._last_heavy_ui_update_ts >= 1.0 / max(1.0, self._heavy_ui_fps_limit):
-            self._update_plan(out)
-            self._update_module_status(out)
-            self._last_heavy_ui_update_ts = now
-        self._refresh_projection()
+        self._frame_busy = True
+        try:
+            out = self.pipeline.step()
+            if out is None:
+                self.stop_pipeline()
+                return
+            self.last_output = out
+            self.frame_count += 1
+            now = time.perf_counter()
+            if now - self._last_preview_update_ts >= 1.0 / max(1.0, self._preview_fps_limit):
+                self._update_preview(out)
+                self._last_preview_update_ts = now
+            self._update_events(out)
+            if now - self._last_metrics_update_ts >= 1.0 / max(1.0, self._metrics_fps_limit):
+                self._update_stats(out)
+                self._last_metrics_update_ts = now
+            if now - self._last_heavy_ui_update_ts >= 1.0 / max(1.0, self._heavy_ui_fps_limit):
+                self._update_plan(out)
+                self._update_module_status(out)
+                self._last_heavy_ui_update_ts = now
+            self._refresh_projection()
+        finally:
+            self._frame_busy = False
+            if self.pipeline is not None:
+                self.timer.start(0)
 
     def _update_preview(self, out: PipelineOutput) -> None:
         frame = out.frame.image

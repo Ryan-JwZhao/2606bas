@@ -26,7 +26,7 @@ detector:
   max_det_per_tile: 200
   batch_size: 4
   detect_interval_frames: 1
-  detect_fps_limit_hz: 10.0
+  detect_fps_limit_hz: 6.0
 
 tracker:
   high_conf: 0.45
