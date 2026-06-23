@@ -6,6 +6,8 @@ from typing import Iterable, Optional, Tuple
 
 import numpy as np
 
+from .runtime_env import preload_torch
+
 
 def clamp(value: float, lo: float, hi: float) -> float:
     return float(max(lo, min(hi, value)))
@@ -88,15 +90,16 @@ def parse_resolution(text: str) -> Tuple[int, int]:
 
 
 def default_inference_device() -> str:
+    torch = preload_torch()
+    if torch is None:
+        return "cpu"
     try:
-        import torch  # type: ignore
-
         if torch.cuda.is_available():
             return "0"
         if sys.platform == "darwin" and torch.backends.mps.is_available():
             return "mps"
     except Exception:
-        pass
+        return "cpu"
     return "cpu"
 
 
@@ -138,4 +141,3 @@ def optional_import_error(package_name: str, action: str) -> RuntimeError:
         f"{action} requires optional package '{package_name}'. "
         "Install the matching dependency, then retry."
     )
-

@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 
 from ..config import DetectorConfig
+from .. import runtime_env
 from ..runtime_env import prepare_runtime_environment
 from ..schemas import Detection
 from ..utils import clamp, default_inference_device, iou_xyxy
@@ -106,9 +107,12 @@ class UltralyticsDetector(Detector):
                 r".\.venv\Scripts\python.exe -m pip install -r requirements-yolo.txt"
             ) from exc
         except Exception as exc:
+            torch_detail = ""
+            if runtime_env.TORCH_IMPORT_ERROR is not None:
+                torch_detail = f"；torch 预加载错误：{type(runtime_env.TORCH_IMPORT_ERROR).__name__}: {runtime_env.TORCH_IMPORT_ERROR}"
             raise RuntimeError(
                 "Ultralytics 已安装，但导入失败。"
-                f"原始错误：{type(exc).__name__}: {exc}"
+                f"原始错误：{type(exc).__name__}: {exc}{torch_detail}"
             ) from exc
         if not Path(model_path).exists():
             raise FileNotFoundError(f"Ultralytics model file does not exist: {model_path}")
@@ -247,14 +251,17 @@ def _resolve_ultralytics_device(device: str) -> str:
         return default_inference_device()
     if requested in {"cpu", "mps"}:
         return requested
-    try:
-        import torch  # type: ignore
-
-        cuda_available = bool(torch.cuda.is_available())
-        cuda_count = int(torch.cuda.device_count()) if cuda_available else 0
-    except Exception:
+    torch = runtime_env.preload_torch()
+    if torch is None:
         cuda_available = False
         cuda_count = 0
+    else:
+        try:
+            cuda_available = bool(torch.cuda.is_available())
+            cuda_count = int(torch.cuda.device_count()) if cuda_available else 0
+        except Exception:
+            cuda_available = False
+            cuda_count = 0
     if requested.isdigit():
         idx = int(requested)
         if cuda_available and idx < cuda_count:

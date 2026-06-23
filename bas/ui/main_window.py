@@ -6,6 +6,17 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from ..config import AppConfig
+from ..runtime_env import prepare_runtime_environment, preload_torch_for_backend
+from ..user_settings import UserSettings
+
+try:
+    _active_config = UserSettings.load().apply_to_config(AppConfig.load()).resolve_paths()
+    prepare_runtime_environment()
+    preload_torch_for_backend(_active_config.detector.backend)
+except Exception:
+    prepare_runtime_environment()
+
 import cv2
 import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -15,14 +26,12 @@ from ..calibration import create_calibration_service
 from ..calibration.charuco import CharucoBoardSpec, render_charuco_board
 from ..calibration.verification import format_holdout_report, verify_holdout_file
 from ..capture import probe_cameras
-from ..config import AppConfig
 from ..geometry import TableGeometryLoader
 from ..logging_config import configure_logging
 from ..perception import create_detector
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
 from ..schemas import MatchPhase, OverlayLine, ProjectionOverlay, to_jsonable
-from ..user_settings import UserSettings
 
 LOGGER = logging.getLogger(__name__)
 

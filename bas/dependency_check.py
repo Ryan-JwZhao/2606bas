@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from .config import AppConfig
-from .runtime_env import prepare_runtime_environment
+from .runtime_env import prepare_runtime_environment, preload_torch
 from .user_settings import UserSettings
 
 
@@ -80,6 +80,7 @@ def _yolo_import_status() -> tuple[str, str]:
         return "missing", "Run Setup_Environment.cmd or install requirements-yolo.txt."
     try:
         prepare_runtime_environment()
+        preload_torch()
         import ultralytics  # type: ignore
 
         version = getattr(ultralytics, "__version__", "unknown")

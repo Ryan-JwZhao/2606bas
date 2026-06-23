@@ -5,6 +5,7 @@ import json
 from typing import Optional
 
 from .config import AppConfig
+from .runtime_env import prepare_runtime_environment, preload_torch_for_backend
 from .user_settings import UserSettings
 
 
@@ -38,6 +39,9 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     args = parser.parse_args(argv)
     cfg = UserSettings.load().apply_to_config(AppConfig.load(args.config)).resolve_paths()
+    prepare_runtime_environment()
+    if args.command in {None, "ui", "run"}:
+        preload_torch_for_backend(cfg.detector.backend)
 
     if args.command in {None, "ui"}:
         from .ui import run_operator_ui
