@@ -11,15 +11,17 @@ from .calibration import create_calibration_service
 from .capture import probe_cameras
 from .config import AppConfig
 from .logging_config import configure_logging
-from .projection.overlay import render_overlay_image
 from .replay import ReplayReader
 from .schemas import to_jsonable
+from .ui import run_operator_ui
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="bas", description="Billiards assistance system")
     parser.add_argument("--config", default=None, help="Path to YAML config.")
     sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("ui", help="Open the desktop control console.")
 
     p_run = sub.add_parser("run", help="Run the online pipeline.")
     p_run.add_argument("--headless", action="store_true", help="Run without projection Qt window.")
@@ -39,7 +41,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
     cfg = AppConfig.load(args.config).resolve_paths()
 
-    if args.command in {None, "run"}:
+    if args.command in {None, "ui"}:
+        return run_operator_ui(cfg)
+
+    if args.command == "run":
         if args.command == "run" and args.headless:
             return run_headless(cfg, max_frames=args.max_frames)
         return run_qt(cfg)
@@ -95,4 +100,3 @@ def main(argv: Optional[list[str]] = None) -> int:
         return run_headless(cfg, max_frames=args.frames)
 
     return 0
-

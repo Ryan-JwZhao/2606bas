@@ -6,6 +6,8 @@
 
 ## 快速运行
 
+双击根目录的 `Start_BAS.cmd` 可以直接打开桌面控制台 UI。
+
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
@@ -17,6 +19,7 @@ python -m venv .venv
 ```powershell
 .\.venv\Scripts\python.exe -m bas probe-cameras
 .\.venv\Scripts\python.exe -m bas inspect-calib
+.\.venv\Scripts\python.exe -m bas ui
 .\.venv\Scripts\python.exe -m bas run --headless --max-frames 300
 .\.venv\Scripts\python.exe -m bas run
 ```
@@ -54,4 +57,3 @@ camera:
 ## Git 管理策略
 
 仓库只管理核心代码、配置模板和文档。模型、SDK、旧版历史资料、日志、回放、截图、视频和本机标定文件都在 `.gitignore` 中排除。
-
