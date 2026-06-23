@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 
 from .app import run_headless, run_qt
-from .calibration import create_calibration_service
+from .calibration import create_calibration_service, format_holdout_report, verify_holdout_file
 from .capture import probe_cameras
 from .config import AppConfig
 from .logging_config import configure_logging
@@ -32,6 +32,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_probe.add_argument("--max-index", type=int, default=12)
 
     p_calib = sub.add_parser("inspect-calib", help="Print loaded calibration summary.")
+
+    p_verify = sub.add_parser("verify-calib", help="Verify calibration against a holdout JSON file.")
+    p_verify.add_argument("holdout_json")
 
     p_replay = sub.add_parser("replay-summary", help="Summarize a replay events.jsonl file.")
     p_replay.add_argument("path")
@@ -80,6 +83,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             "table": to_jsonable(service.table),
         }
         print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0
+
+    if args.command == "verify-calib":
+        configure_logging(cfg.logging.directory, cfg.logging.level)
+        service = create_calibration_service(
+            cfg.calibration,
+            frame_undistorted=bool(cfg.camera.distortion_correction_enabled),
+        )
+        report = verify_holdout_file(args.holdout_json, service)
+        print(format_holdout_report(report))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
 
     if args.command == "replay-summary":

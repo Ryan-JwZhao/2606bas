@@ -19,6 +19,37 @@ def _track(speed: float, frame: int) -> TrackObservation:
     )
 
 
+def _ball(track_id: int, group: str, x: float, y: float, vx: float = 0.0, vy: float = 0.0) -> TrackObservation:
+    return TrackObservation(
+        track_id=track_id,
+        bbox=(x - 5, y - 5, x + 5, y + 5),
+        center_px=(x, y),
+        radius_px=5,
+        cls_name=group,
+        group=group,
+        confidence=0.9,
+        velocity_px_s=(vx, vy),
+        center_mm=(x, y),
+        velocity_mm_s=(vx, vy),
+        radius_mm=28.0,
+        quality=0.9,
+    )
+
+
+def _cue_stick(track_id: int, x1: float, y1: float, x2: float, y2: float) -> TrackObservation:
+    return TrackObservation(
+        track_id=track_id,
+        bbox=(x1, y1, x2, y2),
+        center_px=((x1 + x2) * 0.5, (y1 + y2) * 0.5),
+        radius_px=max(abs(x2 - x1), abs(y2 - y1)) * 0.5,
+        cls_name="cue_stick",
+        group="cue_stick",
+        confidence=0.9,
+        velocity_px_s=(0.0, 0.0),
+        quality=0.9,
+    )
+
+
 def test_state_enters_shot_active_on_motion() -> None:
     sm = MatchStateMachine(StateConfig(stable_frames=2, settle_frames=2))
     out = sm.update(TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[_track(100.0, 1)]))
@@ -64,3 +95,52 @@ def test_operator_force_phase_survives_next_update() -> None:
     assert out.phase == "TURN_RESOLVE"
     assert out.state_version.endswith("+operator_override")
     assert any(event.name == "OPERATOR_FORCE_PHASE" for event in out.events)
+
+
+def test_state_emits_ball_collision_candidate() -> None:
+    sm = MatchStateMachine(StateConfig(stable_frames=2, settle_frames=2))
+    sm.set_table_context(inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)], pockets_mm=[], ball_diameter_mm=56)
+
+    out = sm.update(
+        TracksFrame(
+            frame_id=1,
+            ts_cam_ns=1,
+            tracks=[_ball(1, "cue", 100, 100, 35, 0), _ball(2, "solid", 158, 100, 0, 0)],
+        )
+    )
+
+    assert any(event.name == "BALL_COLLISION_CANDIDATE" for event in out.events)
+
+
+def test_state_emits_rail_collision_candidate() -> None:
+    sm = MatchStateMachine(StateConfig(stable_frames=2, settle_frames=2))
+    sm.set_table_context(inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)], pockets_mm=[], ball_diameter_mm=56)
+
+    out = sm.update(TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[_ball(1, "cue", 25, 250, 40, 0)]))
+
+    assert any(event.name == "RAIL_COLLISION_CANDIDATE" for event in out.events)
+
+
+def test_state_emits_probable_pot_on_disappearance_near_pocket() -> None:
+    sm = MatchStateMachine(StateConfig(stable_frames=2, settle_frames=2))
+    sm.set_table_context(inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)], pockets_mm=[(0, 0)], ball_diameter_mm=56)
+    sm.update(TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[_ball(1, "solid", 35, 35, -20, -20)]))
+    sm.phase = MatchPhase.SHOT_ACTIVE
+
+    out = sm.update(TracksFrame(frame_id=6, ts_cam_ns=6, tracks=[]))
+
+    assert any(event.name == "POT_PROBABLE" for event in out.events)
+
+
+def test_state_emits_shot_start_vote_with_two_conditions() -> None:
+    sm = MatchStateMachine(StateConfig(stable_frames=2, settle_frames=2))
+    out = sm.update(
+        TracksFrame(
+            frame_id=1,
+            ts_cam_ns=1_000_000_000,
+            tracks=[_ball(1, "cue", 100, 100, 40, 0), _cue_stick(2, 40, 95, 90, 105)],
+        )
+    )
+
+    assert any(event.name == "SHOT_START_VOTED" for event in out.events)
+    assert out.phase == "SHOT_ACTIVE"

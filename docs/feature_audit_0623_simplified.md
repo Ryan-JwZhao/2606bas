@@ -5,7 +5,7 @@
 状态说明：
 
 - 已实现：代码中已有可运行实现。
-- 本次补齐：本次补上了可运行交互或控制面。
+- 本次补齐：本轮补上了可运行实现、交互或控制面。
 - 部分实现：有底座，但尚未达到 PRD 的完整逻辑。
 - 未实现：当前仓库没有对应生产逻辑。
 
@@ -19,10 +19,10 @@
 | 校正码/编码图案投影 | 本次补齐 | UI 向导可显示 ChArUco 校正码；若 OpenCV aruco 不可用，会 fallback 到编码网格/定位十字。 |
 | 校正结果可视化 | 本次补齐 | UI 可显示桌面多边形、对应点编号、误差统计和局部残差箭头。 |
 | 校准步骤文档 | 本次补齐 | README 增加了主标定、局部精修、holdout 验收和结果判读步骤。 |
-| 图像重投影误差 mean/P95 | 部分实现 | `ProjectionCalibration.calibration_error_stats()` 统计 mean/median/P95/max 像素误差。 |
-| 台面毫米误差 median/P95 | 未实现 | 当前没有 holdout 世界点数据结构和自动验证脚本。 |
-| 分区误差 | 未实现 | 尚未按近端、中段、远端、六袋口区域汇总 P95。 |
-| 误差随距离梯度 | 未实现 | 尚未拟合 `e_mm = alpha + beta d`。 |
+| 图像重投影误差 mean/P95 | 本次补齐 | `ProjectionCalibration.calibration_error_stats()` 可统计标定点像素误差；`verify-calib` 和 UI holdout 验证可统计独立 holdout 的 mean/median/P95/max。 |
+| 台面毫米误差 median/P95 | 本次补齐 | `bas.calibration.verification` 支持 `world_mm + projector_px/camera_px` holdout，输出 median/P95/max 和 MVP/正式验收 verdict。 |
+| 分区误差 | 本次补齐 | Holdout 样本支持 `zone` 字段，报告 `zone_p95_mm`，袋口分区会参与 verdict。 |
+| 误差随距离梯度 | 本次补齐 | Holdout 样本支持 `distance_cm`，自动拟合 `distance_slope_mm_per_cm`；缺少 `distance_cm` 时用世界坐标到默认原点的距离作为可追踪近似。 |
 | 温漂/振动验证 | 未实现 | README 已写验收要求，代码未自动调度 0/15/30 分钟验证。 |
 
 ## 感知与跟踪
@@ -42,14 +42,15 @@
 | PRD 要求 | 当前状态 | 说明 |
 |---|---|---|
 | 六个宏状态 | 已实现 | `STABLE_IDLE/PRE_SHOT_ARMED/SHOT_ACTIVE/SETTLING/TURN_RESOLVE/ANOMALY_RECOVERY` 已在 schema 和状态机中实现。 |
-| 双阈值运动/停止去抖 | 部分实现 | 配置有 `moving_speed_px_s/still_speed_px_s` 和帧计数；当前单位是像素/秒，不是台面 mm/s。 |
-| 击球开始需满足三项中至少两项 | 部分实现 | 当前以球杆可见、cue 运动、全局 moving 触发；尚未实现 cue tip 进入邻域 + 速度跃迁 + 加速度峰值的 2/3 投票。 |
-| 球-球碰撞事件 | 未实现 | 当前状态机未输出 ball collision 事件。 |
-| 库边碰撞事件 | 未实现 | 当前状态机未输出 rail collision 事件。 |
-| 口袋区域 + 轨迹趋势 + 消失确认 | 部分实现 | 当前有 `BALL_DISAPPEARED`，但未结合 pocket funnel、throat 方向和替代轨迹验证。 |
+| 双阈值运动/停止去抖 | 已实现 | 配置有 `moving_speed_mm_s/still_speed_mm_s` 与像素 fallback；pipeline 会补充 `center_mm/velocity_mm_s/radius_mm` 后交给状态机。 |
+| 击球开始需满足三项中至少两项 | 本次补齐 | 状态机输出 `SHOT_START_VOTED`，条件为球杆尖端邻域、母球速度跃迁、母球加速度峰值三项中至少两项成立；无球杆检测时仍保留母球运动 fallback。 |
+| 球-球碰撞事件 | 本次补齐 | 状态机输出 `BALL_COLLISION_CANDIDATE`，payload 包含两球 ID、距离、接触阈值、闭合速度和航向变化。 |
+| 库边碰撞事件 | 本次补齐 | 状态机输出 `RAIL_COLLISION_CANDIDATE`，payload 包含轨迹 ID、边、距离、法向速度和是否反弹。 |
+| 口袋区域 + 轨迹趋势 + 消失确认 | 本次补齐 | 状态机在击球/收敛/结算阶段结合最近口袋距离、速度方向和消失确认输出 `POT_PROBABLE`；不满足条件仍输出 `BALL_DISAPPEARED` 供复核。 |
 | 异常恢复宏状态 | 部分实现 | 已检测多 cue、球数 >16、中心重叠等异常并进入 `ANOMALY_RECOVERY`；尚未做 Hungarian 回滚重配和 `unknown_track` 延迟决策。 |
 | 人工介入控制模块 | 本次补齐 | 状态机新增 `force_phase/set_operator_hold/snapshot_layout/clear_review_flags`；UI 新增强制状态、冻结、确认稳定、重置、清除复核。 |
 | 人工事件进入回放 | 本次补齐 | 操作员动作会写入 `OPERATOR_*` 事件，并随下一帧状态进入 replay JSONL。 |
+| 事件交互排查 | 本次补齐 | UI 事件列表显示事件关键字段，tooltip 展示完整 payload，回放也保留 payload。 |
 
 ## 规划与投影
 
@@ -72,10 +73,11 @@
 | Parquet/SQLite | 未实现 | 当前仅 JSONL，可后续扩展。 |
 | TensorRT/DeepStream/GStreamer | 未实现 | 当前在线栈是 Python + OpenCV + optional Ultralytics。 |
 | UI 模块交互 | 本次补齐 | 主界面新增模块状态表，展示采集、检测、跟踪、状态机、规划、投影、回放、标定状态。 |
+| 诊断快照 | 本次补齐 | 主界面“导出诊断快照”会把配置、模块状态和最新 frame/detection/track/state/plan/overlay 写到 `local_settings/diagnostics`。 |
 
 ## 优先级建议
 
-1. 先补投影校准验证脚本：读取 holdout world/camera/projector 点，输出像素误差、毫米误差、分区 P95、距离梯度。
-2. 再补状态机事件层：cue tip 2/3 击球投票、ball collision、rail collision、pocket funnel 判定。
-3. 然后把 tracker 关联拆成显式 high-pass + low-pass 两阶段 Hungarian，质量分改为 `q_det/q_motion/q_cls/q_geom` 融合。
-4. 最后补联合标定求解器和 B-spline/TPS 局部残差拟合，替换当前邻域加权 residual field。
+1. 把 tracker 关联拆成显式 high-pass + low-pass 两阶段 Hungarian，质量分改为 `q_det/q_motion/q_cls/q_geom` 融合。
+2. 增强异常恢复：最近稳定布局回滚、Hungarian 重配、`unknown_track` 延迟决策和 `needs_review` 回合标记。
+3. 补联合标定求解器和 B-spline/TPS 局部残差拟合，替换当前邻域加权 residual field。
+4. 规划层补摩擦、旋转、能量损失和真实结果闭环学习；当前仍是几何/启发式 MVP。

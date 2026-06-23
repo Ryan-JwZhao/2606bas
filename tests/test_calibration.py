@@ -5,6 +5,7 @@ import numpy as np
 from bas.calibration.camera import CameraCalibration
 from bas.calibration.projector import ProjectionCalibration
 from bas.calibration.service import CalibrationService
+from bas.calibration.verification import format_holdout_report, verify_holdout_samples
 from bas.schemas import TableModel
 
 
@@ -38,3 +39,34 @@ def test_table_mapping_uses_projection_table_bbox() -> None:
     out = service.camera_px_to_table_mm(np.array([[50, 25]], dtype=np.float32))
     assert np.allclose(out[0], [1000, 500], atol=1e-3)
 
+
+def test_holdout_verification_reports_mm_and_image_errors() -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [100, 0], [100, 50], [0, 50]], dtype=np.float64),
+        np.array([[10, 20], [210, 20], [210, 120], [10, 120]], dtype=np.float64),
+        projector_size=(220, 140),
+    )
+    projection.table_polygon_proj = np.array([[10, 20], [210, 20], [210, 120], [10, 120]], dtype=np.float64)
+    service = CalibrationService(
+        camera=CameraCalibration(metadata={}),
+        projection=projection,
+        table=TableModel(
+            width_mm=2000,
+            height_mm=1000,
+            ball_diameter_mm=57.15,
+            inner_polygon_mm=[(0, 0), (2000, 0), (2000, 1000), (0, 1000)],
+            pockets_mm=[],
+        ),
+    )
+    report = verify_holdout_samples(
+        [
+            {"camera_px": [50, 25], "projector_px": [110, 70], "world_mm": [1000, 500], "zone": "middle"},
+            {"camera_px": [75, 25], "projector_px": [160, 70], "world_mm": [1500, 500], "zone": "middle"},
+        ],
+        service,
+    )
+
+    assert report["image_error_px"]["p95"] < 1e-3
+    assert report["table_error_mm"]["p95"] < 1e-3
+    assert report["verdict"]["formal"]
+    assert "正式: 通过" in format_holdout_report(report)

@@ -19,6 +19,7 @@ python -m venv .venv
 ```powershell
 .\.venv\Scripts\python.exe -m bas probe-cameras
 .\.venv\Scripts\python.exe -m bas inspect-calib
+.\.venv\Scripts\python.exe -m bas verify-calib C:\path\to\holdout.json
 .\.venv\Scripts\python.exe -m bas ui
 .\.venv\Scripts\python.exe -m bas run --headless --max-frames 300
 .\.venv\Scripts\python.exe -m bas run
@@ -72,6 +73,7 @@ UI 中的“设置”会保存到 `local_settings/user_settings.json`，该文�
 - 开始/结束采集
 - 开始/停止投影
 - 校正投影仪
+- 导出诊断快照
 
 ## 使用流程
 
@@ -80,7 +82,8 @@ UI 中的“设置”会保存到 `local_settings/user_settings.json`，该文�
 3. 点击“探测相机”，确认工业相机出现在列表中；需要固定曝光时，在“设置”里关闭自动曝光并选择 `-10` 到 `0` 档，当前已按旧版默认填为 `-5`。
 4. 点击“开始采集”。如果启用了畸变矫正，采集帧会先按 OpenCV 内参进行实时去畸变，然后再进入检测、跟踪和规划。
 5. 点击“开始投影”。当前 `local_settings/user_settings.json` 已迁入旧版颗星公式预设，并默认启用；即使暂时没有路线 overlay，也会显示颗星公式网格。
-6. 点击“校正投影仪”会打开投影仪校正向导。向导可以显示 ChArUco 校正码、编码网格、当前校正多边形、对应点和局部残差箭头；重新生成或替换投影校正 JSON 后，再点“显示当前校正结果”即可重新加载预览。
+6. 点击“校正投影仪”会打开投影仪校正向导。向导可以显示 ChArUco 校正码、编码网格、当前校正多边形、对应点、局部残差箭头，并可导入 holdout JSON 做自动验收；重新生成或替换投影校正 JSON 后，再点“显示当前校正结果”即可重新加载预览。
+7. 运行中如需排查问题，点击“导出诊断快照”。当前配置、模块状态、最新 frame/detection/track/state/plan/overlay 会写入 `local_settings/diagnostics/diagnostic_*.json`。
 
 ## 投影仪校准现场步骤
 
@@ -94,6 +97,24 @@ UI 中的“设置”会保存到 `local_settings/user_settings.json`，该文�
 6. 点“显示残差箭头”，检查局部误差方向和覆盖密度。袋口、近端、远端都应有控制点；若某一区域箭头明显同向偏移，需要补采该区域。
 7. 以独立 holdout 验收：图像重投影 `mean < 0.20px, P95 < 0.35px`；台面毫米误差 MVP 阶段 `median < 1.5mm, P95 < 3.0mm`，正式交付建议 `median < 1.0mm, P95 < 2.0mm`；任一袋口区域 P95 应小于 `2.5mm`。
 
+Holdout JSON 可以是数组，也可以是带 `samples` 字段的对象。每个样本建议包含：
+
+```json
+{
+  "samples": [
+    {
+      "camera_px": [123.4, 567.8],
+      "projector_px": [456.7, 321.0],
+      "world_mm": [1000.0, 500.0],
+      "zone": "middle",
+      "distance_cm": 120.0
+    }
+  ]
+}
+```
+
+`camera_px + projector_px` 用于图像重投影误差；`world_mm + projector_px` 或 `world_mm + camera_px` 用于台面毫米误差；`zone` 用于分区 P95；`distance_cm` 用于误差随距离梯度。UI 向导里的“验证 Holdout”和命令行 `verify-calib` 使用同一套计算逻辑。
+
 ## 状态机人工介入
 
 主界面右侧“状态机人工介入”用于现场纠偏：
@@ -105,6 +126,17 @@ UI 中的“设置”会保存到 `local_settings/user_settings.json`，该文�
 - “清除复核标记”：清掉已进洞/异常复核缓存，用于人工确认误判后继续当前局。
 
 右侧“模块状态”会显示采集、检测、跟踪、状态机、规划、投影、回放、标定的运行状态和关键细节，例如检测延迟、轨迹数、候选数、校正有效性和回放会话。
+
+状态机现在会输出以下可排查事件：
+
+- `BALL_COLLISION_CANDIDATE`: 球心距离接近接触阈值，且存在闭合速度或航向变化。
+- `RAIL_COLLISION_CANDIDATE`: 球靠近库边并存在法向速度或反弹迹象。
+- `SHOT_START_VOTED`: 球杆尖端邻域、母球速度跃迁、母球加速度峰值三项中至少两项成立。
+- `POT_PROBABLE`: 球在口袋 funnel 范围内消失，且最后轨迹趋势合理。
+- `BALL_DISAPPEARED`: 球在击球/收敛/结算阶段消失，但不满足口袋趋势，需复核。
+- `OPERATOR_*`: 人工强制状态、冻结、确认稳定布局、清除复核等操作。
+
+事件列表会显示关键字段；鼠标悬停事件项可查看完整 payload，回放 JSONL 中也会记录这些事件。
 
 如果要使用工业相机 SDK：
 

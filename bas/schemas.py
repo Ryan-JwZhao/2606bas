@@ -75,6 +75,9 @@ class TrackObservation:
     group: str
     confidence: float
     velocity_px_s: Point = (0.0, 0.0)
+    center_mm: Optional[Point] = None
+    velocity_mm_s: Optional[Point] = None
+    radius_mm: Optional[float] = None
     quality: float = 1.0
     age: int = 1
     lost_frames: int = 0
@@ -182,4 +185,3 @@ def to_jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [to_jsonable(v) for v in value]
     return value
-

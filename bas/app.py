@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 import numpy as np
@@ -64,7 +64,12 @@ class RuntimePipeline:
         self._update_table_geometry_for_frame(frame)
         mask = self._camera_table_mask(frame)
         detections = self.detector.process(frame, mask_polygon=mask)
-        tracks = self.tracker.update(detections)
+        tracks = self._enrich_tracks_with_table_units(self.tracker.update(detections))
+        self.state_machine.set_table_context(
+            inner_polygon_mm=self.calibration.table.inner_polygon_mm,
+            pockets_mm=self.calibration.table.pockets_mm,
+            ball_diameter_mm=self.calibration.table.ball_diameter_mm,
+        )
         state = self.state_machine.update(tracks)
         plan = self.planner.plan(state)
         overlay = self.overlay_builder.from_plan(plan)
@@ -104,6 +109,30 @@ class RuntimePipeline:
                 pocket_points.append((float(center_mm[0]), float(center_mm[1])))
         if pocket_points:
             self.calibration.table.pockets_mm = pocket_points
+
+    def _enrich_tracks_with_table_units(self, tracks: TracksFrame) -> TracksFrame:
+        enriched = []
+        dt = 0.1
+        for track in tracks.tracks:
+            try:
+                center_px = np.asarray([track.center_px], dtype=np.float32)
+                center_mm = self.calibration.camera_px_to_table_mm(center_px)[0]
+                v_px = np.asarray(track.velocity_px_s, dtype=np.float32)
+                edge_px = np.asarray([[track.center_px[0] + float(v_px[0]) * dt, track.center_px[1] + float(v_px[1]) * dt]], dtype=np.float32)
+                edge_mm = self.calibration.camera_px_to_table_mm(edge_px)[0]
+                velocity_mm = (edge_mm - center_mm) / dt
+                radius_mm = self.calibration.pixel_radius_to_mm(track.center_px, track.radius_px)
+                enriched.append(
+                    replace(
+                        track,
+                        center_mm=(float(center_mm[0]), float(center_mm[1])),
+                        velocity_mm_s=(float(velocity_mm[0]), float(velocity_mm[1])),
+                        radius_mm=float(radius_mm),
+                    )
+                )
+            except Exception:
+                enriched.append(track)
+        return replace(tracks, tracks=enriched)
 
     def _record(self, out: PipelineOutput) -> None:
         if self.recorder is None:

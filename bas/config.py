@@ -72,10 +72,19 @@ class GeometryConfig:
 class StateConfig:
     still_speed_px_s: float = 25.0
     moving_speed_px_s: float = 65.0
+    still_speed_mm_s: float = 8.0
+    moving_speed_mm_s: float = 22.0
     stable_frames: int = 12
     armed_frames: int = 4
     settle_frames: int = 18
     anomaly_frames: int = 8
+    collision_epsilon_mm: float = 10.0
+    rail_epsilon_mm: float = 14.0
+    pocket_funnel_radius_mm: float = 95.0
+    event_cooldown_frames: int = 5
+    shot_tip_radius_multiplier: float = 3.0
+    shot_speed_jump_mm_s: float = 18.0
+    shot_accel_mm_s2: float = 120.0
 
 
 @dataclass

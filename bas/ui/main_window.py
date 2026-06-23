@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -12,6 +13,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from ..app import PipelineOutput, RuntimePipeline
 from ..calibration import create_calibration_service
 from ..calibration.charuco import CharucoBoardSpec, render_charuco_board
+from ..calibration.verification import format_holdout_report, verify_holdout_file
 from ..capture import probe_cameras
 from ..config import AppConfig
 from ..geometry import TableGeometryLoader
@@ -19,7 +21,7 @@ from ..logging_config import configure_logging
 from ..perception import create_detector
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
-from ..schemas import MatchPhase, OverlayLine, ProjectionOverlay
+from ..schemas import MatchPhase, OverlayLine, ProjectionOverlay, to_jsonable
 from ..user_settings import UserSettings
 
 LOGGER = logging.getLogger(__name__)
@@ -303,6 +305,7 @@ class ProjectorCalibrationDialog(QtWidgets.QDialog):
             ("显示编码网格", self.operator.show_projector_encoded_grid),
             ("显示当前校正结果", lambda: self.operator.show_projector_calibration_result(self.calibration)),
             ("显示残差箭头", lambda: self.operator.show_projector_residual_overlay(self.calibration)),
+            ("验证 Holdout", self._verify_holdout),
             ("恢复实时投影", self.operator.resume_runtime_projection),
         ]
         for idx, (text, slot) in enumerate(actions):
@@ -342,6 +345,19 @@ class ProjectorCalibrationDialog(QtWidgets.QDialog):
             lines.append("像素误差: 当前 JSON 没有可统计的 paired correspondences。")
         lines.append("注意: 像素误差只是预检查，正式验收还需要独立 holdout 的毫米误差、分区误差和距离梯度。")
         return "\n".join(lines)
+
+    def _verify_holdout(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "选择 Holdout JSON", str(Path.cwd()), "JSON (*.json);;所有文件 (*.*)")
+        if not path:
+            return
+        try:
+            report = verify_holdout_file(path, self.calibration)
+            text = format_holdout_report(report)
+            self.result.setText(self._summary_text() + "\n\nHoldout 验证:\n" + text)
+            self.operator._append_log("Holdout 验证完成: " + text.replace("\n", " | "))
+        except Exception as exc:
+            self.operator._append_log(f"Holdout 验证失败: {exc}")
+            QtWidgets.QMessageBox.critical(self, "Holdout 验证失败", str(exc))
 
 
 class OperatorWindow(QtWidgets.QMainWindow):
@@ -406,13 +422,15 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.projector_calib_btn = self._button("校正投影仪")
         self.settings_btn = self._button("设置")
         self.probe_btn = self._button("探测相机")
+        self.export_diag_btn = self._button("导出诊断快照")
         self.capture_btn.clicked.connect(self.toggle_capture)
         self.projection_btn.clicked.connect(self.toggle_projection_window)
         self.init_module_btn.clicked.connect(self.initialize_graphics_image_module)
         self.projector_calib_btn.clicked.connect(self.calibrate_projector)
         self.settings_btn.clicked.connect(self.open_settings)
         self.probe_btn.clicked.connect(self.probe_camera_devices)
-        for btn in [self.capture_btn, self.projection_btn, self.init_module_btn, self.projector_calib_btn, self.settings_btn, self.probe_btn]:
+        self.export_diag_btn.clicked.connect(self.export_diagnostic_snapshot)
+        for btn in [self.capture_btn, self.projection_btn, self.init_module_btn, self.projector_calib_btn, self.settings_btn, self.probe_btn, self.export_diag_btn]:
             self.side_layout.addWidget(btn)
         self.side_layout.addSpacing(6)
 
@@ -777,6 +795,41 @@ class OperatorWindow(QtWidgets.QMainWindow):
         sm.clear_review_flags(frame_id=frame_id, ts_cam_ns=ts_cam_ns)
         self._append_log("已清除进洞/异常复核标记")
         self._update_module_status(self.last_output)
+
+    @QtCore.pyqtSlot()
+    def export_diagnostic_snapshot(self) -> None:
+        out_dir = Path("local_settings") / "diagnostics"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"diagnostic_{time.strftime('%Y%m%d_%H%M%S')}.json"
+        payload = {
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "config": to_jsonable(self.config),
+            "star_formula": self.star_formula.to_dict(),
+            "module_status": self._module_status_payload(),
+            "last_output": None,
+        }
+        if self.last_output is not None:
+            payload["last_output"] = {
+                "frame": to_jsonable(self.last_output.frame),
+                "detections": to_jsonable(self.last_output.detections),
+                "tracks": to_jsonable(self.last_output.tracks),
+                "state": to_jsonable(self.last_output.state),
+                "plan": to_jsonable(self.last_output.plan),
+                "overlay": to_jsonable(self.last_output.overlay),
+            }
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        self._append_log(f"诊断快照已导出: {path}")
+
+    def _module_status_payload(self) -> list[dict[str, str]]:
+        rows = []
+        for row in range(self.module_status.rowCount()):
+            values = []
+            for col in range(self.module_status.columnCount()):
+                item = self.module_status.item(row, col)
+                values.append(item.text() if item is not None else "")
+            rows.append({"module": values[0], "status": values[1], "detail": values[2]})
+        return rows
 
     def ensure_projection_window_for_operator(self) -> None:
         self._projection_calibration_mode = True
@@ -1160,12 +1213,29 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     def _update_events(self, out: PipelineOutput) -> None:
         for event in out.state.events:
-            text = f"{out.frame.frame_id}: {event.name}"
+            text = f"{out.frame.frame_id}: {event.name} {self._event_summary(event.payload)}".strip()
             if self.event_list.count() == 0 or self.event_list.item(self.event_list.count() - 1).text() != text:
-                self.event_list.addItem(text)
+                item = QtWidgets.QListWidgetItem(text)
+                if event.payload:
+                    item.setToolTip(json.dumps(event.payload, ensure_ascii=False, indent=2))
+                self.event_list.addItem(item)
         while self.event_list.count() > 80:
             self.event_list.takeItem(0)
         self.event_list.scrollToBottom()
+
+    def _event_summary(self, payload: dict) -> str:
+        if not payload:
+            return ""
+        keys = ["track_id", "track_a", "track_b", "pocket_index", "side", "phase", "distance", "distance_to_pocket_mm", "distance_to_rail"]
+        parts = []
+        for key in keys:
+            if key not in payload:
+                continue
+            value = payload[key]
+            if isinstance(value, float):
+                value = f"{value:.1f}"
+            parts.append(f"{key}={value}")
+        return "[" + ", ".join(parts) + "]" if parts else ""
 
     def _set_running(self, running: bool) -> None:
         self.capture_btn.setText("结束采集" if running else "开始采集")
