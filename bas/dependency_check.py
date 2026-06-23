@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .config import AppConfig
+from . import runtime_env
 from .runtime_env import prepare_runtime_environment, preload_torch
 from .user_settings import UserSettings
 
@@ -45,6 +46,7 @@ def dependency_report() -> list[dict[str, str]]:
     backend = str(cfg.detector.backend or "disabled").lower()
     add("detector_backend", "ok", backend)
     if backend in {"ultralytics", "yolo"}:
+        add("module:torch", *_torch_status())
         add("module:ultralytics", *_yolo_import_status())
         add("detector.device", *_device_status(str(cfg.detector.device or "auto")))
         _check_path(rows, "detector.model_path", cfg.detector.model_path)
@@ -89,15 +91,63 @@ def _yolo_import_status() -> tuple[str, str]:
         return "warning", f"{type(exc).__name__}: {exc}"
 
 
+def _torch_status() -> tuple[str, str]:
+    if not _has_module("torch"):
+        return "missing", "Install CUDA torch from requirements-yolo.txt."
+    torch = preload_torch()
+    if torch is None:
+        detail = runtime_env.TORCH_IMPORT_ERROR
+        return "warning", f"torch import failed: {type(detail).__name__}: {detail}"
+    version = getattr(torch, "__version__", "unknown")
+    cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
+    try:
+        cuda_available = bool(torch.cuda.is_available())
+        cuda_count = int(torch.cuda.device_count()) if cuda_available else 0
+    except Exception as exc:
+        return "warning", f"{version}; cuda check failed: {exc}"
+    if not cuda_available:
+        return "warning", f"{version}; torch.version.cuda={cuda_version}; cuda_available=False"
+    names = []
+    for idx in range(cuda_count):
+        try:
+            names.append(f"cuda:{idx}={torch.cuda.get_device_name(idx)}")
+        except Exception:
+            names.append(f"cuda:{idx}")
+    return "ok", f"{version}; torch.version.cuda={cuda_version}; {'; '.join(names)}"
+
+
 def _device_status(device: str) -> tuple[str, str]:
     requested = str(device or "auto").strip().lower()
-    if requested in {"", "auto", "cpu", "mps"}:
-        return "ok", requested or "auto"
+    if requested in {"cpu", "mps"}:
+        return "ok", requested
+    torch = preload_torch()
+    if requested in {"", "auto"}:
+        if torch is not None:
+            try:
+                if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+                    return "ok", f"auto -> cuda:0 {torch.cuda.get_device_name(0)}"
+            except Exception:
+                pass
+        return "ok", "auto -> cpu"
     if requested.isdigit() or requested.startswith("cuda"):
-        if not _has_module("torch"):
-            return "warning", f"{requested}; torch is not installed"
-        normalized = f"cuda:{requested}" if requested.isdigit() else requested
-        return "warning", f"{normalized}; runtime falls back to CPU when CUDA is unavailable"
+        if torch is None:
+            detail = runtime_env.TORCH_IMPORT_ERROR
+            return "warning", f"{requested}; torch import failed: {type(detail).__name__}: {detail}"
+        if not torch.cuda.is_available():
+            normalized = f"cuda:{requested}" if requested.isdigit() else requested
+            return "warning", f"{normalized}; CUDA unavailable in torch"
+        idx_text = requested
+        if requested == "cuda":
+            idx_text = "0"
+        elif requested.startswith("cuda:"):
+            idx_text = requested.split(":", 1)[1]
+        if not idx_text.isdigit():
+            return "ok", requested
+        idx = int(idx_text)
+        count = int(torch.cuda.device_count())
+        if idx >= count:
+            return "missing", f"cuda:{idx}; only {count} CUDA device(s) visible"
+        return "ok", f"cuda:{idx} {torch.cuda.get_device_name(idx)}"
     return "ok", requested
 
 

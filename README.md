@@ -62,6 +62,8 @@ detector:
 .\.venv\Scripts\python.exe -m bas doctor
 ```
 
+`requirements-yolo.txt` 固定使用 PyTorch CUDA 12.8 轮子，已验证可驱动 RTX 5080。`python -m bas doctor` 会显示 `module:torch`、`torch.version.cuda` 和当前 CUDA 设备名。
+
 UI 中的“设置”会保存到 `local_settings/user_settings.json`，该文件已被 `.gitignore` 忽略。设置页支持：
 
 - 台球模型路径
