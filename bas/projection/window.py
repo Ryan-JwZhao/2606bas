@@ -9,7 +9,8 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ..config import ProjectionConfig
 from ..schemas import ProjectionOverlay
-from .overlay import render_overlay_image
+from .overlay import render_overlay_with_star
+from .star_formula import StarFormulaConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ class ProjectionWindow(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._label)
         self.resize(config.projector_width, config.projector_height)
+        self.star_formula = StarFormulaConfig()
 
     def show_on_configured_screen(self) -> None:
         app = QtWidgets.QApplication.instance()
@@ -41,8 +43,11 @@ class ProjectionWindow(QtWidgets.QWidget):
             self.show()
 
     def set_overlay(self, overlay: ProjectionOverlay) -> None:
-        img = render_overlay_image(overlay)
+        img = render_overlay_with_star(overlay, self.star_formula)
         self.set_image(img)
+
+    def set_star_formula(self, config: StarFormulaConfig) -> None:
+        self.star_formula = config
 
     def set_image(self, image_bgr: np.ndarray) -> None:
         rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
@@ -56,4 +61,3 @@ class ProjectionWindow(QtWidgets.QWidget):
         if pix is not None:
             self._label.setPixmap(pix.scaled(self.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
         super().resizeEvent(event)
-

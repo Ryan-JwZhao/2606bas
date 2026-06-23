@@ -6,7 +6,7 @@
 
 ## 快速运行
 
-双击根目录的 `Start_BAS.cmd` 可以直接打开桌面控制台 UI。
+双击根目录的 `Start_BAS.cmd` 可以直接打开桌面控制台 UI。默认不再启用 synthetic 虚拟画面；真实使用时在 UI 里选择 `auto`、`nori`、`opencv` 或 `video`。
 
 ```powershell
 python -m venv .venv
@@ -45,6 +45,27 @@ detector:
   model_path: C:/path/to/model.pt
   class_names: [cue, solid, stripe, black, cue_stick]
 ```
+
+UI 中的“设置”会保存到 `local_settings/user_settings.json`，该文件已被 `.gitignore` 忽略。设置页支持：
+
+- 台球模型路径
+- 类别文件路径
+- 视频文件路径
+- Nori SDK 目录
+- `outline.json`
+- `inline.json`
+- `pocket.json`
+- 默认投影设备和投影分辨率
+- 颗星公式位置、缩放、旋转、标签偏移等参数
+
+主界面直接支持：
+
+- 输入类型选择：`auto`、`nori`、`opencv`、`video`、`synthetic`
+- 工业相机 ID 选择
+- OpenCV 设备号
+- 分辨率和帧率
+- 开始/结束采集
+- 开始/停止投影
 
 如果要使用工业相机 SDK：
 

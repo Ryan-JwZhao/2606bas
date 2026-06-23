@@ -10,10 +10,12 @@ import numpy as np
 from .calibration import CalibrationService, create_calibration_service
 from .capture import CaptureService, create_capture_service
 from .config import AppConfig
+from .geometry import TableGeometry, TableGeometryLoader
 from .logging_config import configure_logging
 from .perception import DetectService, create_detector
 from .planning import GeometryPhysicsPlanner
 from .projection import OverlayBuilder
+from .projection.star_formula import StarFormulaConfig
 from .replay import ReplayRecorder
 from .schemas import DetectionsFrame, FramePacket, MatchStateFrame, ProjectionOverlay, ShotPlan, TracksFrame
 from .state import MatchStateMachine
@@ -33,15 +35,20 @@ class PipelineOutput:
 
 
 class RuntimePipeline:
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, star_formula: StarFormulaConfig | None = None):
         self.config = config
         self.capture: CaptureService = create_capture_service(config.camera)
         self.calibration: CalibrationService = create_calibration_service(config.calibration)
+        self.geometry: TableGeometry = TableGeometryLoader.load_optional(
+            config.geometry.outline_path,
+            config.geometry.inline_path,
+            config.geometry.pocket_path,
+        )
         self.detector = DetectService(create_detector(config.detector))
         self.tracker = TemporalTracker(config.tracker)
         self.state_machine = MatchStateMachine(config.state)
         self.planner = GeometryPhysicsPlanner(config.planner, self.calibration)
-        self.overlay_builder = OverlayBuilder(config.projection, self.calibration)
+        self.overlay_builder = OverlayBuilder(config.projection, self.calibration, star_formula=star_formula)
         self.recorder: Optional[ReplayRecorder] = ReplayRecorder(config.replay) if config.replay.enabled else None
         LOGGER.info("Capture opened: %s", self.capture.info())
         LOGGER.info("Calibration version: %s", self.calibration.calib_version)
@@ -51,7 +58,8 @@ class RuntimePipeline:
         if frame is None:
             return None
         frame.calib_version = self.calibration.calib_version
-        mask = self._camera_table_mask()
+        self._update_table_geometry_for_frame(frame)
+        mask = self._camera_table_mask(frame)
         detections = self.detector.process(frame, mask_polygon=mask)
         tracks = self.tracker.update(detections)
         state = self.state_machine.update(tracks)
@@ -66,11 +74,33 @@ class RuntimePipeline:
         if self.recorder is not None:
             self.recorder.close()
 
-    def _camera_table_mask(self) -> Optional[np.ndarray]:
+    def _camera_table_mask(self, frame: FramePacket) -> Optional[np.ndarray]:
+        if frame.image is not None and not self.geometry.is_empty:
+            h, w = frame.image.shape[:2]
+            outer, _, _ = self.geometry.scaled(w, h)
+            if outer.shape[0] >= 3:
+                return outer.astype(np.float32)
         poly = self.calibration.projection.table_polygon_cam
         if poly is not None and poly.shape[0] >= 3:
             return poly.astype(np.float32)
         return None
+
+    def _update_table_geometry_for_frame(self, frame: FramePacket) -> None:
+        if frame.image is None or self.geometry.is_empty:
+            return
+        h, w = frame.image.shape[:2]
+        _, inner_px, pockets_px = self.geometry.scaled(w, h)
+        if inner_px.shape[0] >= 3:
+            inner_mm = self.calibration.camera_px_to_table_mm(inner_px)
+            self.calibration.table.inner_polygon_mm = [(float(x), float(y)) for x, y in inner_mm]
+        pocket_points = []
+        for pocket in pockets_px:
+            if pocket.shape[0] >= 2:
+                center = np.mean(pocket, axis=0).reshape((1, 2)).astype(np.float32)
+                center_mm = self.calibration.camera_px_to_table_mm(center)[0]
+                pocket_points.append((float(center_mm[0]), float(center_mm[1])))
+        if pocket_points:
+            self.calibration.table.pockets_mm = pocket_points
 
     def _record(self, out: PipelineOutput) -> None:
         if self.recorder is None:
@@ -145,4 +175,3 @@ def run_qt(config: AppConfig) -> int:
     finally:
         timer.stop()
         pipeline.close()
-

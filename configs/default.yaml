@@ -1,5 +1,5 @@
 camera:
-  backend: synthetic  # auto | nori | opencv | video | synthetic
+  backend: auto  # auto | nori | opencv | video | synthetic
   camera_id: overhead_main
   device_index: 0
   width: 1920
@@ -12,8 +12,9 @@ camera:
   exposure_level: -6
 
 detector:
-  backend: debug_color  # disabled | debug_color | ultralytics
+  backend: disabled  # disabled | debug_color | ultralytics
   model_path:
+  class_file_path:
   class_names: [cue, solid, stripe, black, cue_stick]
   conf: 0.25
   iou: 0.50
@@ -39,6 +40,11 @@ calibration:
   table_width_mm: 2540.0
   table_height_mm: 1270.0
   ball_diameter_mm: 57.15
+
+geometry:
+  outline_path:
+  inline_path:
+  pocket_path:
 
 state:
   still_speed_px_s: 25.0
@@ -72,4 +78,3 @@ replay:
 logging:
   directory: logs
   level: INFO
-

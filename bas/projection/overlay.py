@@ -9,12 +9,14 @@ from ..calibration.service import CalibrationService
 from ..config import ProjectionConfig
 from ..schemas import OverlayLine, ProjectionOverlay, ShotCandidate, ShotPlan
 from ..utils import wall_time_id
+from .star_formula import StarFormulaConfig, draw_star_formula
 
 
 class OverlayBuilder:
-    def __init__(self, config: ProjectionConfig, calibration: CalibrationService):
+    def __init__(self, config: ProjectionConfig, calibration: CalibrationService, star_formula: StarFormulaConfig | None = None):
         self.config = config
         self.calibration = calibration
+        self.star_formula = star_formula or StarFormulaConfig()
 
     def from_plan(self, plan: ShotPlan) -> ProjectionOverlay:
         size = (int(self.config.projector_width), int(self.config.projector_height))
@@ -53,9 +55,8 @@ def render_overlay_image(overlay: ProjectionOverlay, background: Optional[np.nda
         img = np.zeros((height, width, 3), dtype=np.uint8)
     else:
         img = cv2.resize(background, (width, height)).copy()
-    table_color = (20, 80, 44)
     if background is None:
-        img[:] = table_color
+        img[:] = (0, 0, 0)
     for line in overlay.lines:
         pts = np.asarray(line.points, dtype=np.float32).reshape((-1, 2))
         if pts.shape[0] >= 2:
@@ -91,6 +92,12 @@ def render_overlay_image(overlay: ProjectionOverlay, background: Optional[np.nda
     return img
 
 
+def render_overlay_with_star(overlay: ProjectionOverlay, star_formula: StarFormulaConfig) -> np.ndarray:
+    img = render_overlay_image(overlay)
+    draw_star_formula(img, star_formula)
+    return img
+
+
 def _draw_arrow_head(img: np.ndarray, a: np.ndarray, b: np.ndarray, color: Tuple[int, int, int], width: int) -> None:
     v = np.asarray(b, dtype=np.float32) - np.asarray(a, dtype=np.float32)
     n = float(np.linalg.norm(v))
@@ -103,4 +110,3 @@ def _draw_arrow_head(img: np.ndarray, a: np.ndarray, b: np.ndarray, color: Tuple
     p2 = p1 - d * size + perp * size * 0.45
     p3 = p1 - d * size - perp * size * 0.45
     cv2.fillConvexPoly(img, np.round(np.vstack([p1, p2, p3])).astype(np.int32), color, cv2.LINE_AA)
-

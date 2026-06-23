@@ -17,6 +17,8 @@ env/
 logs/
 outputs/
 replays/
+local_settings/
+user_settings.json
 session_*/
 bas.log
 captures/

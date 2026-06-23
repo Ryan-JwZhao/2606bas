@@ -28,6 +28,7 @@ class CameraConfig:
 class DetectorConfig:
     backend: str = "disabled"  # disabled | ultralytics
     model_path: Optional[str] = None
+    class_file_path: Optional[str] = None
     class_names: List[str] = field(default_factory=lambda: ["cue", "solid", "stripe", "black", "cue_stick"])
     conf: float = 0.25
     iou: float = 0.5
@@ -56,6 +57,13 @@ class CalibrationConfig:
     table_width_mm: float = 2540.0
     table_height_mm: float = 1270.0
     ball_diameter_mm: float = 57.15
+
+
+@dataclass
+class GeometryConfig:
+    outline_path: Optional[str] = None
+    inline_path: Optional[str] = None
+    pocket_path: Optional[str] = None
 
 
 @dataclass
@@ -107,6 +115,7 @@ class AppConfig:
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     tracker: TrackerConfig = field(default_factory=TrackerConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
+    geometry: GeometryConfig = field(default_factory=GeometryConfig)
     state: StateConfig = field(default_factory=StateConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     projection: ProjectionConfig = field(default_factory=ProjectionConfig)
@@ -135,6 +144,7 @@ class AppConfig:
             detector=section("detector", DetectorConfig),
             tracker=section("tracker", TrackerConfig),
             calibration=section("calibration", CalibrationConfig),
+            geometry=section("geometry", GeometryConfig),
             state=section("state", StateConfig),
             planner=section("planner", PlannerConfig),
             projection=section("projection", ProjectionConfig),
@@ -153,13 +163,24 @@ class AppConfig:
         if self.detector.model_path:
             p = resolve_path(self.detector.model_path, base=base)
             self.detector.model_path = str(p) if p else None
+        if self.detector.class_file_path:
+            p = resolve_path(self.detector.class_file_path, base=base)
+            self.detector.class_file_path = str(p) if p else None
         if self.calibration.camera_file:
             p = resolve_path(self.calibration.camera_file, base=base)
             self.calibration.camera_file = str(p) if p else None
         if self.calibration.projection_file:
             p = resolve_path(self.calibration.projection_file, base=base)
             self.calibration.projection_file = str(p) if p else None
+        if self.geometry.outline_path:
+            p = resolve_path(self.geometry.outline_path, base=base)
+            self.geometry.outline_path = str(p) if p else None
+        if self.geometry.inline_path:
+            p = resolve_path(self.geometry.inline_path, base=base)
+            self.geometry.inline_path = str(p) if p else None
+        if self.geometry.pocket_path:
+            p = resolve_path(self.geometry.pocket_path, base=base)
+            self.geometry.pocket_path = str(p) if p else None
         self.logging.directory = str(resolve_path(self.logging.directory, base=base) or Path(self.logging.directory))
         self.replay.directory = str(resolve_path(self.replay.directory, base=base) or Path(self.replay.directory))
         return self
-

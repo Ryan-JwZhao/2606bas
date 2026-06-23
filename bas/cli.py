@@ -14,6 +14,7 @@ from .logging_config import configure_logging
 from .replay import ReplayReader
 from .schemas import to_jsonable
 from .ui import run_operator_ui
+from .user_settings import UserSettings
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -39,7 +40,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_smoke.add_argument("--frames", type=int, default=90)
 
     args = parser.parse_args(argv)
-    cfg = AppConfig.load(args.config).resolve_paths()
+    cfg = UserSettings.load().apply_to_config(AppConfig.load(args.config)).resolve_paths()
 
     if args.command in {None, "ui"}:
         return run_operator_ui(cfg)

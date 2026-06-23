@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 import cv2
@@ -198,6 +199,7 @@ class UltralyticsDetector(Detector):
 
 def create_detector(config: DetectorConfig) -> Detector:
     backend = str(config.backend or "disabled").lower()
+    class_names = _load_class_names(config.class_file_path) if config.class_file_path else list(config.class_names)
     if backend == "disabled":
         return DisabledDetector()
     if backend in {"debug_color", "color", "synthetic"}:
@@ -207,7 +209,7 @@ def create_detector(config: DetectorConfig) -> Detector:
             raise ValueError("detector.model_path is required for Ultralytics detector.")
         return UltralyticsDetector(
             model_path=config.model_path,
-            class_names=config.class_names,
+            class_names=class_names,
             conf=config.conf,
             iou=config.iou,
             device=config.device,
@@ -218,3 +220,22 @@ def create_detector(config: DetectorConfig) -> Detector:
         )
     raise ValueError(f"Unsupported detector backend: {config.backend}")
 
+
+def _load_class_names(path: str) -> List[str]:
+    p = Path(path)
+    if not p.exists():
+        return []
+    text = p.read_text(encoding="utf-8-sig").strip()
+    if not text:
+        return []
+    if p.suffix.lower() == ".json":
+        import json
+
+        data = json.loads(text)
+        if isinstance(data, dict):
+            if "names" in data and isinstance(data["names"], list):
+                return [str(x) for x in data["names"]]
+            return [str(data[k]) for k in sorted(data.keys(), key=lambda x: int(x) if str(x).isdigit() else str(x))]
+        if isinstance(data, list):
+            return [str(x) for x in data]
+    return [line.strip() for line in text.splitlines() if line.strip()]
