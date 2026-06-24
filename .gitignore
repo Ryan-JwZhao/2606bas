@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.tmp/
 pytest_tmp*/
 pytest_cache_local/
 .mypy_cache/
@@ -32,6 +33,7 @@ recordings/
 debug_frames/
 tmp/
 temp/
+*.tmp
 
 # Learning samples and training outputs
 rl/data/*

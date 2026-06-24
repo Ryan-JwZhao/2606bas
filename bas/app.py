@@ -10,7 +10,8 @@ import numpy as np
 from .calibration import CalibrationService, create_calibration_service
 from .capture import CaptureService, create_capture_service
 from .config import AppConfig
-from .geometry import TableGeometry, TableGeometryLoader
+from .geometry import TableGeometry
+from .geometry_runtime import RuntimeGeometryReloader
 from .learning import LearningSampleRecorder
 from .logging_config import configure_logging
 from .perception import DetectService, create_detector
@@ -43,7 +44,8 @@ class RuntimePipeline:
             config.calibration,
             frame_undistorted=self.capture.frame_distortion_corrected,
         )
-        self.geometry: TableGeometry = TableGeometryLoader.load_optional(
+        self.geometry_reloader = RuntimeGeometryReloader()
+        self.geometry, _ = self.geometry_reloader.refresh(
             config.geometry.outline_path,
             config.geometry.inline_path,
             config.geometry.pocket_path,
@@ -72,6 +74,7 @@ class RuntimePipeline:
     def step(self) -> Optional[PipelineOutput]:
         total_start = time.perf_counter()
         stage_start = total_start
+        self._refresh_geometry_if_needed()
         frame = self.capture.read()
         capture_ms = (time.perf_counter() - stage_start) * 1000.0
         if frame is None:
@@ -141,6 +144,26 @@ class RuntimePipeline:
             self.recorder.close()
         if self.learning_recorder is not None:
             self.learning_recorder.close()
+
+    def _refresh_geometry_if_needed(self) -> None:
+        geometry, changed = self.geometry_reloader.refresh(
+            self.config.geometry.outline_path,
+            self.config.geometry.inline_path,
+            self.config.geometry.pocket_path,
+        )
+        if not changed:
+            return
+        self.geometry = geometry
+        self._last_state = None
+        self._last_plan = None
+        self._last_overlay = None
+        LOGGER.info(
+            "Geometry hot-reloaded: outline=%s inline=%s pocket=%s empty=%s",
+            self.config.geometry.outline_path,
+            self.config.geometry.inline_path,
+            self.config.geometry.pocket_path,
+            self.geometry.is_empty,
+        )
 
     def _camera_table_mask(self, frame: FramePacket) -> Optional[np.ndarray]:
         if frame.image is not None and not self.geometry.is_empty:
