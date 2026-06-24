@@ -6,9 +6,9 @@
 
 ## 快速运行
 
-双击根目录的 `Start_BAS_One_Click.cmd` 可以直接打开桌面控制台 UI。默认不再启用 synthetic 虚拟画面；真实使用时在 UI 里选择 `auto`、`nori`、`opencv` 或 `video`。
+双击根目录的 `Start_BAS.cmd` 可以直接打开桌面控制台 UI。默认不再启用 synthetic 虚拟画面；真实使用时在 UI 里选择 `auto`、`nori`、`opencv` 或 `video`。
 
-当前工作区的 `.venv` 已安装运行、YOLO 和学习训练依赖。`Start_BAS_One_Click.cmd` 只做本地依赖检查并启动 UI，不会要求手工安装依赖。若以后移动目录或破坏 `.venv`，再运行一次：
+当前工作区的 `.venv` 已安装运行、YOLO 和学习训练依赖。`Start_BAS.cmd` 只负责设置本地运行目录并启动 UI，不会要求手工安装依赖。若以后移动目录或破坏 `.venv`，再运行一次：
 
 ```powershell
 .\Setup_Environment.cmd

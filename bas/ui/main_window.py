@@ -40,6 +40,25 @@ COMMON_RESOLUTIONS = ["1920x1080", "3840x2160", "2560x1440", "1280x720", "1280x8
 COMMON_FPS = ["30", "60", "120", "164"]
 
 
+class _PipelineStartWorker(QtCore.QObject):
+    finished = QtCore.pyqtSignal(object)
+    failed = QtCore.pyqtSignal(str)
+
+    def __init__(self, config: AppConfig, star_formula: StarFormulaConfig):
+        super().__init__()
+        self.config = config
+        self.star_formula = star_formula
+
+    @QtCore.pyqtSlot()
+    def run(self) -> None:
+        try:
+            pipeline = RuntimePipeline(self.config, star_formula=self.star_formula)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.finished.emit(pipeline)
+
+
 class SettingsDialog(QtWidgets.QDialog):
     def __init__(self, config: AppConfig, star_formula: StarFormulaConfig, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -411,6 +430,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.user_settings = UserSettings.load()
         self.star_formula = StarFormulaConfig.from_mapping(self.user_settings.star_formula)
         self.pipeline: Optional[RuntimePipeline] = None
+        self._pipeline_start_thread: Optional[QtCore.QThread] = None
+        self._pipeline_start_worker: Optional[_PipelineStartWorker] = None
         self.projection_window: Optional[ProjectionWindow] = None
         self.last_output: Optional[PipelineOutput] = None
         self._last_preview_bgr: Optional[np.ndarray] = None
@@ -1125,26 +1146,53 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.stop_pipeline()
 
     def start_pipeline(self) -> None:
+        if self._pipeline_start_thread is not None:
+            self._append_log("采集正在启动中")
+            return
         self._sync_config_from_controls()
         self._save_user_settings()
         self._append_log("启动采集中")
-        try:
-            self.pipeline = RuntimePipeline(self.config, star_formula=self.star_formula)
-        except Exception as exc:
-            self.pipeline = None
-            self._append_log(f"启动失败: {exc}")
-            QtWidgets.QMessageBox.critical(self, "启动失败", str(exc))
-            return
+        self._set_starting(True)
+        thread = QtCore.QThread(self)
+        worker = _PipelineStartWorker(self.config, self.star_formula)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(self._pipeline_started)
+        worker.failed.connect(self._pipeline_failed)
+        worker.finished.connect(thread.quit)
+        worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(self._clear_pipeline_start_worker)
+        self._pipeline_start_thread = thread
+        self._pipeline_start_worker = worker
+        thread.start()
+
+    @QtCore.pyqtSlot(object)
+    def _pipeline_started(self, pipeline: RuntimePipeline) -> None:
+        self.pipeline = pipeline
         self.frame_count = 0
         self.started_at = time.perf_counter()
         self._frame_busy = False
         self._last_preview_update_ts = 0.0
         self._last_metrics_update_ts = 0.0
         self._last_heavy_ui_update_ts = 0.0
-        self.timer.start(0)
         self._set_running(True)
         self._update_module_status()
         self._append_log("采集已启动")
+        self.timer.start(self._capture_timer_interval_ms())
+
+    @QtCore.pyqtSlot(str)
+    def _pipeline_failed(self, message: str) -> None:
+        self.pipeline = None
+        self._set_running(False)
+        self._append_log(f"启动失败: {message}")
+        QtWidgets.QMessageBox.critical(self, "启动失败", message)
+
+    @QtCore.pyqtSlot()
+    def _clear_pipeline_start_worker(self) -> None:
+        self._pipeline_start_thread = None
+        self._pipeline_start_worker = None
 
     def stop_pipeline(self) -> None:
         self.timer.stop()
@@ -1230,7 +1278,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     def _tick(self) -> None:
         if self._frame_busy:
-            self.timer.start(0)
+            self.timer.start(self._capture_timer_interval_ms())
             return
         if self.pipeline is None:
             return
@@ -1258,7 +1306,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         finally:
             self._frame_busy = False
             if self.pipeline is not None:
-                self.timer.start(0)
+                self.timer.start(self._capture_timer_interval_ms())
 
     def _update_preview(self, out: PipelineOutput) -> None:
         frame = out.frame.image
@@ -1346,6 +1394,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     def _set_running(self, running: bool) -> None:
         self.capture_btn.setText("结束采集" if running else "开始采集")
+        self.capture_btn.setEnabled(True)
         self.backend_combo.setEnabled(not running)
         self.nori_device_combo.setEnabled(not running)
         self.device_spin.setEnabled(not running)
@@ -1354,6 +1403,28 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.init_module_btn.setEnabled(not running)
         self.replay_check.setEnabled(not running)
         self.status_label.setText("运行中" if running else "离线")
+
+    def _set_starting(self, starting: bool) -> None:
+        if not starting:
+            self._set_running(False)
+            return
+        self.capture_btn.setText("启动中...")
+        self.capture_btn.setEnabled(False)
+        self.backend_combo.setEnabled(False)
+        self.nori_device_combo.setEnabled(False)
+        self.device_spin.setEnabled(False)
+        self.resolution_combo.setEnabled(False)
+        self.fps_combo.setEnabled(False)
+        self.init_module_btn.setEnabled(False)
+        self.replay_check.setEnabled(False)
+        self.status_label.setText("启动中")
+
+    def _capture_timer_interval_ms(self) -> int:
+        try:
+            fps = float(self.config.camera.fps)
+        except Exception:
+            fps = 30.0
+        return max(1, int(round(1000.0 / max(1.0, fps))))
 
     def _append_log(self, text: str) -> None:
         stamp = time.strftime("%H:%M:%S")
