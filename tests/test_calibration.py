@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import numpy as np
+import cv2
+import pytest
 
 from bas.calibration.camera import CameraCalibration
+from bas.calibration.charuco import CharucoBoardSpec, detect_charuco_corners, render_charuco_board
 from bas.calibration.projector import ProjectionCalibration
 from bas.calibration.service import CalibrationService
 from bas.calibration.verification import format_holdout_report, verify_holdout_samples
@@ -16,6 +19,18 @@ def test_projection_residual_maps_control_points_exactly() -> None:
     calib = ProjectionCalibration.fit_from_correspondences(cam, proj, projector_size=(300, 200))
     pred = calib.camera_to_projector_points(cam)
     assert np.max(np.linalg.norm(pred - proj, axis=1)) < 1e-3
+
+
+def test_rendered_charuco_board_can_be_detected() -> None:
+    aruco = getattr(cv2, "aruco", None)
+    if aruco is None or (not hasattr(aruco, "CharucoDetector") and not hasattr(aruco, "interpolateCornersCharuco")):
+        pytest.skip("OpenCV ChArUco detection support is unavailable.")
+    spec = CharucoBoardSpec(squares_x=6, squares_y=5, square_length_m=0.025, marker_length_m=0.018, dictionary_id=0)
+    image = render_charuco_board(spec, width_px=1200, height_px=1000)
+    corners, ids = detect_charuco_corners(image, spec)
+
+    assert len(corners) > 0
+    assert len(corners) == len(ids)
 
 
 def test_table_mapping_uses_projection_table_bbox() -> None:

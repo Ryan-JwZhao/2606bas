@@ -153,6 +153,8 @@ Holdout JSON 可以是数组，也可以是带 `samples` 字段的对象。每�
 
 `camera_px + projector_px` 用于图像重投影误差；`world_mm + projector_px` 或 `world_mm + camera_px` 用于台面毫米误差；`zone` 用于分区 P95；`distance_cm` 用于误差随距离梯度。UI 向导里的“验证 Holdout”和命令行 `verify-calib` 使用同一套计算逻辑。
 
+更完整的现场操作、文件格式、验收阈值和故障排查见 `docs/projection_calibration_workflow.md`。A4 横向打印 ChArUco 主板见 `docs/calibration_assets/charuco_a4_landscape_10x7_25mm.svg`。
+
 ## 状态机人工介入
 
 主界面右侧“状态机人工介入”用于现场纠偏：

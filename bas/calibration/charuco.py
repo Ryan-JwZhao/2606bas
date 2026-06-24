@@ -58,6 +58,12 @@ def detect_charuco_corners(frame_bgr: np.ndarray, spec: CharucoBoardSpec) -> Tup
     dictionary = aruco.getPredefinedDictionary(spec.dictionary_id)
     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
     params = aruco.DetectorParameters()
+    if hasattr(aruco, "CharucoDetector"):
+        detector = aruco.CharucoDetector(board)
+        charuco_corners, charuco_ids, _, _ = detector.detectBoard(gray)
+        if charuco_corners is None or charuco_ids is None:
+            return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+        return charuco_corners.reshape((-1, 2)).astype(np.float32), charuco_ids.flatten().astype(np.int32)
     try:
         detector = aruco.ArucoDetector(dictionary, params)
         marker_corners, marker_ids, _ = detector.detectMarkers(gray)
@@ -65,6 +71,8 @@ def detect_charuco_corners(frame_bgr: np.ndarray, spec: CharucoBoardSpec) -> Tup
         marker_corners, marker_ids, _ = aruco.detectMarkers(gray, dictionary, parameters=params)
     if marker_ids is None or len(marker_ids) == 0:
         return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.int32)
+    if not hasattr(aruco, "interpolateCornersCharuco"):
+        raise RuntimeError("OpenCV ChArUco corner interpolation is unavailable. Install opencv-contrib-python or use a newer OpenCV with CharucoDetector.")
     _, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(
         marker_corners,
         marker_ids,
