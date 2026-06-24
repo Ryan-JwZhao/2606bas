@@ -798,6 +798,68 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def _save_user_settings(self) -> None:
         UserSettings.from_config(self.config, self.star_formula.to_dict()).save()
 
+    def _pipeline_restart_signature(self) -> tuple:
+        return (
+            self.config.camera.backend,
+            self.config.camera.device_index,
+            self.config.camera.nori_device_id,
+            self.config.camera.width,
+            self.config.camera.height,
+            self.config.camera.fps,
+            self.config.camera.video_path,
+            self.config.camera.nori_sdk_root,
+            self.config.camera.exposure_auto,
+            self.config.camera.exposure_level,
+            self.config.camera.distortion_correction_enabled,
+            self.config.camera.distortion_correction_file,
+            self.config.detector.backend,
+            self.config.detector.model_path,
+            self.config.detector.class_file_path,
+            tuple(self.config.detector.class_names),
+            self.config.detector.conf,
+            self.config.detector.iou,
+            self.config.detector.device,
+            self.config.detector.tile_size,
+            self.config.detector.tile_overlap,
+            self.config.detector.max_det_per_tile,
+            self.config.detector.batch_size,
+            self.config.detector.detect_interval_frames,
+            self.config.detector.detect_fps_limit_hz,
+            self.config.calibration.camera_file,
+            self.config.calibration.projection_file,
+            self.config.calibration.table_width_mm,
+            self.config.calibration.table_height_mm,
+            self.config.calibration.ball_diameter_mm,
+            self.config.geometry.outline_path,
+            self.config.geometry.inline_path,
+            self.config.geometry.pocket_path,
+            self.config.planner.enabled,
+            self.config.planner.max_cut_angle_deg,
+            self.config.planner.top_k,
+            self.config.planner.cue_path_margin_mm,
+            self.config.planner.object_path_margin_mm,
+            self.config.planner.collision_padding_mm,
+            self.config.learning.ranker_enabled,
+            self.config.learning.ranker_model_path,
+            self.config.learning.score_blend,
+            self.config.learning.collect_enabled,
+            self.config.learning.samples_directory,
+            self.config.learning.min_candidates,
+            self.config.replay.enabled,
+            self.config.replay.directory,
+            self.config.replay.write_video,
+            self.config.replay.write_debug_frames,
+        )
+
+    def _projection_signature(self) -> tuple:
+        return (
+            self.config.projection.enabled,
+            self.config.projection.projector_width,
+            self.config.projection.projector_height,
+            self.config.projection.screen_index,
+            self.config.projection.fullscreen,
+        )
+
     def _state_machine_or_none(self):
         if self.pipeline is None:
             self._append_log("状态机尚未启动，请先开始采集")
@@ -1208,6 +1270,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot()
     def open_settings(self) -> None:
+        pipeline_signature_before = self._pipeline_restart_signature()
+        projection_signature_before = self._projection_signature()
         dialog = SettingsDialog(self.config, self.star_formula, self)
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
@@ -1215,10 +1279,24 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.star_formula = dialog.star_formula_config()
         self._sync_controls_from_config()
         self._save_user_settings()
+        pipeline_changed = pipeline_signature_before != self._pipeline_restart_signature()
+        projection_changed = projection_signature_before != self._projection_signature()
         if self.projection_window is not None:
-            self.projection_window.set_star_formula(self.star_formula)
+            if projection_changed:
+                self.projection_window.close()
+                self.projection_window = None
+                self._ensure_projection_window()
+                self._append_log("投影设置已更新，投影窗口已重建")
+            else:
+                self.projection_window.set_star_formula(self.star_formula)
             self._refresh_projection()
         self._append_log("设置已保存")
+        if self.pipeline is not None and pipeline_changed:
+            self._append_log("运行参数已变化，正在重启采集以应用设置")
+            self.stop_pipeline()
+            self.start_pipeline()
+        elif self._pipeline_start_thread is not None and pipeline_changed:
+            self._append_log("运行参数已变化，将在本次启动完成后下次采集生效")
 
     @QtCore.pyqtSlot()
     def probe_camera_devices(self) -> None:

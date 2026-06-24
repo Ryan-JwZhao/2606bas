@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+import json
+
+from bas.config import AppConfig
+from bas.user_settings import UserSettings
+
+
+def test_user_settings_can_clear_default_paths_and_save_false_values(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "nori_sdk_root": None,
+                "model_path": None,
+                "class_file_path": None,
+                "distortion_correction_enabled": False,
+                "distortion_correction_file": None,
+                "exposure_auto": True,
+                "learning_ranker_model_path": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig()
+    cfg.camera.nori_sdk_root = "C:/sdk"
+    cfg.detector.model_path = "C:/model.pt"
+    cfg.detector.class_file_path = "C:/classes.txt"
+    cfg.camera.distortion_correction_enabled = True
+    cfg.camera.distortion_correction_file = "C:/intrinsics.yaml"
+    cfg.camera.exposure_auto = False
+    cfg.learning.ranker_model_path = "C:/ranker.json"
+
+    UserSettings.load(path).apply_to_config(cfg)
+
+    assert cfg.camera.nori_sdk_root is None
+    assert cfg.detector.model_path is None
+    assert cfg.detector.class_file_path is None
+    assert cfg.camera.distortion_correction_enabled is False
+    assert cfg.camera.distortion_correction_file is None
+    assert cfg.camera.exposure_auto is True
+    assert cfg.learning.ranker_model_path is None
+
+
+def test_user_settings_save_does_not_persist_internal_loaded_key_state(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    settings = UserSettings(exposure_auto=True)
+    settings._provided_keys.add("exposure_auto")
+    settings._loaded_from_file = True
+
+    settings.save(path)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+
+    assert "_provided_keys" not in saved
+    assert "_loaded_from_file" not in saved
+    assert saved["exposure_auto"] is True
+
+
+def test_missing_user_settings_does_not_clear_default_config_paths(tmp_path) -> None:
+    cfg = AppConfig()
+    cfg.detector.model_path = "C:/model.pt"
+    cfg.detector.class_file_path = "C:/classes.txt"
+    cfg.camera.distortion_correction_file = "C:/intrinsics.yaml"
+
+    UserSettings.load(tmp_path / "missing.json").apply_to_config(cfg)
+
+    assert cfg.detector.model_path == "C:/model.pt"
+    assert cfg.detector.class_file_path == "C:/classes.txt"
+    assert cfg.camera.distortion_correction_file == "C:/intrinsics.yaml"

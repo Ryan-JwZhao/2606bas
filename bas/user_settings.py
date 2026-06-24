@@ -46,6 +46,8 @@ class UserSettings:
     learning_collect_enabled: Optional[bool] = None
     learning_samples_directory: Optional[str] = None
     star_formula: Dict[str, Any] = field(default_factory=dict)
+    _provided_keys: set[str] = field(default_factory=set, repr=False, compare=False)
+    _loaded_from_file: bool = field(default=False, repr=False, compare=False)
 
     @classmethod
     def load(cls, path: Path = SETTINGS_PATH) -> "UserSettings":
@@ -55,20 +57,28 @@ class UserSettings:
             data = json.load(f)
         if not isinstance(data, dict):
             return cls()
-        allowed = cls.__dataclass_fields__.keys()
-        return cls(**{k: v for k, v in data.items() if k in allowed})
+        allowed = {k for k in cls.__dataclass_fields__.keys() if not k.startswith("_")}
+        settings = cls(**{k: v for k, v in data.items() if k in allowed})
+        settings._provided_keys = {k for k in data.keys() if k in allowed}
+        settings._loaded_from_file = True
+        return settings
 
     def save(self, path: Path = SETTINGS_PATH) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        data = asdict(self)
+        data.pop("_provided_keys", None)
+        data.pop("_loaded_from_file", None)
         with path.open("w", encoding="utf-8") as f:
-            json.dump(asdict(self), f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
 
     def apply_to_config(self, config: AppConfig) -> AppConfig:
-        if self.camera_backend:
+        if self._has("camera_backend") and self.camera_backend:
             config.camera.backend = self.camera_backend
         if self.camera_device_index is not None:
             config.camera.device_index = int(self.camera_device_index)
-        if self.nori_device_id is not None:
+        if self._has("nori_device_id"):
+            config.camera.nori_device_id = int(self.nori_device_id) if self.nori_device_id is not None else None
+        elif self.nori_device_id is not None:
             config.camera.nori_device_id = int(self.nori_device_id)
         if self.width is not None:
             config.camera.width = int(self.width)
@@ -76,38 +86,38 @@ class UserSettings:
             config.camera.height = int(self.height)
         if self.fps is not None:
             config.camera.fps = int(self.fps)
-        if self.video_path:
-            config.camera.video_path = self.video_path
-        if self.nori_sdk_root:
-            config.camera.nori_sdk_root = self.nori_sdk_root
+        if self._has("video_path"):
+            config.camera.video_path = _clean_optional_text(self.video_path)
+        if self._has("nori_sdk_root"):
+            config.camera.nori_sdk_root = _clean_optional_text(self.nori_sdk_root)
         if self.exposure_auto is not None:
             config.camera.exposure_auto = bool(self.exposure_auto)
         if self.exposure_level is not None:
             config.camera.exposure_level = max(-10, min(0, int(self.exposure_level)))
         if self.distortion_correction_enabled is not None:
             config.camera.distortion_correction_enabled = bool(self.distortion_correction_enabled)
-        if self.distortion_correction_file:
-            config.camera.distortion_correction_file = self.distortion_correction_file
-        if self.detector_backend:
+        if self._has("distortion_correction_file"):
+            config.camera.distortion_correction_file = _clean_optional_text(self.distortion_correction_file)
+        if self._has("detector_backend") and self.detector_backend:
             config.detector.backend = self.detector_backend
-        if self.model_path:
-            config.detector.model_path = self.model_path
-        if self.class_file_path:
-            config.detector.class_file_path = self.class_file_path
+        if self._has("model_path"):
+            config.detector.model_path = _clean_optional_text(self.model_path)
+        if self._has("class_file_path"):
+            config.detector.class_file_path = _clean_optional_text(self.class_file_path)
         if self.detect_interval_frames is not None:
             config.detector.detect_interval_frames = max(1, int(self.detect_interval_frames))
         if self.detect_fps_limit_hz is not None:
             config.detector.detect_fps_limit_hz = max(0.0, float(self.detect_fps_limit_hz))
-        if self.outline_path:
-            config.geometry.outline_path = self.outline_path
-        if self.inline_path:
-            config.geometry.inline_path = self.inline_path
-        if self.pocket_path:
-            config.geometry.pocket_path = self.pocket_path
-        if self.camera_calibration_file:
-            config.calibration.camera_file = self.camera_calibration_file
-        if self.projection_calibration_file:
-            config.calibration.projection_file = self.projection_calibration_file
+        if self._has("outline_path"):
+            config.geometry.outline_path = _clean_optional_text(self.outline_path)
+        if self._has("inline_path"):
+            config.geometry.inline_path = _clean_optional_text(self.inline_path)
+        if self._has("pocket_path"):
+            config.geometry.pocket_path = _clean_optional_text(self.pocket_path)
+        if self._has("camera_calibration_file"):
+            config.calibration.camera_file = _clean_optional_text(self.camera_calibration_file)
+        if self._has("projection_calibration_file"):
+            config.calibration.projection_file = _clean_optional_text(self.projection_calibration_file)
         if self.projection_screen_index is not None:
             config.projection.screen_index = int(self.projection_screen_index)
         if self.projection_width is not None:
@@ -118,15 +128,20 @@ class UserSettings:
             config.replay.enabled = bool(self.replay_enabled)
         if self.learning_ranker_enabled is not None:
             config.learning.ranker_enabled = bool(self.learning_ranker_enabled)
-        if self.learning_ranker_model_path:
-            config.learning.ranker_model_path = self.learning_ranker_model_path
+        if self._has("learning_ranker_model_path"):
+            config.learning.ranker_model_path = _clean_optional_text(self.learning_ranker_model_path)
         if self.learning_score_blend is not None:
             config.learning.score_blend = max(0.0, min(1.0, float(self.learning_score_blend)))
         if self.learning_collect_enabled is not None:
             config.learning.collect_enabled = bool(self.learning_collect_enabled)
-        if self.learning_samples_directory:
+        if self._has("learning_samples_directory") and self.learning_samples_directory:
             config.learning.samples_directory = self.learning_samples_directory
         return config
+
+    def _has(self, name: str) -> bool:
+        if self._loaded_from_file:
+            return name in self._provided_keys
+        return getattr(self, name) is not None
 
     @classmethod
     def from_config(cls, config: AppConfig, star_formula: Optional[Dict[str, Any]] = None) -> "UserSettings":
@@ -164,3 +179,10 @@ class UserSettings:
             learning_samples_directory=config.learning.samples_directory,
             star_formula=dict(star_formula or {}),
         )
+
+
+def _clean_optional_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
