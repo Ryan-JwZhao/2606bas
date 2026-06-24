@@ -60,11 +60,13 @@ state:
 
 planner:
   enabled: true
+  shot_mode: rule
   max_cut_angle_deg: 80.0
   top_k: 5
   cue_path_margin_mm: 3.0
   object_path_margin_mm: 3.0
   collision_padding_mm: 2.0
+  free_max_collisions: 2
 
 learning:
   ranker_enabled: true

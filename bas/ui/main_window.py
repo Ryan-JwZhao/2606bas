@@ -33,6 +33,7 @@ from ..perception import create_detector
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
 from ..schemas import MatchPhase, OverlayLine, ProjectionOverlay, to_jsonable
+from ..utils import unit
 
 LOGGER = logging.getLogger(__name__)
 
@@ -533,6 +534,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.replay_check = QtWidgets.QCheckBox("记录回放")
         self.replay_check.setChecked(self.config.replay.enabled)
         self.side_layout.addWidget(self.replay_check)
+        self.shot_mode_combo = QtWidgets.QComboBox()
+        self.shot_mode_combo.addItem("规则模式", "rule")
+        self.shot_mode_combo.addItem("自由模式", "free")
+        self.shot_mode_combo.currentIndexChanged.connect(self._shot_mode_changed)
+        self.side_layout.addWidget(self._field("画线模式", self.shot_mode_combo))
         self.side_layout.addWidget(self._section_label("现场抓取"))
         self.raw_photo_btn = self._button("抓取无画线照片")
         self.raw_video_btn = self._button("开始无画线视频")
@@ -793,6 +799,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.resolution_combo.addItem(res)
         self.resolution_combo.setCurrentText(res)
         self.fps_combo.setCurrentText(str(int(self.config.camera.fps)))
+        mode = str(getattr(self.config.planner, "shot_mode", "rule") or "rule").strip().lower()
+        idx = self.shot_mode_combo.findData("free" if mode in {"free", "free_shot"} else "rule")
+        self.shot_mode_combo.blockSignals(True)
+        self.shot_mode_combo.setCurrentIndex(max(0, idx))
+        self.shot_mode_combo.blockSignals(False)
 
     def _sync_config_from_controls(self) -> None:
         self.config.camera.backend = self.backend_combo.currentText()
@@ -810,6 +821,20 @@ class OperatorWindow(QtWidgets.QMainWindow):
         except Exception:
             pass
         self.config.replay.enabled = self.replay_check.isChecked()
+        self.config.planner.shot_mode = str(self.shot_mode_combo.currentData() or "rule")
+
+    @QtCore.pyqtSlot(int)
+    def _shot_mode_changed(self, _index: int = 0) -> None:
+        mode = str(self.shot_mode_combo.currentData() or "rule")
+        self.config.planner.shot_mode = mode
+        if self.pipeline is not None:
+            self.pipeline.config.planner.shot_mode = mode
+            self.pipeline.planner.config.shot_mode = mode
+            self.pipeline._last_plan = None
+            self.pipeline._last_overlay = None
+        self._save_user_settings()
+        self._append_log(f"画线模式已切换为 {'自由模式' if mode == 'free' else '规则模式'}")
+        self._update_module_status(self.last_output)
 
     def _save_user_settings(self) -> None:
         UserSettings.from_config(self.config, self.star_formula.to_dict()).save()
@@ -850,11 +875,13 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.config.geometry.inline_path,
             self.config.geometry.pocket_path,
             self.config.planner.enabled,
+            self.config.planner.shot_mode,
             self.config.planner.max_cut_angle_deg,
             self.config.planner.top_k,
             self.config.planner.cue_path_margin_mm,
             self.config.planner.object_path_margin_mm,
             self.config.planner.collision_padding_mm,
+            self.config.planner.free_max_collisions,
             self.config.learning.ranker_enabled,
             self.config.learning.ranker_model_path,
             self.config.learning.score_blend,
@@ -1130,33 +1157,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if frame is None:
             return np.zeros((1, 1, 3), dtype=np.uint8)
         img = frame.copy()
-        candidate = out.plan.best
-        if candidate is None or self.pipeline is None:
-            return img
-        try:
-            aim = self._table_mm_to_camera_px(candidate.aim_line)
-            obj = self._table_mm_to_camera_px(candidate.object_line)
-            key_points = self._table_mm_to_camera_px([candidate.ghost_ball, candidate.object_ball, candidate.pocket_point])
-        except Exception:
-            return img
-        thickness = max(2, int(round(3 * self._ui_scale)))
-        self._draw_arrow_polyline(img, aim, (0, 240, 160), thickness)
-        self._draw_arrow_polyline(img, obj, (80, 180, 255), thickness)
-        if key_points.shape[0] >= 3:
-            cv2.circle(img, _point_int(key_points[0]), 10, (0, 255, 180), 2, cv2.LINE_AA)
-            cv2.circle(img, _point_int(key_points[1]), 8, (255, 220, 80), 2, cv2.LINE_AA)
-            cv2.circle(img, _point_int(key_points[2]), 12, (255, 255, 255), 2, cv2.LINE_AA)
-            label_pos = _point_int(key_points[2] + np.asarray([12.0, -12.0], dtype=np.float32))
-            cv2.putText(
-                img,
-                f"pocket {candidate.pocket_index} score {candidate.score:.2f}",
-                label_pos,
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
+        self._draw_plan_preview(img, out)
         return img
 
     def _table_mm_to_camera_px(self, points) -> np.ndarray:
@@ -1165,14 +1166,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         pts = np.asarray(points, dtype=np.float32).reshape((-1, 2))
         if pts.size == 0:
             return pts
-        calibration = self.pipeline.calibration
-        proj = calibration.table_mm_to_projector_px(pts).astype(np.float32)
-        homography = calibration.projection.homography
-        if homography is None:
-            return proj
-        inv_h = np.linalg.inv(np.asarray(homography, dtype=np.float64))
-        cam = cv2.perspectiveTransform(proj.reshape((-1, 1, 2)), inv_h).reshape((-1, 2))
-        return cam.astype(np.float32)
+        return self.pipeline.calibration.table_mm_to_camera_px(pts).astype(np.float32)
 
     def _draw_arrow_polyline(self, image: np.ndarray, points: np.ndarray, color: tuple[int, int, int], thickness: int) -> None:
         pts = np.asarray(points, dtype=np.float32).reshape((-1, 2))
@@ -1189,6 +1183,233 @@ class OperatorWindow(QtWidgets.QMainWindow):
             cv2.LINE_AA,
             tipLength=0.08,
         )
+
+    def _draw_plan_preview(self, image: np.ndarray, out: PipelineOutput) -> None:
+        if self.pipeline is None:
+            return
+        if out.plan.shot_mode == "free":
+            if out.plan.free_route is not None:
+                self._draw_free_plan_preview(image, out.plan.free_route)
+            return
+        if out.plan.best is not None:
+            self._draw_rule_plan_preview(image, out.plan.best)
+
+    def _draw_rule_plan_preview(self, image: np.ndarray, candidate) -> None:
+        route_color = (255, 255, 255)
+        radius_mm = 0.5 * float(self.pipeline.calibration.table.ball_diameter_mm) if self.pipeline is not None else 28.0
+        cue = np.asarray(candidate.cue_ball, dtype=np.float32)
+        ghost = np.asarray(candidate.ghost_ball, dtype=np.float32)
+        target = np.asarray(candidate.object_ball, dtype=np.float32)
+        pocket = np.asarray(candidate.pocket_point, dtype=np.float32)
+        thickness = max(2, int(round(3 * self._ui_scale)))
+        radius_px = max(6, int(round(self._camera_radius_px(ghost, radius_mm))))
+
+        guide_start = self._cue_alignment_start_table(cue, ghost)
+        self._draw_segment_trimmed(image, guide_start, cue, route_color, thickness, 0.0, radius_mm)
+        self._draw_segment_trimmed(image, cue, ghost, route_color, thickness + 1, radius_mm, radius_mm)
+        self._draw_dashed_segment_trimmed(image, target, pocket, route_color, thickness, radius_mm, 0.0)
+        cue_sep_end = self._rule_cue_separation_end_table(cue, ghost, target)
+        if cue_sep_end is not None:
+            self._draw_dashed_segment_trimmed(image, ghost, cue_sep_end, route_color, thickness, radius_mm, 0.0)
+
+        for point in (ghost, target):
+            cam = self._table_mm_to_camera_px([point])
+            if cam.shape[0] >= 1:
+                cv2.circle(image, _point_int(cam[0]), radius_px, route_color, 2, cv2.LINE_AA)
+        pocket_px = self._table_mm_to_camera_px([pocket])
+        if pocket_px.shape[0] >= 1:
+            cv2.circle(image, _point_int(pocket_px[0]), max(6, radius_px // 2), route_color, 2, cv2.LINE_AA)
+
+    def _draw_free_plan_preview(self, image: np.ndarray, route) -> None:
+        route_color = (255, 255, 255)
+        cue_stick_color = (64, 220, 255)
+        radius_mm = float(max(1.0, route.cue_radius))
+        cue = np.asarray(route.cue_ball, dtype=np.float32)
+        tip = np.asarray(route.cue_stick_tip, dtype=np.float32)
+        tail = np.asarray(route.cue_stick_tail, dtype=np.float32)
+        aim_dir = unit(np.asarray(route.aim_direction, dtype=np.float32))
+        thickness = max(2, int(round(3 * self._ui_scale)))
+        radius_px = max(6, int(round(self._camera_radius_px(cue, radius_mm))))
+
+        stick_px = self._table_mm_to_camera_px([tail, tip])
+        if stick_px.shape[0] >= 2:
+            cv2.line(image, _point_int(stick_px[0]), _point_int(stick_px[1]), cue_stick_color, 2, cv2.LINE_AA)
+
+        guide_back = cue - aim_dir * max(26.0, 2.2 * radius_mm)
+        self._draw_segment_trimmed(image, guide_back, cue, route_color, thickness, 0.0, radius_mm)
+
+        nodes = [np.asarray(p, dtype=np.float32) for p in route.path_points or []]
+        collision_count = len(route.collision_points or [])
+        for i in range(max(0, len(nodes) - 1)):
+            start_radius = radius_mm if i <= collision_count else 0.0
+            end_radius = radius_mm if (i + 1) <= collision_count else 0.0
+            self._draw_segment_trimmed(image, nodes[i], nodes[i + 1], route_color, thickness + 1, start_radius, end_radius)
+
+        collisions = [np.asarray(p, dtype=np.float32) for p in route.collision_points or []]
+        normals = [np.asarray(n, dtype=np.float32) for n in route.collision_normals or []]
+        collision_types = list(route.collision_types or [])
+        for idx, collision in enumerate(collisions):
+            cam = self._table_mm_to_camera_px([collision])
+            if cam.shape[0] >= 1:
+                cv2.circle(image, _point_int(cam[0]), radius_px, route_color, 2, cv2.LINE_AA)
+            if idx >= len(collision_types) or str(collision_types[idx]) != "ball":
+                continue
+            normal = unit(normals[idx] if idx < len(normals) else aim_dir)
+            hit_center = collision + normal * (2.0 * radius_mm)
+            hit_end = self._estimate_route_end_table(hit_center, normal)
+            self._draw_dashed_segment_trimmed(image, hit_center, hit_end, route_color, thickness, radius_mm, 0.0)
+
+    def _camera_radius_px(self, point_mm, radius_mm: float) -> float:
+        point = np.asarray(point_mm, dtype=np.float32).reshape((2,))
+        pts = self._table_mm_to_camera_px([point, point + np.asarray([float(radius_mm), 0.0], dtype=np.float32)])
+        if pts.shape[0] < 2:
+            return 0.0
+        return float(np.linalg.norm(pts[1] - pts[0]))
+
+    def _draw_segment_trimmed(
+        self,
+        image: np.ndarray,
+        start_mm: np.ndarray,
+        end_mm: np.ndarray,
+        color: tuple[int, int, int],
+        thickness: int,
+        start_radius_mm: float = 0.0,
+        end_radius_mm: float = 0.0,
+    ) -> None:
+        points = self._trimmed_camera_segment(start_mm, end_mm, start_radius_mm, end_radius_mm)
+        if points is None:
+            return
+        cv2.line(image, _point_int(points[0]), _point_int(points[1]), color, max(1, int(thickness)), cv2.LINE_AA)
+
+    def _draw_dashed_segment_trimmed(
+        self,
+        image: np.ndarray,
+        start_mm: np.ndarray,
+        end_mm: np.ndarray,
+        color: tuple[int, int, int],
+        thickness: int,
+        start_radius_mm: float = 0.0,
+        end_radius_mm: float = 0.0,
+        dash_px: float = 12.0,
+        gap_px: float = 16.0,
+    ) -> None:
+        points = self._trimmed_camera_segment(start_mm, end_mm, start_radius_mm, end_radius_mm)
+        if points is None:
+            return
+        start = points[0]
+        end = points[1]
+        v = end - start
+        dist = float(np.linalg.norm(v))
+        if dist < 1e-3:
+            return
+        d = v / dist
+        step = float(max(2.0, dash_px + gap_px))
+        drawn = 0.0
+        while drawn < dist:
+            seg_e = min(dist, drawn + float(max(2.0, dash_px)))
+            p1 = start + d * drawn
+            p2 = start + d * seg_e
+            if int(round(float(p1[0]))) != int(round(float(p2[0]))) or int(round(float(p1[1]))) != int(round(float(p2[1]))):
+                cv2.line(image, _point_int(p1), _point_int(p2), color, max(1, int(thickness) - 1), cv2.LINE_AA)
+            drawn += step
+
+    def _trimmed_camera_segment(
+        self,
+        start_mm: np.ndarray,
+        end_mm: np.ndarray,
+        start_radius_mm: float,
+        end_radius_mm: float,
+    ) -> Optional[np.ndarray]:
+        pts = self._table_mm_to_camera_px([start_mm, end_mm])
+        if pts.shape[0] < 2:
+            return None
+        a = pts[0].astype(np.float32)
+        b = pts[1].astype(np.float32)
+        v = b - a
+        dist = float(np.linalg.norm(v))
+        if dist < 1e-3:
+            return None
+        start_trim = self._camera_radius_px(start_mm, start_radius_mm) if start_radius_mm > 0.0 else 0.0
+        end_trim = self._camera_radius_px(end_mm, end_radius_mm) if end_radius_mm > 0.0 else 0.0
+        if start_trim + end_trim >= dist - 1.0:
+            return None
+        d = v / dist
+        return np.vstack([a + d * start_trim, b - d * end_trim]).astype(np.float32)
+
+    def _cue_alignment_start_table(self, cue: np.ndarray, ghost: np.ndarray) -> np.ndarray:
+        aim = ghost - cue
+        if float(np.linalg.norm(aim)) < 1e-6:
+            return cue.copy()
+        if self.pipeline is None:
+            return cue.copy()
+        table = self.pipeline.calibration.table
+        max_length = 0.55 * float(np.hypot(table.width_mm, table.height_mm))
+        return self._trace_ray_inside_table(cue, -unit(aim), max_length=max_length, step_mm=12.0)
+
+    def _trace_ray_inside_table(self, origin: np.ndarray, direction: np.ndarray, max_length: float, step_mm: float) -> np.ndarray:
+        inner = self._inner_polygon_table()
+        if inner.shape[0] < 3:
+            return (origin + unit(direction) * float(max_length)).astype(np.float32)
+        best = origin.copy().astype(np.float32)
+        d = unit(direction)
+        for dist in np.arange(float(step_mm), float(max_length) + float(step_mm), float(step_mm)):
+            p = origin + d * float(dist)
+            if cv2.pointPolygonTest(inner.reshape((-1, 1, 2)).astype(np.float32), (float(p[0]), float(p[1])), False) < 0.0:
+                break
+            best = p.astype(np.float32)
+        return best
+
+    def _rule_cue_separation_end_table(self, cue: np.ndarray, ghost: np.ndarray, target: np.ndarray) -> Optional[np.ndarray]:
+        incoming = ghost - cue
+        object_dir = target - ghost
+        if float(np.linalg.norm(incoming)) < 1e-6 or float(np.linalg.norm(object_dir)) < 1e-6:
+            return None
+        incoming_u = unit(incoming)
+        object_u = unit(object_dir)
+        cue_after = incoming_u - object_u * float(np.dot(incoming_u, object_u))
+        if float(np.linalg.norm(cue_after)) < 1e-3:
+            return None
+        return self._estimate_route_end_table(ghost, unit(cue_after))
+
+    def _estimate_route_end_table(self, origin: np.ndarray, direction: np.ndarray) -> np.ndarray:
+        inner = self._inner_polygon_table()
+        hit = self._ray_polygon_first_hit_table(origin, direction, inner, min_t=1.0)
+        if hit is not None:
+            return hit.astype(np.float32)
+        if self.pipeline is None:
+            return (origin + unit(direction) * 600.0).astype(np.float32)
+        table = self.pipeline.calibration.table
+        fallback_len = float(np.hypot(table.width_mm, table.height_mm))
+        return (origin + unit(direction) * max(120.0, fallback_len)).astype(np.float32)
+
+    def _inner_polygon_table(self) -> np.ndarray:
+        if self.pipeline is None:
+            return np.zeros((0, 2), dtype=np.float32)
+        return np.asarray(self.pipeline.calibration.table.inner_polygon_mm, dtype=np.float32).reshape((-1, 2))
+
+    @staticmethod
+    def _ray_polygon_first_hit_table(origin: np.ndarray, direction: np.ndarray, polygon: np.ndarray, min_t: float) -> Optional[np.ndarray]:
+        if polygon.size < 6 or polygon.shape[0] < 3:
+            return None
+        d = unit(direction)
+        best_t: Optional[float] = None
+        best_hit: Optional[np.ndarray] = None
+        for idx in range(polygon.shape[0]):
+            a = polygon[idx].astype(np.float32)
+            b = polygon[(idx + 1) % polygon.shape[0]].astype(np.float32)
+            s = b - a
+            denom = float(d[0] * s[1] - d[1] * s[0])
+            if abs(denom) < 1e-7:
+                continue
+            ao = a - origin
+            t = float((ao[0] * s[1] - ao[1] * s[0]) / denom)
+            u = float((ao[0] * d[1] - ao[1] * d[0]) / denom)
+            if t < min_t or u < -1e-4 or u > 1.0001:
+                continue
+            if best_t is None or t < best_t:
+                best_t = t
+                best_hit = origin + d * t
+        return best_hit
 
     def _diagnostic_frame_payload(self, frame) -> dict[str, object]:
         payload = to_jsonable(frame)
@@ -1370,7 +1591,14 @@ class OperatorWindow(QtWidgets.QMainWindow):
         state_detail = state_hold if out is None else f"{out.state.phase} / conf {out.state.confidence:.2f}"
         self._set_module_status("状态机", state_hold, state_detail)
         ranker_version = getattr(self.pipeline.planner.learning_ranker, "version", "learning_unknown")
-        plan_detail = f"{self.pipeline.planner.version} / {ranker_version}" if out is None else f"{len(out.plan.candidates)} 候选 / {ranker_version}"
+        mode_name = "free" if str(self.config.planner.shot_mode).lower() == "free" else "rule"
+        if out is None:
+            plan_detail = f"{mode_name} / {self.pipeline.planner.version} / {ranker_version}"
+        elif out.plan.shot_mode == "free":
+            collision_count = len(out.plan.free_route.collision_points) if out.plan.free_route is not None else 0
+            plan_detail = f"free / {collision_count} collisions / {out.plan.free_status}"
+        else:
+            plan_detail = f"rule / {len(out.plan.candidates)} candidates / {ranker_version}"
         self._set_module_status("规划", "运行中" if self.config.planner.enabled else "关闭", plan_detail)
         if self.pipeline.recorder is not None:
             self._set_module_status("回放", "记录中", self.pipeline.recorder.session_id)
@@ -1667,6 +1895,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             cx, cy = [int(round(v)) for v in tr.center_px]
             cv2.circle(img, (cx, cy), max(4, int(round(tr.radius_px))), (250, 250, 250), 2, cv2.LINE_AA)
             cv2.putText(img, f"#{tr.track_id} {tr.group}", (cx + 8, cy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55 * self._ui_scale, (230, 230, 230), 1, cv2.LINE_AA)
+        self._draw_plan_preview(img, out)
         self._set_preview_image(img)
 
     def _set_preview_image(self, image_bgr: np.ndarray) -> None:
@@ -1701,6 +1930,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.phase_metric.value_label.setText(out.state.phase)  # type: ignore[attr-defined]
 
     def _update_plan(self, out: PipelineOutput) -> None:
+        if out.plan.shot_mode == "free":
+            collision_count = len(out.plan.free_route.collision_points) if out.plan.free_route is not None else 0
+            self.best_label.setText(f"自由模式\n状态 {out.plan.free_status}\n碰撞 {collision_count}")
+            self.candidates.setRowCount(0)
+            return
         best = out.plan.best
         if best is None:
             self.best_label.setText("无")

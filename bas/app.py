@@ -108,7 +108,7 @@ class RuntimePipeline:
                 ball_diameter_mm=self.calibration.table.ball_diameter_mm,
             )
             state = self.state_machine.update(tracks)
-            plan = self.planner.plan(state)
+            plan = self.planner.plan(state, frame_bgr=frame.image)
             overlay = self.overlay_builder.from_plan(plan)
             self._last_state = state
             self._last_plan = plan

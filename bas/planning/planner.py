@@ -11,6 +11,7 @@ from ..calibration.service import CalibrationService
 from ..config import LearningConfig, PlannerConfig
 from ..schemas import MatchStateFrame, Point, ShotCandidate, ShotPlan, TrackObservation
 from ..utils import angle_deg, clamp, point_segment_distance, unit, wall_time_id
+from .free_shot import FreeShotPlanner
 from .learning import create_learning_ranker
 
 
@@ -34,17 +35,30 @@ class GeometryPhysicsPlanner:
             table_width_mm=self.calibration.table.width_mm,
             table_height_mm=self.calibration.table.height_mm,
         )
+        self.free_planner = FreeShotPlanner(config, calibration)
 
-    def plan(self, state: MatchStateFrame) -> ShotPlan:
+    def plan(self, state: MatchStateFrame, frame_bgr: Optional[np.ndarray] = None) -> ShotPlan:
+        shot_mode = self._shot_mode()
         if not self.config.enabled:
-            return ShotPlan(plan_id=f"plan_{state.frame_id}_{wall_time_id()}", frame_id=state.frame_id, ts_cam_ns=state.ts_cam_ns)
+            return self._empty_plan(state, shot_mode=shot_mode, free_status="disabled")
+        if shot_mode == "free":
+            free_route = self.free_planner.plan(state, frame_bgr=frame_bgr)
+            return ShotPlan(
+                plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
+                frame_id=state.frame_id,
+                ts_cam_ns=state.ts_cam_ns,
+                shot_mode="free",
+                free_route=free_route,
+                free_status=self.free_planner.last_status,
+                planner_version=f"{self.version}+{self.free_planner.version}",
+            )
         balls = self._extract_balls(state.layout)
         cue = next((b for b in balls if b.group == "cue"), None)
         if cue is None:
-            return ShotPlan(plan_id=f"plan_{state.frame_id}_{wall_time_id()}", frame_id=state.frame_id, ts_cam_ns=state.ts_cam_ns)
+            return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
         targets = [b for b in balls if b.group in {"solid", "stripe", "black"} and b.quality > 0.25]
         if not targets:
-            return ShotPlan(plan_id=f"plan_{state.frame_id}_{wall_time_id()}", frame_id=state.frame_id, ts_cam_ns=state.ts_cam_ns)
+            return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
         candidates: List[ShotCandidate] = []
         pockets = [np.asarray(p, dtype=np.float32) for p in self.calibration.table.pockets_mm]
         inner = np.asarray(self.calibration.table.inner_polygon_mm, dtype=np.float32)
@@ -61,7 +75,23 @@ class GeometryPhysicsPlanner:
             ts_cam_ns=state.ts_cam_ns,
             candidates=candidates,
             best=best,
+            shot_mode="rule",
+            free_status=self.free_planner.last_status,
             planner_version=self.version,
+        )
+
+    def _shot_mode(self) -> str:
+        mode = str(getattr(self.config, "shot_mode", "rule") or "rule").strip().lower()
+        return "free" if mode in {"free", "free_shot"} else "rule"
+
+    def _empty_plan(self, state: MatchStateFrame, *, shot_mode: str, free_status: str = "idle") -> ShotPlan:
+        return ShotPlan(
+            plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
+            frame_id=state.frame_id,
+            ts_cam_ns=state.ts_cam_ns,
+            shot_mode=shot_mode,
+            free_status=free_status,
+            planner_version=self.version if shot_mode == "rule" else f"{self.version}+{self.free_planner.version}",
         )
 
     def _extract_balls(self, tracks: Sequence[TrackObservation]) -> List[_Ball]:

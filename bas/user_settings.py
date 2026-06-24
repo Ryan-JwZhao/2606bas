@@ -40,6 +40,7 @@ class UserSettings:
     projection_width: Optional[int] = None
     projection_height: Optional[int] = None
     replay_enabled: Optional[bool] = None
+    shot_mode: Optional[str] = None
     learning_ranker_enabled: Optional[bool] = None
     learning_ranker_model_path: Optional[str] = None
     learning_score_blend: Optional[float] = None
@@ -126,6 +127,9 @@ class UserSettings:
             config.projection.projector_height = int(self.projection_height)
         if self.replay_enabled is not None:
             config.replay.enabled = bool(self.replay_enabled)
+        if self._has("shot_mode") and self.shot_mode:
+            mode = str(self.shot_mode).strip().lower()
+            config.planner.shot_mode = "free" if mode in {"free", "free_shot"} else "rule"
         if self.learning_ranker_enabled is not None:
             config.learning.ranker_enabled = bool(self.learning_ranker_enabled)
         if self._has("learning_ranker_model_path"):
@@ -172,6 +176,7 @@ class UserSettings:
             projection_width=config.projection.projector_width,
             projection_height=config.projection.projector_height,
             replay_enabled=config.replay.enabled,
+            shot_mode=config.planner.shot_mode,
             learning_ranker_enabled=config.learning.ranker_enabled,
             learning_ranker_model_path=config.learning.ranker_model_path,
             learning_score_blend=config.learning.score_blend,

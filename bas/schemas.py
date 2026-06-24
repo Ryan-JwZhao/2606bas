@@ -144,12 +144,31 @@ class ShotCandidate:
 
 
 @dataclass
+class FreeRouteSuggestion:
+    cue_ball: Point
+    cue_radius: float
+    cue_stick_tip: Point
+    cue_stick_tail: Point
+    aim_direction: Point
+    path_points: List[Point]
+    collision_points: List[Point]
+    collision_normals: List[Point]
+    collision_types: List[str] = field(default_factory=list)
+    collision_track_ids: List[Optional[int]] = field(default_factory=list)
+    pocket_index: Optional[int] = None
+    pocket_point: Optional[Point] = None
+
+
+@dataclass
 class ShotPlan:
     plan_id: str
     frame_id: int
     ts_cam_ns: int
     candidates: List[ShotCandidate] = field(default_factory=list)
     best: Optional[ShotCandidate] = None
+    shot_mode: str = "rule"
+    free_route: Optional[FreeRouteSuggestion] = None
+    free_status: str = "idle"
     planner_version: str = "geometry_physics_mvp_v1"
 
 
@@ -159,6 +178,8 @@ class OverlayLine:
     color: Tuple[int, int, int] = (0, 255, 128)
     width: int = 3
     label: Optional[str] = None
+    style: str = "solid"
+    arrow: bool = False
 
 
 @dataclass

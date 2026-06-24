@@ -48,10 +48,19 @@ python -m venv .venv
 - `bas.perception`: 调试颜色检测器和 Ultralytics YOLO 模型入口。
 - `bas.tracking`: 双阈值时序跟踪、短时遮挡保留、速度估计。
 - `bas.state`: `STABLE_IDLE/PRE_SHOT_ARMED/SHOT_ACTIVE/SETTLING/TURN_RESOLVE/ANOMALY_RECOVERY` 宏状态。
-- `bas.planning`: 几何候选 + 快速物理筛选；可选加载学习排序 JSON 模型。
+- `bas.planning`: 规则模式几何候选、自由模式球杆路线与两次碰撞预测；可选加载学习排序 JSON 模型。
 - `bas.learning`: 将在线击球过程整理成 shot 级训练样本。
-- `bas.projection`: 投影 overlay 构建和 Qt 全屏窗口。
+- `bas.projection`: 投影 overlay 构建和 Qt 全屏窗口，支持实线/虚线画线样式。
 - `bas.replay`: JSONL 结构化回放日志。
+
+## 画线预览与模式
+
+主界面左侧“画线模式”可在两种路线之间切换，切换会立即写入 `local_settings/user_settings.json`，运行中也会让下一帧规划生效。
+
+- 规则模式：根据白球、目标球、袋口生成进袋候选；预览和投影会显示白色实线瞄准线、目标球到袋口虚线，以及白球碰撞后的分离方向虚线。
+- 自由模式：根据白球附近的球杆边缘或 `cue_stick` 检测框估计出杆方向；预览和投影会显示青色球杆拟合线、白球运动路径，并最多预测两次库边/球碰撞。撞到目标球时，会用虚线显示目标球后续传播方向。
+
+如果识别框和 track 正常但没有路线，优先查看右侧“规划”状态：规则模式通常是没有合法进袋候选，自由模式会显示 `no_cue_ball`、`no_cue_stick` 或 `invalid_path` 等状态，便于现场排查。
 
 ## 配置
 

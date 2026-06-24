@@ -72,6 +72,17 @@ class CalibrationService:
         out[:, 1] = y1 + out[:, 1] / max(1e-6, float(self.table.height_mm)) * (y2 - y1)
         return out
 
+    def table_mm_to_camera_px(self, points: np.ndarray) -> np.ndarray:
+        proj = self.table_mm_to_projector_px(points).astype(np.float32)
+        if proj.size == 0:
+            return proj
+        homography = self.projection.homography
+        if homography is None:
+            return proj
+        inv_h = np.linalg.inv(np.asarray(homography, dtype=np.float64))
+        cam = cv2.perspectiveTransform(proj.reshape((-1, 1, 2)), inv_h).reshape((-1, 2))
+        return cam.astype(np.float32)
+
     def table_inner_polygon_projector(self) -> np.ndarray:
         return self.table_mm_to_projector_px(np.asarray(self.table.inner_polygon_mm, dtype=np.float32))
 
