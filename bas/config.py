@@ -118,6 +118,7 @@ class ProjectionConfig:
     projector_height: int = 800
     screen_index: int = 1
     fullscreen: bool = True
+    geometry_reference_enabled: bool = True
 
 
 @dataclass

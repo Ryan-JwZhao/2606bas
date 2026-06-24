@@ -50,7 +50,7 @@ python -m venv .venv
 - `bas.state`: `STABLE_IDLE/PRE_SHOT_ARMED/SHOT_ACTIVE/SETTLING/TURN_RESOLVE/ANOMALY_RECOVERY` 宏状态。
 - `bas.planning`: 规则模式几何候选、自由模式球杆路线与两次碰撞预测；可选加载学习排序 JSON 模型。
 - `bas.learning`: 将在线击球过程整理成 shot 级训练样本。
-- `bas.projection`: 投影 overlay 构建和 Qt 全屏窗口，支持实线/虚线画线样式。
+- `bas.projection`: 投影 overlay 构建和 Qt 全屏窗口，支持实线/虚线画线样式，以及 outline/inline/pocket 几何参考线叠加。
 - `bas.replay`: JSONL 结构化回放日志。
 
 ## 画线预览与模式
@@ -59,6 +59,7 @@ python -m venv .venv
 
 - 规则模式：根据白球、目标球、袋口生成进袋候选；预览和投影会显示白色实线瞄准线、目标球到袋口虚线，以及白球碰撞后的分离方向虚线。
 - 自由模式：根据白球附近的球杆边缘或 `cue_stick` 检测框估计出杆方向；预览和投影会用白色显示球杆拟合线、白球运动路径，并最多预测两次库边/球碰撞。撞到目标球时，会用白色虚线显示目标球后续传播方向。
+- 几何参考线：主界面左侧“显示几何参考线”默认开启。点击“初始化图形图像模块”后会把 `outline.json`、`inline.json`、`pocket.json` 叠加到投影窗口，运行中也会叠加在实时路线下方；开关状态会保存到 `local_settings/user_settings.json`。
 
 如果识别框和 track 正常但没有路线，优先查看右侧“规划”状态：规则模式通常是没有合法进袋候选，自由模式会显示 `no_cue_ball`、`no_cue_stick` 或 `invalid_path` 等状态，便于现场排查。
 
@@ -108,6 +109,7 @@ UI 中的“设置”会保存到 `local_settings/user_settings.json`，该文�
 - OpenCV 设备号
 - 分辨率和帧率
 - 初始化图形图像模块
+- 显示/隐藏 outline、inline、pocket 几何参考线
 - 开始/结束采集
 - 开始/停止投影
 - 校正投影仪
@@ -116,7 +118,7 @@ UI 中的“设置”会保存到 `local_settings/user_settings.json`，该文�
 ## 使用流程
 
 1. 打开 UI 后先进入“设置”，确认模型、类别、几何 JSON、Nori SDK、畸变矫正文件、相机标定文件、投影校正文件和投影分辨率。
-2. 点击“初始化图形图像模块”。新版会加载/校验检测器、几何文件、相机标定和投影校正；这一步不打开相机。
+2. 点击“初始化图形图像模块”。新版会加载/校验检测器、几何文件、相机标定和投影校正；如果“显示几何参考线”开启，会立即打开/刷新投影窗口并显示 outline、inline、pocket 参考线，这一步不打开相机。
 3. 点击“探测相机”，确认工业相机出现在列表中；需要固定曝光时，在“设置”里关闭自动曝光并选择 `-10` 到 `0` 档，当前已按旧版默认填为 `-5`。
 4. 点击“开始采集”。如果启用了畸变矫正，采集帧会先按 OpenCV 内参进行实时去畸变，然后再进入检测、跟踪和规划。
 5. 点击“开始投影”。当前 `local_settings/user_settings.json` 已迁入旧版颗星公式预设，并默认启用；即使暂时没有路线 overlay，也会显示颗星公式网格。

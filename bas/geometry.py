@@ -13,11 +13,12 @@ import numpy as np
 class TableGeometry:
     outer_norm: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float32))
     inner_norm: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float32))
+    inline_norm: List[np.ndarray] = field(default_factory=list)
     pockets_norm: List[np.ndarray] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
-        return self.outer_norm.shape[0] < 3 and self.inner_norm.shape[0] < 3 and not self.pockets_norm
+        return self.outer_norm.shape[0] < 3 and self.inner_norm.shape[0] < 3 and not self.inline_norm and not self.pockets_norm
 
     def scaled(self, width: int, height: int) -> Tuple[np.ndarray, np.ndarray, List[np.ndarray]]:
         def scale(arr: np.ndarray) -> np.ndarray:
@@ -29,6 +30,17 @@ class TableGeometry:
             return out
 
         return scale(self.outer_norm), scale(self.inner_norm), [scale(p) for p in self.pockets_norm]
+
+    def reference_scaled(self, width: int, height: int) -> Tuple[np.ndarray, List[np.ndarray], List[np.ndarray]]:
+        def scale(arr: np.ndarray) -> np.ndarray:
+            if arr.size == 0:
+                return arr.copy()
+            out = arr.copy().astype(np.float32)
+            out[:, 0] *= float(width)
+            out[:, 1] *= float(height)
+            return out
+
+        return scale(self.outer_norm), [scale(p) for p in self.inline_norm], [scale(p) for p in self.pockets_norm]
 
 
 class TableGeometryLoader:
@@ -67,7 +79,7 @@ class TableGeometryLoader:
                 inner = hull.reshape((-1, 2)).astype(np.float32) / np.array([1000.0, 1000.0], dtype=np.float32)
         if inner.shape[0] < 3:
             inner = outer.copy()
-        return TableGeometry(outer_norm=outer, inner_norm=inner, pockets_norm=pockets)
+        return TableGeometry(outer_norm=outer, inner_norm=inner, inline_norm=inline_lines, pockets_norm=pockets)
 
     @staticmethod
     def _load_json(path: Optional[str]) -> Dict[str, Any]:
@@ -162,4 +174,3 @@ class TableGeometryLoader:
         if best.shape[0] >= 3 and float(np.linalg.norm(best[0] - best[-1])) <= join_eps:
             return best
         return np.zeros((0, 2), dtype=np.float32)
-
