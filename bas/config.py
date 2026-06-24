@@ -100,6 +100,16 @@ class PlannerConfig:
 
 
 @dataclass
+class LearningConfig:
+    ranker_enabled: bool = True
+    ranker_model_path: Optional[str] = None
+    score_blend: float = 0.65
+    collect_enabled: bool = False
+    samples_directory: str = "rl/data/samples"
+    min_candidates: int = 1
+
+
+@dataclass
 class ProjectionConfig:
     enabled: bool = True
     projector_width: int = 1280
@@ -131,6 +141,7 @@ class AppConfig:
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
     state: StateConfig = field(default_factory=StateConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
+    learning: LearningConfig = field(default_factory=LearningConfig)
     projection: ProjectionConfig = field(default_factory=ProjectionConfig)
     replay: ReplayConfig = field(default_factory=ReplayConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -160,6 +171,7 @@ class AppConfig:
             geometry=section("geometry", GeometryConfig),
             state=section("state", StateConfig),
             planner=section("planner", PlannerConfig),
+            learning=section("learning", LearningConfig),
             projection=section("projection", ProjectionConfig),
             replay=section("replay", ReplayConfig),
             logging=section("logging", LoggingConfig),
@@ -197,6 +209,10 @@ class AppConfig:
         if self.geometry.pocket_path:
             p = resolve_path(self.geometry.pocket_path, base=base)
             self.geometry.pocket_path = str(p) if p else None
+        if self.learning.ranker_model_path:
+            p = resolve_path(self.learning.ranker_model_path, base=base)
+            self.learning.ranker_model_path = str(p) if p else None
+        self.learning.samples_directory = str(resolve_path(self.learning.samples_directory, base=base) or Path(self.learning.samples_directory))
         self.logging.directory = str(resolve_path(self.logging.directory, base=base) or Path(self.logging.directory))
         self.replay.directory = str(resolve_path(self.replay.directory, base=base) or Path(self.replay.directory))
         return self

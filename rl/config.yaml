@@ -1,0 +1,8 @@
+samples: data/samples
+output_model: models/ranker.json
+epochs: 50
+batch_size: 128
+learning_rate: 0.001
+hidden_size: 64
+val_ratio: 0.2
+seed: 42

@@ -40,6 +40,11 @@ class UserSettings:
     projection_width: Optional[int] = None
     projection_height: Optional[int] = None
     replay_enabled: Optional[bool] = None
+    learning_ranker_enabled: Optional[bool] = None
+    learning_ranker_model_path: Optional[str] = None
+    learning_score_blend: Optional[float] = None
+    learning_collect_enabled: Optional[bool] = None
+    learning_samples_directory: Optional[str] = None
     star_formula: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -111,6 +116,16 @@ class UserSettings:
             config.projection.projector_height = int(self.projection_height)
         if self.replay_enabled is not None:
             config.replay.enabled = bool(self.replay_enabled)
+        if self.learning_ranker_enabled is not None:
+            config.learning.ranker_enabled = bool(self.learning_ranker_enabled)
+        if self.learning_ranker_model_path:
+            config.learning.ranker_model_path = self.learning_ranker_model_path
+        if self.learning_score_blend is not None:
+            config.learning.score_blend = max(0.0, min(1.0, float(self.learning_score_blend)))
+        if self.learning_collect_enabled is not None:
+            config.learning.collect_enabled = bool(self.learning_collect_enabled)
+        if self.learning_samples_directory:
+            config.learning.samples_directory = self.learning_samples_directory
         return config
 
     @classmethod
@@ -142,5 +157,10 @@ class UserSettings:
             projection_width=config.projection.projector_width,
             projection_height=config.projection.projector_height,
             replay_enabled=config.replay.enabled,
+            learning_ranker_enabled=config.learning.ranker_enabled,
+            learning_ranker_model_path=config.learning.ranker_model_path,
+            learning_score_blend=config.learning.score_blend,
+            learning_collect_enabled=config.learning.collect_enabled,
+            learning_samples_directory=config.learning.samples_directory,
             star_formula=dict(star_formula or {}),
         )

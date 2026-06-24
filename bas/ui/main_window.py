@@ -55,6 +55,25 @@ class SettingsDialog(QtWidgets.QDialog):
         form.setLabelAlignment(QtCore.Qt.AlignRight)
         self.model_path = self._path_row(config.detector.model_path, "模型文件 (*.pt *.onnx *.engine);;所有文件 (*.*)")
         self.class_file_path = self._path_row(config.detector.class_file_path, "类别文件 (*.txt *.json);;所有文件 (*.*)")
+        self.learning_ranker_enabled = QtWidgets.QCheckBox("启用学习排序")
+        self.learning_ranker_enabled.setChecked(bool(config.learning.ranker_enabled))
+        self.learning_ranker_model_path = self._path_row(config.learning.ranker_model_path, "学习排序模型 (*.json);;所有文件 (*.*)")
+        self.learning_score_blend = self._dspin(float(config.learning.score_blend), 0.0, 1.0, 0.1)
+        learning_ranker_box = QtWidgets.QWidget()
+        learning_ranker_layout = QtWidgets.QHBoxLayout(learning_ranker_box)
+        learning_ranker_layout.setContentsMargins(0, 0, 0, 0)
+        learning_ranker_layout.addWidget(self.learning_ranker_enabled)
+        learning_ranker_layout.addWidget(self.learning_ranker_model_path, 1)
+        learning_ranker_layout.addWidget(QtWidgets.QLabel("权重"))
+        learning_ranker_layout.addWidget(self.learning_score_blend)
+        self.learning_collect_enabled = QtWidgets.QCheckBox("启用学习样本采集")
+        self.learning_collect_enabled.setChecked(bool(config.learning.collect_enabled))
+        self.learning_samples_directory = self._dir_row(config.learning.samples_directory)
+        learning_collect_box = QtWidgets.QWidget()
+        learning_collect_layout = QtWidgets.QHBoxLayout(learning_collect_box)
+        learning_collect_layout.setContentsMargins(0, 0, 0, 0)
+        learning_collect_layout.addWidget(self.learning_collect_enabled)
+        learning_collect_layout.addWidget(self.learning_samples_directory, 1)
         self.video_path = self._path_row(config.camera.video_path, "视频文件 (*.mp4 *.avi *.mov *.mkv);;所有文件 (*.*)")
         self.nori_sdk_root = self._dir_row(config.camera.nori_sdk_root)
         self.distortion_enabled = QtWidgets.QCheckBox("启用")
@@ -106,6 +125,8 @@ class SettingsDialog(QtWidgets.QDialog):
         proj_size.addWidget(self.proj_h)
         form.addRow("台球模型路径", self.model_path)
         form.addRow("类别文件路径", self.class_file_path)
+        form.addRow("学习排序模型", learning_ranker_box)
+        form.addRow("学习样本目录", learning_collect_box)
         form.addRow("视频文件路径", self.video_path)
         form.addRow("Nori SDK 目录", self.nori_sdk_root)
         form.addRow("工业相机畸变矫正", distortion_box)
@@ -190,6 +211,11 @@ class SettingsDialog(QtWidgets.QDialog):
     def apply_to_config(self, config: AppConfig) -> None:
         config.detector.model_path = self.model_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.detector.class_file_path = self.class_file_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        config.learning.ranker_enabled = self.learning_ranker_enabled.isChecked()
+        config.learning.ranker_model_path = self.learning_ranker_model_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        config.learning.score_blend = float(self.learning_score_blend.value())
+        config.learning.collect_enabled = self.learning_collect_enabled.isChecked()
+        config.learning.samples_directory = self.learning_samples_directory.line_edit.text().strip() or "rl/data/samples"  # type: ignore[attr-defined]
         config.camera.video_path = self.video_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.camera.nori_sdk_root = self.nori_sdk_root.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.camera.distortion_correction_enabled = self.distortion_enabled.isChecked()
@@ -1007,7 +1033,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         state_hold = "冻结" if self.pipeline.state_machine.operator_hold else "自动"
         state_detail = state_hold if out is None else f"{out.state.phase} / conf {out.state.confidence:.2f}"
         self._set_module_status("状态机", state_hold, state_detail)
-        plan_detail = self.pipeline.planner.version if out is None else f"{len(out.plan.candidates)} 候选"
+        ranker_version = getattr(self.pipeline.planner.learning_ranker, "version", "learning_unknown")
+        plan_detail = f"{self.pipeline.planner.version} / {ranker_version}" if out is None else f"{len(out.plan.candidates)} 候选 / {ranker_version}"
         self._set_module_status("规划", "运行中" if self.config.planner.enabled else "关闭", plan_detail)
         if self.pipeline.recorder is not None:
             self._set_module_status("回放", "记录中", self.pipeline.recorder.session_id)

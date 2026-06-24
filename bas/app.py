@@ -11,6 +11,7 @@ from .calibration import CalibrationService, create_calibration_service
 from .capture import CaptureService, create_capture_service
 from .config import AppConfig
 from .geometry import TableGeometry, TableGeometryLoader
+from .learning import LearningSampleRecorder
 from .logging_config import configure_logging
 from .perception import DetectService, create_detector
 from .planning import GeometryPhysicsPlanner
@@ -54,9 +55,10 @@ class RuntimePipeline:
         )
         self.tracker = TemporalTracker(config.tracker)
         self.state_machine = MatchStateMachine(config.state)
-        self.planner = GeometryPhysicsPlanner(config.planner, self.calibration)
+        self.planner = GeometryPhysicsPlanner(config.planner, self.calibration, learning_config=config.learning)
         self.overlay_builder = OverlayBuilder(config.projection, self.calibration, star_formula=star_formula)
         self.recorder: Optional[ReplayRecorder] = ReplayRecorder(config.replay) if config.replay.enabled else None
+        self.learning_recorder: Optional[LearningSampleRecorder] = LearningSampleRecorder(config.learning) if config.learning.collect_enabled else None
         self._last_tracks: Optional[TracksFrame] = None
         self._last_state: Optional[MatchStateFrame] = None
         self._last_plan: Optional[ShotPlan] = None
@@ -102,6 +104,8 @@ class RuntimePipeline:
         self.capture.release()
         if self.recorder is not None:
             self.recorder.close()
+        if self.learning_recorder is not None:
+            self.learning_recorder.close()
 
     def _camera_table_mask(self, frame: FramePacket) -> Optional[np.ndarray]:
         if frame.image is not None and not self.geometry.is_empty:
@@ -157,6 +161,8 @@ class RuntimePipeline:
 
     def _record(self, out: PipelineOutput) -> None:
         if self.recorder is None:
+            if self.learning_recorder is not None:
+                self.learning_recorder.observe(out.state, out.plan)
             return
         self.recorder.write_frame_packet(out.frame)
         self.recorder.write_detections(out.detections)
@@ -164,6 +170,8 @@ class RuntimePipeline:
         self.recorder.write_state(out.state)
         self.recorder.write_plan(out.plan)
         self.recorder.write_overlay(out.overlay)
+        if self.learning_recorder is not None:
+            self.learning_recorder.observe(out.state, out.plan)
 
 
 def run_headless(config: AppConfig, max_frames: int = 0) -> int:

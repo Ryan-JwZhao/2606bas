@@ -66,6 +66,7 @@ def dependency_report() -> list[dict[str, str]]:
     _check_path(rows, "geometry.outline_path", cfg.geometry.outline_path, optional=True)
     _check_path(rows, "geometry.inline_path", cfg.geometry.inline_path, optional=True)
     _check_path(rows, "geometry.pocket_path", cfg.geometry.pocket_path, optional=True)
+    _check_path(rows, "learning.ranker_model_path", cfg.learning.ranker_model_path, optional=not bool(cfg.learning.ranker_model_path))
     return rows
 
 

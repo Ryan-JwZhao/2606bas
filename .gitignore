@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+pytest_tmp*/
+pytest_cache_local/
 .mypy_cache/
 .ruff_cache/
 .coverage
@@ -30,6 +32,14 @@ debug_frames/
 tmp/
 temp/
 
+# Learning samples and training outputs
+rl/data/*
+!rl/data/.gitkeep
+rl/models/*
+!rl/models/.gitkeep
+rl/runs/
+rl/exports/
+
 # Models and generated inference engines
 models/
 weights/
@@ -40,6 +50,8 @@ weights/
 *.plan
 *.trt
 *.torchscript
+!rl/models/
+!rl/models/.gitkeep
 
 # Large media/data
 *.mp4

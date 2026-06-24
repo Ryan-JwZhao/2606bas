@@ -8,10 +8,10 @@ import cv2
 import numpy as np
 
 from ..calibration.service import CalibrationService
-from ..config import PlannerConfig
+from ..config import LearningConfig, PlannerConfig
 from ..schemas import MatchStateFrame, Point, ShotCandidate, ShotPlan, TrackObservation
 from ..utils import angle_deg, clamp, point_segment_distance, unit, wall_time_id
-from .learning import DisabledLearningRanker
+from .learning import create_learning_ranker
 
 
 @dataclass
@@ -26,10 +26,14 @@ class _Ball:
 class GeometryPhysicsPlanner:
     version = "geometry_physics_mvp_v1"
 
-    def __init__(self, config: PlannerConfig, calibration: CalibrationService):
+    def __init__(self, config: PlannerConfig, calibration: CalibrationService, learning_config: LearningConfig | None = None):
         self.config = config
         self.calibration = calibration
-        self.learning_ranker = DisabledLearningRanker()
+        self.learning_ranker = create_learning_ranker(
+            learning_config,
+            table_width_mm=self.calibration.table.width_mm,
+            table_height_mm=self.calibration.table.height_mm,
+        )
 
     def plan(self, state: MatchStateFrame) -> ShotPlan:
         if not self.config.enabled:
@@ -49,7 +53,7 @@ class GeometryPhysicsPlanner:
                 candidate = self._candidate(cue, target, pocket, pocket_index, balls, inner)
                 if candidate is not None:
                     candidates.append(candidate)
-        candidates = self.learning_ranker.rerank(candidates)[: max(1, int(self.config.top_k))]
+        candidates = self.learning_ranker.rerank(candidates, state)[: max(1, int(self.config.top_k))]
         best = candidates[0] if candidates else None
         return ShotPlan(
             plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
@@ -213,4 +217,3 @@ class GeometryPhysicsPlanner:
 
 def _pt(arr: np.ndarray) -> Point:
     return (float(arr[0]), float(arr[1]))
-

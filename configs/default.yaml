@@ -66,6 +66,14 @@ planner:
   object_path_margin_mm: 3.0
   collision_padding_mm: 2.0
 
+learning:
+  ranker_enabled: true
+  ranker_model_path:
+  score_blend: 0.65
+  collect_enabled: false
+  samples_directory: rl/data/samples
+  min_candidates: 1
+
 projection:
   enabled: true
   projector_width: 1280
