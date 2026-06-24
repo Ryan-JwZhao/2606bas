@@ -1222,7 +1222,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     def _draw_free_plan_preview(self, image: np.ndarray, route) -> None:
         route_color = (255, 255, 255)
-        cue_stick_color = (64, 220, 255)
+        cue_stick_color = route_color
         radius_mm = float(max(1.0, route.cue_radius))
         cue = np.asarray(route.cue_ball, dtype=np.float32)
         tip = np.asarray(route.cue_stick_tip, dtype=np.float32)
@@ -1522,8 +1522,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
             for idx, (a, b) in enumerate(zip(base[:80], refined[:80])):
                 start = (float(a[0]), float(a[1]))
                 end = (float(b[0]), float(b[1]))
-                overlay.lines.append(OverlayLine(points=[start, end], color=(0, 80, 255), width=2, label=f"r{idx}"))
-                overlay.circles.append((end, 5.0, (0, 80, 255)))
+                overlay.lines.append(OverlayLine(points=[start, end], color=(255, 255, 255), width=2, label=f"r{idx}"))
+                overlay.circles.append((end, 5.0, (255, 255, 255)))
             self._append_log(f"已显示 {min(80, controls.shape[0])} 个局部残差箭头")
         else:
             self._append_log("当前校正文件没有局部残差控制点，已显示基础校正结果")
@@ -1538,16 +1538,16 @@ class OperatorWindow(QtWidgets.QMainWindow):
         step_x = max(40, w // 16)
         step_y = max(40, h // 10)
         for x in range(0, w + 1, step_x):
-            color = (70, 70, 70) if (x // step_x) % 2 else (140, 140, 140)
+            color = (255, 255, 255)
             cv2.line(img, (x, 0), (x, h), color, 1, cv2.LINE_AA)
-            cv2.putText(img, str(x), (min(w - 70, x + 4), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 1, cv2.LINE_AA)
+            cv2.putText(img, str(x), (min(w - 70, x + 4), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
         for y in range(0, h + 1, step_y):
-            color = (70, 70, 70) if (y // step_y) % 2 else (140, 140, 140)
+            color = (255, 255, 255)
             cv2.line(img, (0, y), (w, y), color, 1, cv2.LINE_AA)
-            cv2.putText(img, str(y), (8, min(h - 10, y + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 1, cv2.LINE_AA)
+            cv2.putText(img, str(y), (8, min(h - 10, y + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
         for x, y, label in [(w // 2, h // 2, "C"), (40, 40, "LT"), (w - 40, 40, "RT"), (w - 40, h - 40, "RB"), (40, h - 40, "LB")]:
-            cv2.drawMarker(img, (x, y), (0, 255, 255), cv2.MARKER_CROSS, 34, 2, cv2.LINE_AA)
-            cv2.putText(img, label, (x + 12, y - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2, cv2.LINE_AA)
+            cv2.drawMarker(img, (x, y), (255, 255, 255), cv2.MARKER_CROSS, 34, 2, cv2.LINE_AA)
+            cv2.putText(img, label, (x + 12, y - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
         return img
 
     def _update_module_status(self, out: Optional[PipelineOutput] = None) -> None:
@@ -1675,8 +1675,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
             points = poly
         for idx, point in enumerate(points[:60]):
             x, y = float(point[0]), float(point[1])
-            overlay.circles.append(((x, y), 7.0, (0, 220, 255)))
-            overlay.labels.append(((x + 10.0, y - 10.0), f"P{idx}", (220, 255, 255)))
+            overlay.circles.append(((x, y), 7.0, (255, 255, 255)))
+            overlay.labels.append(((x + 10.0, y - 10.0), f"P{idx}", (255, 255, 255)))
         if poly.shape[0] < 3 and points.shape[0] == 0:
             w, h = size
             overlay.lines.append(

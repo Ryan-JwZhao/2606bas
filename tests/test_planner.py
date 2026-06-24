@@ -100,7 +100,8 @@ def test_rule_overlay_includes_dashed_object_and_cue_separation_lines() -> None:
 
 
 def test_free_mode_predicts_two_cushion_collisions() -> None:
-    planner = GeometryPhysicsPlanner(PlannerConfig(shot_mode="free", free_max_collisions=2), _service())
+    service = _service()
+    planner = GeometryPhysicsPlanner(PlannerConfig(shot_mode="free", free_max_collisions=2), service)
     state = MatchStateFrame(
         frame_id=1,
         ts_cam_ns=1,
@@ -115,3 +116,8 @@ def test_free_mode_predicts_two_cushion_collisions() -> None:
     assert plan.free_route is not None
     assert len(plan.free_route.collision_points) == 2
     assert plan.free_route.collision_types == ["edge", "edge"]
+    overlay = OverlayBuilder(ProjectionConfig(projector_width=1000, projector_height=500), service).from_plan(plan)
+    assert overlay.lines
+    assert all(line.color == (255, 255, 255) for line in overlay.lines)
+    assert all(color == (255, 255, 255) for _center, _radius, color in overlay.circles)
+    assert all(color == (255, 255, 255) for _pos, _text, color in overlay.labels)

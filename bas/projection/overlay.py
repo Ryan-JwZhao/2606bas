@@ -13,7 +13,7 @@ from ..utils import unit, wall_time_id
 from .star_formula import StarFormulaConfig, draw_star_formula
 
 ROUTE_COLOR = (255, 255, 255)
-CUE_STICK_COLOR = (64, 220, 255)
+CUE_STICK_COLOR = ROUTE_COLOR
 
 
 class OverlayBuilder:
