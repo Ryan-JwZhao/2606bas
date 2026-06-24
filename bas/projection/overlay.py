@@ -8,6 +8,7 @@ import numpy as np
 
 from ..calibration.service import CalibrationService
 from ..config import ProjectionConfig
+from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
 from ..schemas import FreeRouteSuggestion, OverlayLine, ProjectionOverlay, ShotCandidate, ShotPlan
 from ..utils import unit, wall_time_id
 from .star_formula import StarFormulaConfig, draw_star_formula
@@ -44,8 +45,16 @@ class OverlayBuilder:
         ghost = np.asarray(candidate.ghost_ball, dtype=np.float32)
         target = np.asarray(candidate.object_ball, dtype=np.float32)
         pocket = np.asarray(candidate.pocket_point, dtype=np.float32)
+        inner = np.asarray(self.calibration.table.inner_polygon_mm, dtype=np.float32).reshape((-1, 2))
+        table = self.calibration.table
 
-        guide_start = self._cue_alignment_start(cue, ghost)
+        guide_start = cue_alignment_start(
+            cue,
+            ghost,
+            inner,
+            table_width_mm=float(table.width_mm),
+            table_height_mm=float(table.height_mm),
+        )
         if float(np.linalg.norm(guide_start - cue)) >= 1.0:
             self._append_line_mm(overlay, [guide_start, cue], width=3, trim_end_mm=ball_radius, label="cue_guide")
         self._append_line_mm(overlay, [cue, ghost], width=4, trim_start_mm=ball_radius, trim_end_mm=ball_radius, label="aim")
@@ -57,7 +66,13 @@ class OverlayBuilder:
             trim_start_mm=ball_radius,
             label="object",
         )
-        cue_sep_end = self._rule_cue_separation_end(cue, ghost, target)
+        cue_sep_end = rule_cue_separation_end(
+            cue,
+            ghost,
+            target,
+            inner,
+            fallback_length_mm=math.hypot(float(table.width_mm), float(table.height_mm)),
+        )
         if cue_sep_end is not None:
             self._append_line_mm(
                 overlay,
@@ -113,7 +128,12 @@ class OverlayBuilder:
                 continue
             normal = unit(normals[idx] if idx < len(normals) else aim_dir)
             hit_center = collision + normal * (2.0 * radius)
-            hit_end = self._estimate_route_end(hit_center, normal)
+            hit_end = estimate_route_end(
+                hit_center,
+                normal,
+                np.asarray(self.calibration.table.inner_polygon_mm, dtype=np.float32).reshape((-1, 2)),
+                fallback_length_mm=math.hypot(float(self.calibration.table.width_mm), float(self.calibration.table.height_mm)),
+            )
             self._append_line_mm(
                 overlay,
                 [hit_center, hit_end],
@@ -181,74 +201,6 @@ class OverlayBuilder:
         aa = a + d * start
         bb = b - d * end
         return [(float(aa[0]), float(aa[1])), (float(bb[0]), float(bb[1]))]
-
-    def _cue_alignment_start(self, cue: np.ndarray, ghost: np.ndarray) -> np.ndarray:
-        aim = ghost - cue
-        if float(np.linalg.norm(aim)) < 1e-6:
-            return cue.copy()
-        table_diag = math.hypot(float(self.calibration.table.width_mm), float(self.calibration.table.height_mm))
-        return self._trace_ray_inside_polygon(cue, -unit(aim), max_length=0.55 * table_diag, step_mm=12.0)
-
-    def _trace_ray_inside_polygon(self, origin: np.ndarray, direction: np.ndarray, max_length: float, step_mm: float) -> np.ndarray:
-        inner = np.asarray(self.calibration.table.inner_polygon_mm, dtype=np.float32).reshape((-1, 2))
-        if inner.shape[0] < 3:
-            return (origin + unit(direction) * float(max_length)).astype(np.float32)
-        best = origin.copy().astype(np.float32)
-        d = unit(direction)
-        for dist in np.arange(float(step_mm), float(max_length) + float(step_mm), float(step_mm)):
-            p = origin + d * float(dist)
-            if cv2.pointPolygonTest(inner.reshape((-1, 1, 2)).astype(np.float32), (float(p[0]), float(p[1])), False) < 0.0:
-                break
-            best = p.astype(np.float32)
-        return best
-
-    def _rule_cue_separation_end(self, cue: np.ndarray, ghost: np.ndarray, target: np.ndarray) -> Optional[np.ndarray]:
-        incoming = np.asarray(ghost - cue, dtype=np.float32)
-        object_dir = np.asarray(target - ghost, dtype=np.float32)
-        incoming_norm = float(np.linalg.norm(incoming))
-        object_norm = float(np.linalg.norm(object_dir))
-        if incoming_norm < 1e-6 or object_norm < 1e-6:
-            return None
-        incoming_u = incoming / incoming_norm
-        object_u = object_dir / object_norm
-        cue_after = incoming_u - object_u * float(np.dot(incoming_u, object_u))
-        if float(np.linalg.norm(cue_after)) < 1e-3:
-            return None
-        direction = unit(cue_after)
-        return self._estimate_route_end(ghost, direction)
-
-    def _estimate_route_end(self, origin: np.ndarray, direction: np.ndarray) -> np.ndarray:
-        inner = np.asarray(self.calibration.table.inner_polygon_mm, dtype=np.float32).reshape((-1, 2))
-        hit = self._ray_polygon_first_hit(origin, direction, inner, min_t=1.0)
-        if hit is not None:
-            return hit.astype(np.float32)
-        fallback_len = math.hypot(float(self.calibration.table.width_mm), float(self.calibration.table.height_mm))
-        return (origin + unit(direction) * max(120.0, fallback_len)).astype(np.float32)
-
-    @staticmethod
-    def _ray_polygon_first_hit(origin: np.ndarray, direction: np.ndarray, polygon: np.ndarray, min_t: float) -> Optional[np.ndarray]:
-        if polygon.size < 6 or polygon.shape[0] < 3:
-            return None
-        d = unit(direction)
-        best_t: Optional[float] = None
-        best_hit: Optional[np.ndarray] = None
-        for idx in range(polygon.shape[0]):
-            a = polygon[idx].astype(np.float32)
-            b = polygon[(idx + 1) % polygon.shape[0]].astype(np.float32)
-            s = b - a
-            denom = float(d[0] * s[1] - d[1] * s[0])
-            if abs(denom) < 1e-7:
-                continue
-            ao = a - origin
-            t = float((ao[0] * s[1] - ao[1] * s[0]) / denom)
-            u = float((ao[0] * d[1] - ao[1] * d[0]) / denom)
-            if t < min_t or u < -1e-4 or u > 1.0001:
-                continue
-            if best_t is None or t < best_t:
-                best_t = t
-                best_hit = origin + d * t
-        return best_hit
-
 
 def render_overlay_image(overlay: ProjectionOverlay, background: Optional[np.ndarray] = None) -> np.ndarray:
     width, height = overlay.projector_size

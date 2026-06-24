@@ -33,6 +33,7 @@ from ..media_capture import FfmpegH264Recorder
 from ..perception import create_detector
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
+from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
 from ..schemas import MatchPhase, OverlayLine, ProjectionOverlay, to_jsonable
 from ..utils import unit
 
@@ -1229,12 +1230,26 @@ class OperatorWindow(QtWidgets.QMainWindow):
         pocket = np.asarray(candidate.pocket_point, dtype=np.float32)
         thickness = max(2, int(round(3 * self._ui_scale)))
         radius_px = max(6, int(round(self._camera_radius_px(ghost, radius_mm))))
+        table = self.pipeline.calibration.table if self.pipeline is not None else None
+        inner = self._inner_polygon_table()
 
-        guide_start = self._cue_alignment_start_table(cue, ghost)
+        guide_start = cue_alignment_start(
+            cue,
+            ghost,
+            inner,
+            table_width_mm=float(table.width_mm) if table is not None else 0.0,
+            table_height_mm=float(table.height_mm) if table is not None else 0.0,
+        )
         self._draw_segment_trimmed(image, guide_start, cue, route_color, thickness, 0.0, radius_mm)
         self._draw_segment_trimmed(image, cue, ghost, route_color, thickness + 1, radius_mm, radius_mm)
         self._draw_dashed_segment_trimmed(image, target, pocket, route_color, thickness, radius_mm, 0.0)
-        cue_sep_end = self._rule_cue_separation_end_table(cue, ghost, target)
+        cue_sep_end = rule_cue_separation_end(
+            cue,
+            ghost,
+            target,
+            inner,
+            fallback_length_mm=float(np.hypot(table.width_mm, table.height_mm)) if table is not None else 600.0,
+        )
         if cue_sep_end is not None:
             self._draw_dashed_segment_trimmed(image, ghost, cue_sep_end, route_color, thickness, radius_mm, 0.0)
 
@@ -1282,7 +1297,13 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 continue
             normal = unit(normals[idx] if idx < len(normals) else aim_dir)
             hit_center = collision + normal * (2.0 * radius_mm)
-            hit_end = self._estimate_route_end_table(hit_center, normal)
+            table = self.pipeline.calibration.table if self.pipeline is not None else None
+            hit_end = estimate_route_end(
+                hit_center,
+                normal,
+                self._inner_polygon_table(),
+                fallback_length_mm=float(np.hypot(table.width_mm, table.height_mm)) if table is not None else 600.0,
+            )
             self._draw_dashed_segment_trimmed(image, hit_center, hit_end, route_color, thickness, radius_mm, 0.0)
 
     def _camera_radius_px(self, point_mm, radius_mm: float) -> float:
@@ -1362,80 +1383,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
         d = v / dist
         return np.vstack([a + d * start_trim, b - d * end_trim]).astype(np.float32)
 
-    def _cue_alignment_start_table(self, cue: np.ndarray, ghost: np.ndarray) -> np.ndarray:
-        aim = ghost - cue
-        if float(np.linalg.norm(aim)) < 1e-6:
-            return cue.copy()
-        if self.pipeline is None:
-            return cue.copy()
-        table = self.pipeline.calibration.table
-        max_length = 0.55 * float(np.hypot(table.width_mm, table.height_mm))
-        return self._trace_ray_inside_table(cue, -unit(aim), max_length=max_length, step_mm=12.0)
-
-    def _trace_ray_inside_table(self, origin: np.ndarray, direction: np.ndarray, max_length: float, step_mm: float) -> np.ndarray:
-        inner = self._inner_polygon_table()
-        if inner.shape[0] < 3:
-            return (origin + unit(direction) * float(max_length)).astype(np.float32)
-        best = origin.copy().astype(np.float32)
-        d = unit(direction)
-        for dist in np.arange(float(step_mm), float(max_length) + float(step_mm), float(step_mm)):
-            p = origin + d * float(dist)
-            if cv2.pointPolygonTest(inner.reshape((-1, 1, 2)).astype(np.float32), (float(p[0]), float(p[1])), False) < 0.0:
-                break
-            best = p.astype(np.float32)
-        return best
-
-    def _rule_cue_separation_end_table(self, cue: np.ndarray, ghost: np.ndarray, target: np.ndarray) -> Optional[np.ndarray]:
-        incoming = ghost - cue
-        object_dir = target - ghost
-        if float(np.linalg.norm(incoming)) < 1e-6 or float(np.linalg.norm(object_dir)) < 1e-6:
-            return None
-        incoming_u = unit(incoming)
-        object_u = unit(object_dir)
-        cue_after = incoming_u - object_u * float(np.dot(incoming_u, object_u))
-        if float(np.linalg.norm(cue_after)) < 1e-3:
-            return None
-        return self._estimate_route_end_table(ghost, unit(cue_after))
-
-    def _estimate_route_end_table(self, origin: np.ndarray, direction: np.ndarray) -> np.ndarray:
-        inner = self._inner_polygon_table()
-        hit = self._ray_polygon_first_hit_table(origin, direction, inner, min_t=1.0)
-        if hit is not None:
-            return hit.astype(np.float32)
-        if self.pipeline is None:
-            return (origin + unit(direction) * 600.0).astype(np.float32)
-        table = self.pipeline.calibration.table
-        fallback_len = float(np.hypot(table.width_mm, table.height_mm))
-        return (origin + unit(direction) * max(120.0, fallback_len)).astype(np.float32)
-
     def _inner_polygon_table(self) -> np.ndarray:
         if self.pipeline is None:
             return np.zeros((0, 2), dtype=np.float32)
         return np.asarray(self.pipeline.calibration.table.inner_polygon_mm, dtype=np.float32).reshape((-1, 2))
-
-    @staticmethod
-    def _ray_polygon_first_hit_table(origin: np.ndarray, direction: np.ndarray, polygon: np.ndarray, min_t: float) -> Optional[np.ndarray]:
-        if polygon.size < 6 or polygon.shape[0] < 3:
-            return None
-        d = unit(direction)
-        best_t: Optional[float] = None
-        best_hit: Optional[np.ndarray] = None
-        for idx in range(polygon.shape[0]):
-            a = polygon[idx].astype(np.float32)
-            b = polygon[(idx + 1) % polygon.shape[0]].astype(np.float32)
-            s = b - a
-            denom = float(d[0] * s[1] - d[1] * s[0])
-            if abs(denom) < 1e-7:
-                continue
-            ao = a - origin
-            t = float((ao[0] * s[1] - ao[1] * s[0]) / denom)
-            u = float((ao[0] * d[1] - ao[1] * d[0]) / denom)
-            if t < min_t or u < -1e-4 or u > 1.0001:
-                continue
-            if best_t is None or t < best_t:
-                best_t = t
-                best_hit = origin + d * t
-        return best_hit
 
     def _diagnostic_frame_payload(self, frame) -> dict[str, object]:
         payload = to_jsonable(frame)

@@ -24,6 +24,7 @@ Ultralytics/
 user_settings.json
 session_*/
 bas.log
+*.log
 captures/
 snapshots/
 videos/
