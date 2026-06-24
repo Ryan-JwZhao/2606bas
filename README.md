@@ -2,13 +2,13 @@
 
 这是一个从头重构的台球智能辅助系统骨架，围绕 `Capture -> Detect -> Track -> State -> Plan -> Projection -> Replay` 这条链路拆分模块。旧项目只作为接口和参数格式参考使用，尤其是 Nori 工业相机 SDK 与 OpenCV 标定文件读取。
 
-当前版本刻意没有实现进洞路线学习系统，也没有采集学习数据；在线规划只包含几何候选和快速物理筛选，学习排序层保留为禁用接口。
+当前版本保留几何候选和快速物理筛选作为基础算法；学习系统采用独立的采集与训练工具，训练结果可通过设置中的“学习排序模型”路径接入主程序。模型路径为空或加载失败时，主程序会自动退回基础几何规划。
 
 ## 快速运行
 
-双击根目录的 `Start_BAS.cmd` 可以直接打开桌面控制台 UI。默认不再启用 synthetic 虚拟画面；真实使用时在 UI 里选择 `auto`、`nori`、`opencv` 或 `video`。
+双击根目录的 `Start_BAS_One_Click.cmd` 可以直接打开桌面控制台 UI。默认不再启用 synthetic 虚拟画面；真实使用时在 UI 里选择 `auto`、`nori`、`opencv` 或 `video`。
 
-环境固定后，`Start_BAS.cmd` 不会创建虚拟环境，也不会安装依赖，只负责设置本地运行目录并快速打开 UI。首次部署或依赖变更时再运行一次：
+当前工作区的 `.venv` 已安装运行、YOLO 和学习训练依赖。`Start_BAS_One_Click.cmd` 只做本地依赖检查并启动 UI，不会要求手工安装依赖。若以后移动目录或破坏 `.venv`，再运行一次：
 
 ```powershell
 .\Setup_Environment.cmd
@@ -33,6 +33,14 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m bas run
 ```
 
+学习排序训练也提供一键脚本：
+
+```powershell
+.\Train_RL_One_Click.cmd
+```
+
+该脚本会读取 `rl/data/samples` 下的学习样本，训练后导出 `rl/models/ranker.json`。主程序设置页中把“学习排序模型”指向这个 JSON 即可使用训练结果。
+
 ## 模块说明
 
 - `bas.capture`: OpenCV、视频文件、合成源、Nori SDK 采集。Nori SDK 只筛选 MJPG。
@@ -40,7 +48,8 @@ python -m venv .venv
 - `bas.perception`: 调试颜色检测器和 Ultralytics YOLO 模型入口。
 - `bas.tracking`: 双阈值时序跟踪、短时遮挡保留、速度估计。
 - `bas.state`: `STABLE_IDLE/PRE_SHOT_ARMED/SHOT_ACTIVE/SETTLING/TURN_RESOLVE/ANOMALY_RECOVERY` 宏状态。
-- `bas.planning`: 几何候选 + 快速物理筛选；学习排序禁用占位。
+- `bas.planning`: 几何候选 + 快速物理筛选；可选加载学习排序 JSON 模型。
+- `bas.learning`: 将在线击球过程整理成 shot 级训练样本。
 - `bas.projection`: 投影 overlay 构建和 Qt 全屏窗口。
 - `bas.replay`: JSONL 结构化回放日志。
 
@@ -80,6 +89,7 @@ UI 中的“设置”会保存到 `local_settings/user_settings.json`，该文�
 - 相机标定文件
 - 投影校正文件
 - 默认投影设备和投影分辨率
+- 学习排序模型路径、学习样本目录、学习排序权重
 - 颗星公式位置、缩放、旋转、标签偏移等参数
 
 主界面直接支持：

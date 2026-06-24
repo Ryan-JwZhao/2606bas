@@ -12,12 +12,14 @@
 - `data/`：本地样本目录，默认被 `.gitignore` 忽略。
 - `models/`：本地训练结果目录，默认被 `.gitignore` 忽略。
 
-## 1. 安装训练依赖
+## 1. 依赖状态
 
-主程序不依赖 PyTorch。只有训练时需要安装：
+当前工作区的 `.venv` 已经安装运行、YOLO 和训练依赖，包括 PyTorch/CUDA。正常使用不需要再手动安装依赖。
+
+如果以后目录被移动或 `.venv` 损坏，再运行根目录的：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r rl\requirements.txt
+.\Setup_Environment.cmd
 ```
 
 ## 2. 在主程序中采集学习样本
@@ -50,6 +52,14 @@ rl/data/samples/learning_xxx/shot_samples.jsonl
 ```
 
 ## 4. 训练排序模型
+
+推荐直接双击根目录：
+
+```text
+Train_RL_One_Click.cmd
+```
+
+等价命令是：
 
 ```powershell
 .\.venv\Scripts\python.exe -m rl.train --samples rl\data\samples --out rl\models\ranker.json --epochs 50
@@ -92,4 +102,3 @@ learning:
 4. 用 `train.py` 训练并导出 `ranker.json`。
 5. 在主程序设置里指向模型路径，开启学习排序。
 6. 先保留回放和样本采集，观察学习排序和原几何排序的差异。
-
