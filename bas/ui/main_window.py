@@ -22,20 +22,27 @@ import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ..app import PipelineOutput, RuntimePipeline
-from ..calibration import create_calibration_service
+from ..calibration import (
+    build_linked_patterns,
+    create_calibration_service,
+    match_linked_pattern_observation,
+    projection_output_summary,
+    solve_linked_projection_calibration,
+)
 from ..calibration.charuco import CharucoBoardSpec, render_charuco_board
 from ..calibration.verification import format_holdout_report, verify_holdout_file
-from ..capture import probe_cameras
+from ..capture import create_capture_service, probe_cameras
 from ..geometry import TableGeometryLoader
-from .geometry_reference import draw_geometry_reference_lines
 from ..logging_config import configure_logging
 from ..media_capture import FfmpegH264Recorder
 from ..perception import create_detector
+from ..paths import PROJECT_ROOT
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
 from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
 from ..schemas import MatchPhase, OverlayLine, ProjectionOverlay, to_jsonable
 from ..utils import unit
+from .geometry_reference import draw_geometry_reference_lines
 
 LOGGER = logging.getLogger(__name__)
 
@@ -370,6 +377,7 @@ class ProjectorCalibrationDialog(QtWidgets.QDialog):
             ("显示当前校正结果", lambda: self.operator.show_projector_calibration_result(self.calibration)),
             ("显示残差箭头", lambda: self.operator.show_projector_residual_overlay(self.calibration)),
             ("验证 Holdout", self._verify_holdout),
+            ("一键联动校正", self.operator.run_linked_projector_calibration),
             ("恢复实时投影", self.operator.resume_runtime_projection),
         ]
         for idx, (text, slot) in enumerate(actions):
@@ -422,6 +430,253 @@ class ProjectorCalibrationDialog(QtWidgets.QDialog):
         except Exception as exc:
             self.operator._append_log(f"Holdout 验证失败: {exc}")
             QtWidgets.QMessageBox.critical(self, "Holdout 验证失败", str(exc))
+
+
+class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
+    def __init__(self, operator: "OperatorWindow", parent: Optional[QtWidgets.QWidget] = None):
+        super().__init__(parent or operator)
+        self.operator = operator
+        self._busy = False
+        self._result = None
+        self._saved_path: Optional[Path] = None
+        self.setWindowTitle("一键联动校正")
+        self.resize(920, 760)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        intro = QtWidgets.QLabel(
+            "该流程会先基于工业相机畸变校正采集画面，再自动播放总览网格、全域 ChArUco、中心细化和六个袋口重点图样，"
+            "完成投影仪-相机-程序的一键联动校正。"
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        self.preview = QtWidgets.QLabel("等待采集画面")
+        self.preview.setAlignment(QtCore.Qt.AlignCenter)
+        self.preview.setMinimumHeight(280)
+        self.preview.setStyleSheet("background:#111; border:1px solid #333;")
+        layout.addWidget(self.preview)
+
+        self.progress = QtWidgets.QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        layout.addWidget(self.progress)
+
+        self.summary = QtWidgets.QLabel("尚未开始联动校正。")
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+
+        self.log_box = QtWidgets.QPlainTextEdit()
+        self.log_box.setReadOnly(True)
+        layout.addWidget(self.log_box, 1)
+
+        button_row = QtWidgets.QHBoxLayout()
+        self.start_btn = QtWidgets.QPushButton("开始一键联动校正")
+        self.start_btn.clicked.connect(self.run_calibration)
+        button_row.addWidget(self.start_btn)
+        self.save_btn = QtWidgets.QPushButton("保存结果")
+        self.save_btn.setEnabled(False)
+        self.save_btn.clicked.connect(self.save_result)
+        button_row.addWidget(self.save_btn)
+        self.load_btn = QtWidgets.QPushButton("加载当前结果")
+        self.load_btn.clicked.connect(self.load_result)
+        button_row.addWidget(self.load_btn)
+        self.show_btn = QtWidgets.QPushButton("投影显示结果")
+        self.show_btn.setEnabled(False)
+        self.show_btn.clicked.connect(self.show_result)
+        button_row.addWidget(self.show_btn)
+        button_row.addStretch(1)
+        close_btn = QtWidgets.QPushButton("关闭")
+        close_btn.clicked.connect(self.reject)
+        button_row.addWidget(close_btn)
+        layout.addLayout(button_row)
+
+    def _append_log(self, text: str) -> None:
+        stamp = time.strftime("%H:%M:%S")
+        self.log_box.appendPlainText(f"[{stamp}] {text}")
+        self.log_box.verticalScrollBar().setValue(self.log_box.verticalScrollBar().maximum())
+        self.operator._append_log(text)
+
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self.start_btn.setEnabled(not busy)
+        self.save_btn.setEnabled((self._result is not None) and (not busy))
+        self.show_btn.setEnabled((self._result is not None) and (not busy))
+        self.load_btn.setEnabled(not busy)
+
+    def _pump_ui(self) -> None:
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.processEvents()
+
+    def _set_preview_image(self, frame_bgr: np.ndarray) -> None:
+        if frame_bgr is None or frame_bgr.size == 0:
+            return
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        h, w = rgb.shape[:2]
+        qimg = QtGui.QImage(rgb.data, w, h, 3 * w, QtGui.QImage.Format_RGB888).copy()
+        pix = QtGui.QPixmap.fromImage(qimg)
+        self.preview.setPixmap(pix.scaled(self.preview.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+
+    def _projection_output_path(self) -> Path:
+        current = (self.operator.config.calibration.projection_file or "").strip()
+        if current:
+            return Path(current)
+        return PROJECT_ROOT / "local_settings" / "projection_calibration_linked.json"
+
+    @QtCore.pyqtSlot()
+    def run_calibration(self) -> None:
+        if self._busy:
+            return
+        capture = None
+        self._set_busy(True)
+        self.progress.setValue(0)
+        self._append_log("联动校正开始，准备同步当前配置。")
+        try:
+            self.operator._sync_config_from_controls()
+            if not self.operator.config.calibration.camera_file and self.operator.config.camera.distortion_correction_file:
+                self.operator.config.calibration.camera_file = self.operator.config.camera.distortion_correction_file
+                self._append_log("已将工业相机畸变标定文件同步为联动校正的相机标定输入。")
+            self.operator._save_user_settings()
+            if self.operator.pipeline is not None:
+                self._append_log("检测到实时采集正在运行，先自动停止以释放相机。")
+                self.operator.stop_pipeline()
+
+            geometry = TableGeometryLoader.load_optional(
+                self.operator.config.geometry.outline_path,
+                self.operator.config.geometry.inline_path,
+                self.operator.config.geometry.pocket_path,
+            )
+            calibration = create_calibration_service(
+                self.operator.config.calibration,
+                frame_undistorted=bool(self.operator.config.camera.distortion_correction_enabled),
+            )
+            capture = create_capture_service(self.operator.config.camera)
+            patterns = build_linked_patterns(
+                geometry,
+                (int(self.operator.config.projection.projector_width), int(self.operator.config.projection.projector_height)),
+                prior_projection=calibration.projection if calibration.projection.is_valid else None,
+            )
+            self.operator.ensure_projection_window_for_operator()
+            self._append_log(f"已生成 {len(patterns)} 个联动图样，开始自动采集与识别。")
+
+            observations = []
+            first_frame_shape: Optional[tuple[int, int]] = None
+            undistort = None
+            if calibration.camera.is_valid and not capture.frame_distortion_corrected:
+                undistort = calibration.camera.undistort_points
+            total = max(1, len(patterns))
+            for idx, pattern in enumerate(patterns):
+                percent = int(round(idx / total * 100.0))
+                self.progress.setValue(percent)
+                self.summary.setText(f"正在处理图样 {idx + 1}/{len(patterns)}: {pattern.title}")
+                if self.operator.projection_window is not None:
+                    self.operator.projection_window.set_image(pattern.image)
+                self._append_log(f"切换图样: {pattern.title}")
+                self._pump_ui()
+                time.sleep(0.25)
+
+                best = None
+                for _ in range(6):
+                    packet = capture.read()
+                    if packet is None or packet.image is None:
+                        continue
+                    if first_frame_shape is None:
+                        first_frame_shape = packet.image.shape[:2]
+                    self._set_preview_image(packet.image)
+                    self._pump_ui()
+                    observation = match_linked_pattern_observation(pattern, packet.image, undistort_points=undistort)
+                    if observation is not None and (best is None or observation.matched_count > best.matched_count):
+                        best = observation
+                    time.sleep(0.05)
+
+                if not pattern.collect_for_solver:
+                    continue
+                if best is None:
+                    self._append_log(f"{pattern.title} 未检测到足够的 ChArUco 角点，跳过该图样。")
+                    continue
+                observations.append(best)
+                self._append_log(f"{pattern.title} 匹配角点 {best.matched_count} 个，重点区域 {best.emphasis_zone}。")
+
+            if first_frame_shape is None:
+                raise RuntimeError("未能从相机读取任何画面，联动校正中止。")
+            table_polygon_cam = None
+            if not geometry.is_empty:
+                frame_h, frame_w = first_frame_shape
+                outer_px, _, _ = geometry.scaled(frame_w, frame_h)
+                if outer_px.shape[0] >= 3:
+                    table_polygon_cam = outer_px.astype(np.float32)
+            self._result = solve_linked_projection_calibration(
+                observations,
+                (int(self.operator.config.projection.projector_width), int(self.operator.config.projection.projector_height)),
+                table_polygon_cam=table_polygon_cam,
+            )
+            self._saved_path = self._projection_output_path()
+            self._result.projection.save(self._saved_path)
+            self.operator.config.calibration.projection_file = str(self._saved_path)
+            self.operator._save_user_settings()
+            self.operator._sync_controls_from_config()
+            self.progress.setValue(100)
+            self.summary.setText(
+                "联动校正完成。\n"
+                f"{projection_output_summary(self._result)}\n"
+                f"保存路径: {self._saved_path}"
+            )
+            self._append_log("联动校正完成并已保存结果。")
+            self.show_result()
+        except Exception as exc:
+            self.summary.setText(f"联动校正失败: {exc}")
+            self._append_log(f"联动校正失败: {exc}")
+            QtWidgets.QMessageBox.critical(self, "联动校正失败", str(exc))
+        finally:
+            if capture is not None:
+                capture.release()
+            self._set_busy(False)
+
+    @QtCore.pyqtSlot()
+    def save_result(self) -> None:
+        if self._result is None:
+            return
+        path = self._projection_output_path()
+        self._result.projection.save(path)
+        self._saved_path = path
+        self.summary.setText(self.summary.text() + f"\n已保存到: {path}")
+        self._append_log(f"已保存联动校正结果: {path}")
+
+    @QtCore.pyqtSlot()
+    def load_result(self) -> None:
+        path = self._projection_output_path()
+        if not path.exists():
+            QtWidgets.QMessageBox.information(self, "未找到结果", f"当前投影校正文件不存在:\n{path}")
+            return
+        self.operator.config.calibration.projection_file = str(path)
+        self.operator._save_user_settings()
+        calibration = create_calibration_service(
+            self.operator.config.calibration,
+            frame_undistorted=bool(self.operator.config.camera.distortion_correction_enabled),
+        )
+        stats = calibration.projection.calibration_error_stats()
+        self.summary.setText(
+            "已加载当前投影校正结果。\n"
+            f"mean={stats.get('mean_px', 0.0):.2f}px  "
+            f"p95={stats.get('p95_px', stats.get('max_px', 0.0)):.2f}px  "
+            f"max={stats.get('max_px', 0.0):.2f}px\n"
+            f"路径: {path}"
+        )
+        self._append_log(f"已加载投影校正结果: {path}")
+        self.operator.show_projector_calibration_result(calibration)
+
+    @QtCore.pyqtSlot()
+    def show_result(self) -> None:
+        path = self._saved_path or self._projection_output_path()
+        self.operator.config.calibration.projection_file = str(path)
+        self.operator._save_user_settings()
+        calibration = create_calibration_service(
+            self.operator.config.calibration,
+            frame_undistorted=bool(self.operator.config.camera.distortion_correction_enabled),
+        )
+        self.operator.show_projector_calibration_result(calibration)
+        self.operator.show_projector_residual_overlay(calibration)
+        self._append_log("已在投影窗口显示联动校正结果与残差箭头。")
 
 
 class OperatorWindow(QtWidgets.QMainWindow):
@@ -499,6 +754,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.capture_btn = self._button("开始采集")
         self.projection_btn = self._button("开始投影")
         self.init_module_btn = self._button("初始化图形图像模块")
+        self.linked_calib_btn = self._button("一键联动校正")
         self.projector_calib_btn = self._button("校正投影仪")
         self.settings_btn = self._button("设置")
         self.probe_btn = self._button("探测相机")
@@ -506,11 +762,12 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.capture_btn.clicked.connect(self.toggle_capture)
         self.projection_btn.clicked.connect(self.toggle_projection_window)
         self.init_module_btn.clicked.connect(self.initialize_graphics_image_module)
+        self.linked_calib_btn.clicked.connect(self.run_linked_projector_calibration)
         self.projector_calib_btn.clicked.connect(self.calibrate_projector)
         self.settings_btn.clicked.connect(self.open_settings)
         self.probe_btn.clicked.connect(self.probe_camera_devices)
         self.export_diag_btn.clicked.connect(self.export_diagnostic_snapshot)
-        for btn in [self.capture_btn, self.projection_btn, self.init_module_btn, self.projector_calib_btn, self.settings_btn, self.probe_btn, self.export_diag_btn]:
+        for btn in [self.capture_btn, self.projection_btn, self.init_module_btn, self.linked_calib_btn, self.projector_calib_btn, self.settings_btn, self.probe_btn, self.export_diag_btn]:
             self.side_layout.addWidget(btn)
         self.side_layout.addSpacing(6)
 
@@ -1641,6 +1898,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             self._append_log(f"投影仪校正失败: {exc}")
             QtWidgets.QMessageBox.critical(self, "投影仪校正失败", str(exc))
+
+    @QtCore.pyqtSlot()
+    def run_linked_projector_calibration(self) -> None:
+        dialog = LinkedProjectorCalibrationDialog(self, self)
+        dialog.exec_()
 
     def _projector_calibration_overlay(self, calibration) -> ProjectionOverlay:
         size = (int(self.config.projection.projector_width), int(self.config.projection.projector_height))

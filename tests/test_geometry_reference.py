@@ -38,14 +38,31 @@ def test_geometry_reference_lines_draw_on_frontend_frame_only() -> None:
         inner_norm=np.array([[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], dtype=np.float32),
         inline_norm=[np.array([[0.1, 0.2], [0.9, 0.2]], dtype=np.float32)],
         pockets_norm=[np.array([[0.0, 0.0], [0.08, 0.0], [0.08, 0.08]], dtype=np.float32)],
+        boundary_segments_norm=[
+            np.array([[0.1, 0.1], [0.9, 0.1]], dtype=np.float32),
+            np.array([[0.9, 0.1], [0.9, 0.9]], dtype=np.float32),
+        ],
     )
     image = np.zeros((500, 1000, 3), dtype=np.uint8)
 
     drawn = draw_geometry_reference_lines(image, geometry)
 
-    assert drawn == 3
+    assert drawn == 4
     assert np.count_nonzero(image) > 0
     assert np.any(np.all(image == np.array([0, 255, 255], dtype=np.uint8), axis=2))
+
+
+def test_geometry_reference_draws_open_pocket_curves() -> None:
+    geometry = TableGeometry(
+        outer_norm=np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32),
+        inner_norm=np.array([[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]], dtype=np.float32),
+        pockets_norm=[np.array([[0.05, 0.05], [0.10, 0.05], [0.10, 0.10]], dtype=np.float32)],
+    )
+    image = np.zeros((500, 500, 3), dtype=np.uint8)
+
+    draw_geometry_reference_lines(image, geometry)
+
+    assert int(image[38, 38].sum()) == 0
 
 
 def test_geometry_reference_draw_respects_toggle() -> None:

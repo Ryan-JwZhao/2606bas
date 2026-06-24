@@ -147,6 +147,8 @@ class ProjectionCalibration:
     def save(self, path: str | Path) -> None:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
+        quality_report = dict(self.quality_report)
+        quality_report.update(self.calibration_error_stats())
         data = {
             "mode": self.mode,
             "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -158,7 +160,7 @@ class ProjectionCalibration:
             "table_polygon_cam": self.table_polygon_cam.tolist(),
             "table_polygon_proj": self.table_polygon_proj.tolist(),
             "projector_size": list(self.projector_size),
-            "quality_report": self.calibration_error_stats(),
+            "quality_report": quality_report,
         }
         with p.open("w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -180,4 +182,3 @@ def table_bbox_from_polygon(poly: np.ndarray, projector_size: Tuple[int, int]) -
         margin_y = float(h) * 0.08
         return (margin_x, margin_y, float(w) - margin_x, float(h) - margin_y)
     return (0.0, 0.0, 1280.0, 800.0)
-

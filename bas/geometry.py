@@ -15,6 +15,7 @@ class TableGeometry:
     inner_norm: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float32))
     inline_norm: List[np.ndarray] = field(default_factory=list)
     pockets_norm: List[np.ndarray] = field(default_factory=list)
+    boundary_segments_norm: List[np.ndarray] = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
@@ -41,6 +42,17 @@ class TableGeometry:
             return out
 
         return scale(self.outer_norm), [scale(p) for p in self.inline_norm], [scale(p) for p in self.pockets_norm]
+
+    def boundary_scaled(self, width: int, height: int) -> Tuple[np.ndarray, List[np.ndarray]]:
+        def scale(arr: np.ndarray) -> np.ndarray:
+            if arr.size == 0:
+                return arr.copy()
+            out = arr.copy().astype(np.float32)
+            out[:, 0] *= float(width)
+            out[:, 1] *= float(height)
+            return out
+
+        return scale(self.inner_norm), [scale(seg) for seg in self.boundary_segments_norm]
 
 
 class TableGeometryLoader:
@@ -70,16 +82,23 @@ class TableGeometryLoader:
         pockets = cls._all_shapes_with_label(pk_data, "pocket", src_w, src_h)
 
         inner = np.zeros((0, 2), dtype=np.float32)
+        boundary_segments: List[np.ndarray] = []
         stitch_lines = [*inline_lines, *pockets]
         if stitch_lines:
-            inner = cls._stitch_lines_to_polygon(stitch_lines)
+            inner, boundary_segments = cls._stitch_lines_to_polygon(stitch_lines)
             if inner.shape[0] < 3:
                 stack = np.vstack(stitch_lines).astype(np.float32)
                 hull = cv2.convexHull((stack * np.array([1000.0, 1000.0], dtype=np.float32)).astype(np.float32))
                 inner = hull.reshape((-1, 2)).astype(np.float32) / np.array([1000.0, 1000.0], dtype=np.float32)
         if inner.shape[0] < 3:
             inner = outer.copy()
-        return TableGeometry(outer_norm=outer, inner_norm=inner, inline_norm=inline_lines, pockets_norm=pockets)
+        return TableGeometry(
+            outer_norm=outer,
+            inner_norm=inner,
+            inline_norm=inline_lines,
+            pockets_norm=pockets,
+            boundary_segments_norm=boundary_segments,
+        )
 
     @staticmethod
     def _load_json(path: Optional[str]) -> Dict[str, Any]:
@@ -128,13 +147,14 @@ class TableGeometryLoader:
         return out
 
     @staticmethod
-    def _stitch_lines_to_polygon(lines: List[np.ndarray], join_eps: float = 0.03) -> np.ndarray:
+    def _stitch_lines_to_polygon(lines: List[np.ndarray], join_eps: float = 0.03) -> Tuple[np.ndarray, List[np.ndarray]]:
         candidates = [np.asarray(line, dtype=np.float32).reshape((-1, 2)) for line in lines if np.asarray(line).size >= 4]
         if not candidates:
-            return np.zeros((0, 2), dtype=np.float32)
+            return np.zeros((0, 2), dtype=np.float32), []
         best = np.zeros((0, 2), dtype=np.float32)
         best_used = -1
         best_cost = float("inf")
+        best_parts: List[np.ndarray] = []
         for start_idx in range(len(candidates)):
             for rev in (False, True):
                 used = [False] * len(candidates)
@@ -171,6 +191,7 @@ class TableGeometryLoader:
                 total = cost + end_gap
                 if used_count > best_used or (used_count == best_used and total < best_cost):
                     best, best_used, best_cost = merged, used_count, total
+                    best_parts = [part.copy() for part in parts]
         if best.shape[0] >= 3 and float(np.linalg.norm(best[0] - best[-1])) <= join_eps:
-            return best
-        return np.zeros((0, 2), dtype=np.float32)
+            return best, best_parts
+        return np.zeros((0, 2), dtype=np.float32), []
