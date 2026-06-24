@@ -40,6 +40,7 @@ class UserSettings:
     projection_width: Optional[int] = None
     projection_height: Optional[int] = None
     projection_geometry_reference_enabled: Optional[bool] = None
+    ui_geometry_reference_enabled: Optional[bool] = None
     replay_enabled: Optional[bool] = None
     shot_mode: Optional[str] = None
     learning_ranker_enabled: Optional[bool] = None
@@ -126,7 +127,9 @@ class UserSettings:
             config.projection.projector_width = int(self.projection_width)
         if self.projection_height is not None:
             config.projection.projector_height = int(self.projection_height)
-        if self.projection_geometry_reference_enabled is not None:
+        if self.ui_geometry_reference_enabled is not None:
+            config.projection.geometry_reference_enabled = bool(self.ui_geometry_reference_enabled)
+        elif self.projection_geometry_reference_enabled is not None:
             config.projection.geometry_reference_enabled = bool(self.projection_geometry_reference_enabled)
         if self.replay_enabled is not None:
             config.replay.enabled = bool(self.replay_enabled)
@@ -178,7 +181,7 @@ class UserSettings:
             projection_screen_index=config.projection.screen_index,
             projection_width=config.projection.projector_width,
             projection_height=config.projection.projector_height,
-            projection_geometry_reference_enabled=config.projection.geometry_reference_enabled,
+            ui_geometry_reference_enabled=config.projection.geometry_reference_enabled,
             replay_enabled=config.replay.enabled,
             shot_mode=config.planner.shot_mode,
             learning_ranker_enabled=config.learning.ranker_enabled,

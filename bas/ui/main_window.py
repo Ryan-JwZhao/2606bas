@@ -26,8 +26,8 @@ from ..calibration import create_calibration_service
 from ..calibration.charuco import CharucoBoardSpec, render_charuco_board
 from ..calibration.verification import format_holdout_report, verify_holdout_file
 from ..capture import probe_cameras
-from ..geometry import TableGeometry, TableGeometryLoader
-from ..projection.geometry_reference import build_geometry_reference_overlay
+from ..geometry import TableGeometryLoader
+from .geometry_reference import draw_geometry_reference_lines
 from ..logging_config import configure_logging
 from ..media_capture import FfmpegH264Recorder
 from ..perception import create_detector
@@ -453,8 +453,6 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._route_video_recorder: Optional[FfmpegH264Recorder] = None
         self._raw_video_path: Optional[Path] = None
         self._route_video_path: Optional[Path] = None
-        self._geometry_reference_overlay_cache: Optional[ProjectionOverlay] = None
-        self._geometry_reference_cache_signature: Optional[tuple] = None
 
         self.timer = QtCore.QTimer(self)
         self.timer.setSingleShot(True)
@@ -850,9 +848,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot(bool)
     def _geometry_reference_toggled(self, checked: bool) -> None:
         self.config.projection.geometry_reference_enabled = bool(checked)
-        self._invalidate_geometry_reference_overlay()
         self._save_user_settings()
-        self._refresh_projection()
+        if self.last_output is not None:
+            self._update_preview(self.last_output)
         self._append_log("几何参考线已开启" if checked else "几何参考线已关闭")
 
     def _save_user_settings(self) -> None:
@@ -1212,6 +1210,15 @@ class OperatorWindow(QtWidgets.QMainWindow):
             return
         if out.plan.best is not None:
             self._draw_rule_plan_preview(image, out.plan.best)
+
+    def _draw_geometry_reference_preview(self, image: np.ndarray) -> None:
+        if self.pipeline is None:
+            return
+        draw_geometry_reference_lines(
+            image,
+            self.pipeline.geometry,
+            enabled=bool(self.config.projection.geometry_reference_enabled),
+        )
 
     def _draw_rule_plan_preview(self, image: np.ndarray, candidate) -> None:
         route_color = (255, 255, 255)
@@ -1631,106 +1638,6 @@ class OperatorWindow(QtWidgets.QMainWindow):
             parts.append(f"路线 {self._route_video_recorder.frames_written}帧")
         return "; ".join(parts) if parts else "local_settings/captures"
 
-    def _invalidate_geometry_reference_overlay(self) -> None:
-        self._geometry_reference_overlay_cache = None
-        self._geometry_reference_cache_signature = None
-
-    def _geometry_reference_frame_size(self) -> tuple[int, int]:
-        if self.last_output is not None and self.last_output.frame.image is not None:
-            h, w = self.last_output.frame.image.shape[:2]
-            return int(w), int(h)
-        return int(self.config.camera.width), int(self.config.camera.height)
-
-    def _geometry_reference_signature(self, frame_size: tuple[int, int]) -> tuple:
-        pipeline_calib_version = self.pipeline.calibration.calib_version if self.pipeline is not None else None
-        return (
-            bool(self.config.projection.geometry_reference_enabled),
-            self.config.geometry.outline_path,
-            self.config.geometry.inline_path,
-            self.config.geometry.pocket_path,
-            self.config.calibration.camera_file,
-            self.config.calibration.projection_file,
-            bool(self.config.camera.distortion_correction_enabled),
-            int(frame_size[0]),
-            int(frame_size[1]),
-            int(self.config.projection.projector_width),
-            int(self.config.projection.projector_height),
-            pipeline_calib_version,
-        )
-
-    def _cache_geometry_reference_overlay(
-        self,
-        calibration,
-        geometry: TableGeometry,
-        frame_size: tuple[int, int],
-    ) -> ProjectionOverlay:
-        signature = self._geometry_reference_signature(frame_size)
-        try:
-            overlay = build_geometry_reference_overlay(
-                self.config.projection,
-                calibration,
-                geometry,
-                frame_size=frame_size,
-            )
-        except Exception:
-            LOGGER.exception("Failed to build geometry reference overlay.")
-            overlay = ProjectionOverlay(
-                overlay_id="geometry_reference_error",
-                frame_id=0,
-                projector_size=(self.config.projection.projector_width, self.config.projection.projector_height),
-            )
-        self._geometry_reference_overlay_cache = overlay
-        self._geometry_reference_cache_signature = signature
-        return overlay
-
-    def _current_geometry_reference_overlay(self) -> Optional[ProjectionOverlay]:
-        if not self.config.projection.geometry_reference_enabled:
-            return None
-        frame_size = self._geometry_reference_frame_size()
-        signature = self._geometry_reference_signature(frame_size)
-        if self._geometry_reference_overlay_cache is not None and self._geometry_reference_cache_signature == signature:
-            return self._geometry_reference_overlay_cache
-        if self.pipeline is not None:
-            return self._cache_geometry_reference_overlay(self.pipeline.calibration, self.pipeline.geometry, frame_size)
-        calibration = create_calibration_service(
-            self.config.calibration,
-            frame_undistorted=bool(self.config.camera.distortion_correction_enabled),
-        )
-        geometry = TableGeometryLoader.load_optional(
-            self.config.geometry.outline_path,
-            self.config.geometry.inline_path,
-            self.config.geometry.pocket_path,
-        )
-        return self._cache_geometry_reference_overlay(calibration, geometry, frame_size)
-
-    def _overlay_with_geometry_reference(self, overlay: ProjectionOverlay) -> ProjectionOverlay:
-        reference = self._current_geometry_reference_overlay()
-        if reference is None or (not reference.lines and not reference.circles and not reference.labels):
-            return overlay
-        return ProjectionOverlay(
-            overlay_id=f"{overlay.overlay_id}_with_geometry_reference",
-            frame_id=overlay.frame_id,
-            projector_size=overlay.projector_size,
-            lines=[*reference.lines, *overlay.lines],
-            circles=[*reference.circles, *overlay.circles],
-            labels=[*reference.labels, *overlay.labels],
-        )
-
-    def _show_geometry_reference_after_init(self, calibration, geometry: TableGeometry) -> None:
-        if not self.config.projection.geometry_reference_enabled:
-            return
-        overlay = self._cache_geometry_reference_overlay(calibration, geometry, self._geometry_reference_frame_size())
-        if not overlay.lines and not overlay.circles and not overlay.labels:
-            self._append_log("几何参考线未显示: 未加载到 outline/inline/pocket")
-            return
-        self._projection_calibration_mode = False
-        if self.projection_window is None:
-            self._ensure_projection_window()
-            self.projection_btn.setText("停止投影")
-        else:
-            self._refresh_projection()
-        self._append_log(f"几何参考线已显示: {len(overlay.lines)} 条")
-
     @QtCore.pyqtSlot()
     def initialize_graphics_image_module(self) -> None:
         self._sync_config_from_controls()
@@ -1757,7 +1664,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
             )
             self._set_module_status("检测", "已加载", getattr(detector, "version", "unknown"))
             self._set_module_status("标定", "有效" if calibration.projection.is_valid else "缺失", f"{camera_state} / {projection_state}")
-            self._show_geometry_reference_after_init(calibration, geometry)
+            if self.config.projection.geometry_reference_enabled and not geometry.is_empty:
+                self._append_log("几何参考线将在前端实时画面中显示，不会输出到投影仪")
         except Exception as exc:
             self._append_log(f"图形图像模块初始化失败: {exc}")
             QtWidgets.QMessageBox.critical(self, "初始化失败", str(exc))
@@ -1957,14 +1865,14 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if self._projection_calibration_mode:
             return
         if self.last_output is not None:
-            self.projection_window.set_overlay(self._overlay_with_geometry_reference(self.last_output.overlay))
+            self.projection_window.set_overlay(self.last_output.overlay)
         else:
             overlay = ProjectionOverlay(
                 overlay_id="blank",
                 frame_id=0,
                 projector_size=(self.config.projection.projector_width, self.config.projection.projector_height),
             )
-            self.projection_window.set_overlay(self._overlay_with_geometry_reference(overlay))
+            self.projection_window.set_overlay(overlay)
 
     def _tick(self) -> None:
         tick_start = time.perf_counter()
@@ -2015,6 +1923,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             cx, cy = [int(round(v)) for v in tr.center_px]
             cv2.circle(img, (cx, cy), max(4, int(round(tr.radius_px))), (250, 250, 250), 2, cv2.LINE_AA)
             cv2.putText(img, f"#{tr.track_id} {tr.group}", (cx + 8, cy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55 * self._ui_scale, (230, 230, 230), 1, cv2.LINE_AA)
+        self._draw_geometry_reference_preview(img)
         self._draw_plan_preview(img, out)
         self._set_preview_image(img)
 
