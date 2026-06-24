@@ -63,23 +63,40 @@ class RuntimePipeline:
         self._last_state: Optional[MatchStateFrame] = None
         self._last_plan: Optional[ShotPlan] = None
         self._last_overlay: Optional[ProjectionOverlay] = None
+        self.last_timings_ms: dict[str, float] = {}
+        self._processed_frames = 0
+        self._cached_detection_frames = 0
         LOGGER.info("Capture opened: %s", self.capture.info())
         LOGGER.info("Calibration version: %s", self.calibration.calib_version)
 
     def step(self) -> Optional[PipelineOutput]:
+        total_start = time.perf_counter()
+        stage_start = total_start
         frame = self.capture.read()
+        capture_ms = (time.perf_counter() - stage_start) * 1000.0
         if frame is None:
+            self.last_timings_ms = {
+                "capture_ms": float(capture_ms),
+                "total_ms": float((time.perf_counter() - total_start) * 1000.0),
+            }
             return None
         frame.calib_version = self.calibration.calib_version
+        stage_start = time.perf_counter()
         self._update_table_geometry_for_frame(frame)
         mask = self._camera_table_mask(frame)
+        geometry_ms = (time.perf_counter() - stage_start) * 1000.0
+        stage_start = time.perf_counter()
         detections = self.detector.process(frame, mask_polygon=mask)
+        detect_ms = (time.perf_counter() - stage_start) * 1000.0
         cached = detections.detector_version.endswith(":cached")
+        stage_start = time.perf_counter()
         if cached and self._last_tracks is not None:
             tracks = replace(self._last_tracks, frame_id=frame.frame_id, ts_cam_ns=frame.ts_cam_ns, latency_ms=0.0)
         else:
             tracks = self._enrich_tracks_with_table_units(self.tracker.update(detections))
             self._last_tracks = tracks
+        track_ms = (time.perf_counter() - stage_start) * 1000.0
+        stage_start = time.perf_counter()
         if cached and self._last_state is not None and self._last_plan is not None and self._last_overlay is not None:
             state = replace(self._last_state, frame_id=frame.frame_id, ts_cam_ns=frame.ts_cam_ns, events=[])
             plan = replace(self._last_plan, frame_id=frame.frame_id, ts_cam_ns=frame.ts_cam_ns)
@@ -96,8 +113,26 @@ class RuntimePipeline:
             self._last_state = state
             self._last_plan = plan
             self._last_overlay = overlay
+        state_plan_overlay_ms = (time.perf_counter() - stage_start) * 1000.0
         out = PipelineOutput(frame=frame, detections=detections, tracks=tracks, state=state, plan=plan, overlay=overlay)
+        stage_start = time.perf_counter()
         self._record(out)
+        record_ms = (time.perf_counter() - stage_start) * 1000.0
+        self._processed_frames += 1
+        if cached:
+            self._cached_detection_frames += 1
+        total_ms = (time.perf_counter() - total_start) * 1000.0
+        self.last_timings_ms = {
+            "capture_ms": float(capture_ms),
+            "geometry_ms": float(geometry_ms),
+            "detect_ms": float(detect_ms),
+            "track_ms": float(track_ms),
+            "state_plan_overlay_ms": float(state_plan_overlay_ms),
+            "record_ms": float(record_ms),
+            "total_ms": float(total_ms),
+            "detect_cached": 1.0 if cached else 0.0,
+            "detect_cached_ratio": float(self._cached_detection_frames / max(1, self._processed_frames)),
+        }
         return out
 
     def close(self) -> None:

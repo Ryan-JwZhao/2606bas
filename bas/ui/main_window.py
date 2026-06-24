@@ -28,6 +28,7 @@ from ..calibration.verification import format_holdout_report, verify_holdout_fil
 from ..capture import probe_cameras
 from ..geometry import TableGeometryLoader
 from ..logging_config import configure_logging
+from ..media_capture import FfmpegH264Recorder
 from ..perception import create_detector
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
@@ -445,9 +446,15 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._metrics_fps_limit = 5.0
         self._last_heavy_ui_update_ts = 0.0
         self._heavy_ui_fps_limit = 3.0
+        self._last_perf_log_ts = 0.0
+        self._raw_video_recorder: Optional[FfmpegH264Recorder] = None
+        self._route_video_recorder: Optional[FfmpegH264Recorder] = None
+        self._raw_video_path: Optional[Path] = None
+        self._route_video_path: Optional[Path] = None
 
         self.timer = QtCore.QTimer(self)
         self.timer.setSingleShot(True)
+        self.timer.setTimerType(QtCore.Qt.PreciseTimer)
         self.timer.timeout.connect(self._tick)
         self._frame_busy = False
 
@@ -526,6 +533,15 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.replay_check = QtWidgets.QCheckBox("记录回放")
         self.replay_check.setChecked(self.config.replay.enabled)
         self.side_layout.addWidget(self.replay_check)
+        self.side_layout.addWidget(self._section_label("现场抓取"))
+        self.raw_photo_btn = self._button("抓取无画线照片")
+        self.raw_video_btn = self._button("开始无画线视频")
+        self.route_video_btn = self._button("开始进洞路线视频")
+        self.raw_photo_btn.clicked.connect(self.capture_raw_photo)
+        self.raw_video_btn.clicked.connect(self.toggle_raw_video_recording)
+        self.route_video_btn.clicked.connect(self.toggle_route_video_recording)
+        for btn in [self.raw_photo_btn, self.raw_video_btn, self.route_video_btn]:
+            self.side_layout.addWidget(btn)
         self.side_layout.addStretch(1)
         self.config_label = QtWidgets.QLabel("设置保存在 local_settings/user_settings.json")
         self.config_label.setObjectName("muted")
@@ -562,7 +578,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.module_status.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         self.right_layout.addWidget(self.module_status)
         self._module_rows = {}
-        for name in ["采集", "检测", "跟踪", "状态机", "规划", "投影", "回放", "标定"]:
+        for name in ["采集", "检测", "跟踪", "状态机", "规划", "投影", "回放", "抓取", "标定"]:
             self._add_module_row(name)
 
         self.right_layout.addWidget(self._section_label("状态机人工介入"))
@@ -693,7 +709,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.right_panel.setFixedWidth(px(390))
         self.preview_label.setMinimumSize(px(620), px(390))
         self.log_box.setMaximumHeight(px(130))
-        self.module_status.setMaximumHeight(px(190))
+        self.module_status.setMaximumHeight(px(215))
         self.module_status.verticalHeader().setDefaultSectionSize(px(22))
         self.candidates.verticalHeader().setDefaultSectionSize(px(30))
         for metric in [self.fps_metric, self.det_metric, self.track_metric, self.phase_metric]:
@@ -954,6 +970,226 @@ class OperatorWindow(QtWidgets.QMainWindow):
             json.dump(payload, f, ensure_ascii=False, indent=2)
         self._append_log(f"诊断快照已导出: {path}")
 
+    @QtCore.pyqtSlot()
+    def capture_raw_photo(self) -> None:
+        frame = self._current_raw_frame()
+        if frame is None:
+            self._append_log("当前没有可抓取的原始画面")
+            return
+        out_dir = self._capture_output_dir()
+        frame_id = self.last_output.frame.frame_id if self.last_output is not None else 0
+        path = out_dir / f"no_line_photo_{time.strftime('%Y%m%d_%H%M%S')}_f{frame_id:06d}.jpg"
+        ok = cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        if not ok:
+            self._append_log(f"无画线照片保存失败: {path}")
+            return
+        self._append_log(f"无画线照片已保存: {path}")
+
+    @QtCore.pyqtSlot()
+    def toggle_raw_video_recording(self) -> None:
+        if self._raw_video_recorder is None:
+            self._start_video_recording(route=False)
+        else:
+            self._stop_video_recording(route=False)
+
+    @QtCore.pyqtSlot()
+    def toggle_route_video_recording(self) -> None:
+        if self._route_video_recorder is None:
+            self._start_video_recording(route=True)
+        else:
+            self._stop_video_recording(route=True)
+
+    def _start_video_recording(self, *, route: bool) -> None:
+        if self.pipeline is None:
+            self._append_log("请先开始采集再录制视频")
+            return
+        frame = self._current_raw_frame()
+        if frame is None:
+            self._append_log("请等待第一帧画面后再录制视频")
+            return
+        h, w = frame.shape[:2]
+        prefix = "pocket_route_video" if route else "no_line_video"
+        path = self._capture_output_dir() / f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+        record_fps = self._recording_fps()
+        try:
+            recorder = FfmpegH264Recorder(
+                path,
+                width=w,
+                height=h,
+                fps=record_fps,
+                bitrate_kbps=6000,
+            )
+        except FileNotFoundError:
+            self._append_log("启动录制失败: 未找到 ffmpeg，请确认 ffmpeg 在 PATH 中")
+            return
+        except Exception as exc:
+            self._append_log(f"启动录制失败: {exc}")
+            return
+        if route:
+            self._route_video_recorder = recorder
+            self._route_video_path = path
+            self.route_video_btn.setText("停止进洞路线视频")
+            if self.last_output is not None and self.last_output.plan.best is None:
+                self._append_log("当前无最佳进洞路线，视频会在路线出现后开始画线")
+            self._append_log(f"进洞路线画线视频开始录制: {path} ({record_fps:.1f}fps, H.264 6000kbps)")
+        else:
+            self._raw_video_recorder = recorder
+            self._raw_video_path = path
+            self.raw_video_btn.setText("停止无画线视频")
+            self._append_log(f"无画线视频开始录制: {path} ({record_fps:.1f}fps, H.264 6000kbps)")
+        self._update_module_status(self.last_output)
+
+    def _stop_video_recording(self, *, route: bool) -> None:
+        recorder = self._route_video_recorder if route else self._raw_video_recorder
+        path = self._route_video_path if route else self._raw_video_path
+        if recorder is None:
+            return
+        frames = recorder.frames_written
+        try:
+            code = recorder.close()
+        except Exception as exc:
+            code = -1
+            self._append_log(f"停止录制时 ffmpeg 异常: {exc}")
+        if route:
+            self._route_video_recorder = None
+            self.route_video_btn.setText("开始进洞路线视频")
+        else:
+            self._raw_video_recorder = None
+            self.raw_video_btn.setText("开始无画线视频")
+        label = "进洞路线画线视频" if route else "无画线视频"
+        if code == 0:
+            self._append_log(f"{label}已保存: {path} ({frames} 帧, H.264 6000kbps)")
+        else:
+            self._append_log(f"{label}保存可能不完整: ffmpeg code={code}, path={path}")
+        self._update_module_status(self.last_output)
+
+    def _stop_all_media_recordings(self) -> None:
+        if self._raw_video_recorder is not None:
+            self._stop_video_recording(route=False)
+        if self._route_video_recorder is not None:
+            self._stop_video_recording(route=True)
+
+    def _capture_output_dir(self) -> Path:
+        path = Path("local_settings") / "captures"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _current_raw_frame(self) -> Optional[np.ndarray]:
+        if self.last_output is None:
+            return None
+        frame = self.last_output.frame.image
+        return frame if frame is not None else None
+
+    def _recording_fps(self) -> float:
+        fps = 0.0
+        if self.pipeline is not None:
+            try:
+                fps = float(self.pipeline.capture.info().fps)
+            except Exception:
+                fps = 0.0
+        if fps <= 0.0:
+            try:
+                fps = float(self.config.camera.fps)
+            except Exception:
+                fps = 30.0
+        if self.started_at > 0.0 and self.frame_count >= 5:
+            actual = self.frame_count / max(1e-6, time.perf_counter() - self.started_at)
+            if 1.0 <= actual < fps * 0.9:
+                fps = actual
+        return max(1.0, min(240.0, fps))
+
+    def _record_media_frames(self, out: PipelineOutput) -> None:
+        if self._raw_video_recorder is not None and out.frame.image is not None:
+            self._write_video_frame(route=False, frame=out.frame.image)
+        if self._route_video_recorder is not None and out.frame.image is not None:
+            self._write_video_frame(route=True, frame=self._route_capture_frame(out))
+
+    def _write_video_frame(self, *, route: bool, frame: np.ndarray) -> None:
+        recorder = self._route_video_recorder if route else self._raw_video_recorder
+        if recorder is None:
+            return
+        try:
+            recorder.write(frame)
+        except Exception as exc:
+            label = "进洞路线画线视频" if route else "无画线视频"
+            self._append_log(f"{label}写入失败，已停止录制: {exc}")
+            try:
+                recorder.close()
+            except Exception:
+                pass
+            if route:
+                self._route_video_recorder = None
+                self.route_video_btn.setText("开始进洞路线视频")
+            else:
+                self._raw_video_recorder = None
+                self.raw_video_btn.setText("开始无画线视频")
+            self._update_module_status(self.last_output)
+
+    def _route_capture_frame(self, out: PipelineOutput) -> np.ndarray:
+        frame = out.frame.image
+        if frame is None:
+            return np.zeros((1, 1, 3), dtype=np.uint8)
+        img = frame.copy()
+        candidate = out.plan.best
+        if candidate is None or self.pipeline is None:
+            return img
+        try:
+            aim = self._table_mm_to_camera_px(candidate.aim_line)
+            obj = self._table_mm_to_camera_px(candidate.object_line)
+            key_points = self._table_mm_to_camera_px([candidate.ghost_ball, candidate.object_ball, candidate.pocket_point])
+        except Exception:
+            return img
+        thickness = max(2, int(round(3 * self._ui_scale)))
+        self._draw_arrow_polyline(img, aim, (0, 240, 160), thickness)
+        self._draw_arrow_polyline(img, obj, (80, 180, 255), thickness)
+        if key_points.shape[0] >= 3:
+            cv2.circle(img, _point_int(key_points[0]), 10, (0, 255, 180), 2, cv2.LINE_AA)
+            cv2.circle(img, _point_int(key_points[1]), 8, (255, 220, 80), 2, cv2.LINE_AA)
+            cv2.circle(img, _point_int(key_points[2]), 12, (255, 255, 255), 2, cv2.LINE_AA)
+            label_pos = _point_int(key_points[2] + np.asarray([12.0, -12.0], dtype=np.float32))
+            cv2.putText(
+                img,
+                f"pocket {candidate.pocket_index} score {candidate.score:.2f}",
+                label_pos,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        return img
+
+    def _table_mm_to_camera_px(self, points) -> np.ndarray:
+        if self.pipeline is None:
+            return np.zeros((0, 2), dtype=np.float32)
+        pts = np.asarray(points, dtype=np.float32).reshape((-1, 2))
+        if pts.size == 0:
+            return pts
+        calibration = self.pipeline.calibration
+        proj = calibration.table_mm_to_projector_px(pts).astype(np.float32)
+        homography = calibration.projection.homography
+        if homography is None:
+            return proj
+        inv_h = np.linalg.inv(np.asarray(homography, dtype=np.float64))
+        cam = cv2.perspectiveTransform(proj.reshape((-1, 1, 2)), inv_h).reshape((-1, 2))
+        return cam.astype(np.float32)
+
+    def _draw_arrow_polyline(self, image: np.ndarray, points: np.ndarray, color: tuple[int, int, int], thickness: int) -> None:
+        pts = np.asarray(points, dtype=np.float32).reshape((-1, 2))
+        if pts.shape[0] < 2:
+            return
+        ints = np.round(pts).astype(np.int32)
+        cv2.polylines(image, [ints.reshape((-1, 1, 2))], False, color, thickness, cv2.LINE_AA)
+        cv2.arrowedLine(
+            image,
+            (int(ints[-2][0]), int(ints[-2][1])),
+            (int(ints[-1][0]), int(ints[-1][1])),
+            color,
+            thickness,
+            cv2.LINE_AA,
+            tipLength=0.08,
+        )
+
     def _diagnostic_frame_payload(self, frame) -> dict[str, object]:
         payload = to_jsonable(frame)
         image = getattr(frame, "image", None)
@@ -970,12 +1206,18 @@ class OperatorWindow(QtWidgets.QMainWindow):
             "frame_count": int(self.frame_count),
             "elapsed_s": float(elapsed),
             "avg_fps": float(self.frame_count / elapsed) if elapsed > 0.0 else 0.0,
+            "target_timer_interval_ms": int(self._capture_timer_interval_ms()),
             "timer_single_shot": bool(self.timer.isSingleShot()),
             "timer_active": bool(self.timer.isActive()),
             "frame_busy": bool(self._frame_busy),
             "preview_fps_limit": float(self._preview_fps_limit),
             "metrics_fps_limit": float(self._metrics_fps_limit),
             "heavy_ui_fps_limit": float(self._heavy_ui_fps_limit),
+            "pipeline_timings_ms": dict(getattr(self.pipeline, "last_timings_ms", {}) if self.pipeline is not None else {}),
+            "recordings": {
+                "no_line_video": str(self._raw_video_path) if self._raw_video_recorder is not None and self._raw_video_path is not None else None,
+                "route_line_video": str(self._route_video_path) if self._route_video_recorder is not None and self._route_video_path is not None else None,
+            },
         }
 
     def _module_status_payload(self) -> list[dict[str, str]]:
@@ -1091,6 +1333,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         projection_state = "校正模式" if self._projection_calibration_mode else ("运行中" if self.projection_window is not None else "关闭")
         self._set_module_status("投影", projection_state, f"{self.config.projection.projector_width}x{self.config.projection.projector_height}")
         self._set_module_status("回放", "启用" if self.config.replay.enabled else "关闭", self.config.replay.directory)
+        capture_recording = self._raw_video_recorder is not None or self._route_video_recorder is not None
+        self._set_module_status("抓取", "录制中" if capture_recording else "待机", self._media_capture_status_detail())
         if self.pipeline is None:
             self._set_module_status("采集", "离线", self.config.camera.backend)
             self._set_module_status("检测", "待机", self.config.detector.backend)
@@ -1101,7 +1345,12 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.hold_state_btn.setText("冻结状态机")
             return
         info = self.pipeline.capture.info()
-        self._set_module_status("采集", "运行中", f"{info.backend} {info.width}x{info.height}@{info.fps:.0f}")
+        timings = getattr(self.pipeline, "last_timings_ms", {})
+        total_ms = float(timings.get("total_ms", 0.0) or 0.0)
+        capture_detail = f"{info.backend} {info.width}x{info.height}@{info.fps:.0f}"
+        if total_ms > 0.0:
+            capture_detail += f" / step {total_ms:.1f}ms"
+        self._set_module_status("采集", "运行中", capture_detail)
         calib = self.pipeline.calibration
         self._set_module_status(
             "标定",
@@ -1109,7 +1358,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
             f"cam={'Y' if calib.camera.is_valid else 'N'} proj={'Y' if calib.projection.is_valid else 'N'}",
         )
         detector_version = getattr(self.pipeline.detector.detector, "version", self.config.detector.backend)
-        det_detail = detector_version if out is None else f"{out.detections.latency_ms:.1f}ms / {len(out.detections.detections)}"
+        if out is None:
+            det_detail = detector_version
+        else:
+            cache_ratio = float(timings.get("detect_cached_ratio", 0.0) or 0.0)
+            det_detail = f"{out.detections.latency_ms:.1f}ms / {len(out.detections.detections)} / cache {cache_ratio:.0%}"
         self._set_module_status("检测", "运行中", det_detail)
         track_detail = self.pipeline.tracker.version if out is None else f"{out.tracks.latency_ms:.1f}ms / {len(out.tracks.tracks)}"
         self._set_module_status("跟踪", "运行中", track_detail)
@@ -1122,6 +1375,14 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if self.pipeline.recorder is not None:
             self._set_module_status("回放", "记录中", self.pipeline.recorder.session_id)
         self.hold_state_btn.setText("恢复自动状态机" if self.pipeline.state_machine.operator_hold else "冻结状态机")
+
+    def _media_capture_status_detail(self) -> str:
+        parts = []
+        if self._raw_video_recorder is not None:
+            parts.append(f"无画线 {self._raw_video_recorder.frames_written}帧")
+        if self._route_video_recorder is not None:
+            parts.append(f"路线 {self._route_video_recorder.frames_written}帧")
+        return "; ".join(parts) if parts else "local_settings/captures"
 
     @QtCore.pyqtSlot()
     def initialize_graphics_image_module(self) -> None:
@@ -1233,12 +1494,14 @@ class OperatorWindow(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot(object)
     def _pipeline_started(self, pipeline: RuntimePipeline) -> None:
         self.pipeline = pipeline
+        self.last_output = None
         self.frame_count = 0
         self.started_at = time.perf_counter()
         self._frame_busy = False
         self._last_preview_update_ts = 0.0
         self._last_metrics_update_ts = 0.0
         self._last_heavy_ui_update_ts = 0.0
+        self._last_perf_log_ts = 0.0
         self._set_running(True)
         self._update_module_status()
         self._append_log("采集已启动")
@@ -1259,6 +1522,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def stop_pipeline(self) -> None:
         self.timer.stop()
         self._frame_busy = False
+        self._stop_all_media_recordings()
         if self.pipeline is not None:
             try:
                 self.pipeline.close()
@@ -1355,6 +1619,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.projection_window.set_overlay(overlay)
 
     def _tick(self) -> None:
+        tick_start = time.perf_counter()
         if self._frame_busy:
             self.timer.start(self._capture_timer_interval_ms())
             return
@@ -1369,6 +1634,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.last_output = out
             self.frame_count += 1
             now = time.perf_counter()
+            self._record_media_frames(out)
             if now - self._last_preview_update_ts >= 1.0 / max(1.0, self._preview_fps_limit):
                 self._update_preview(out)
                 self._last_preview_update_ts = now
@@ -1380,11 +1646,13 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 self._update_plan(out)
                 self._update_module_status(out)
                 self._last_heavy_ui_update_ts = now
+            self._log_performance_periodically(now)
             self._refresh_projection()
         finally:
             self._frame_busy = False
             if self.pipeline is not None:
-                self.timer.start(self._capture_timer_interval_ms())
+                elapsed_ms = (time.perf_counter() - tick_start) * 1000.0
+                self.timer.start(self._capture_timer_interval_ms(elapsed_ms=elapsed_ms))
 
     def _update_preview(self, out: PipelineOutput) -> None:
         frame = out.frame.image
@@ -1480,6 +1748,12 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.fps_combo.setEnabled(not running)
         self.init_module_btn.setEnabled(not running)
         self.replay_check.setEnabled(not running)
+        self.raw_photo_btn.setEnabled(running)
+        self.raw_video_btn.setEnabled(running)
+        self.route_video_btn.setEnabled(running)
+        if not running:
+            self.raw_video_btn.setText("开始无画线视频")
+            self.route_video_btn.setText("开始进洞路线视频")
         self.status_label.setText("运行中" if running else "离线")
 
     def _set_starting(self, starting: bool) -> None:
@@ -1495,14 +1769,33 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.fps_combo.setEnabled(False)
         self.init_module_btn.setEnabled(False)
         self.replay_check.setEnabled(False)
+        self.raw_photo_btn.setEnabled(False)
+        self.raw_video_btn.setEnabled(False)
+        self.route_video_btn.setEnabled(False)
         self.status_label.setText("启动中")
 
-    def _capture_timer_interval_ms(self) -> int:
+    def _capture_timer_interval_ms(self, *, elapsed_ms: float = 0.0) -> int:
         try:
             fps = float(self.config.camera.fps)
         except Exception:
             fps = 30.0
-        return max(1, int(round(1000.0 / max(1.0, fps))))
+        base_ms = 1000.0 / max(1.0, fps)
+        return max(1, int(round(base_ms - max(0.0, float(elapsed_ms)))))
+
+    def _log_performance_periodically(self, now: float) -> None:
+        if self.pipeline is None or now - self._last_perf_log_ts < 10.0:
+            return
+        elapsed = max(1e-6, now - self.started_at)
+        timings = getattr(self.pipeline, "last_timings_ms", {})
+        self._append_log(
+            "性能: "
+            f"fps={self.frame_count / elapsed:.1f} "
+            f"step={float(timings.get('total_ms', 0.0) or 0.0):.1f}ms "
+            f"cap={float(timings.get('capture_ms', 0.0) or 0.0):.1f}ms "
+            f"det={float(timings.get('detect_ms', 0.0) or 0.0):.1f}ms "
+            f"cache={float(timings.get('detect_cached_ratio', 0.0) or 0.0):.0%}"
+        )
+        self._last_perf_log_ts = now
 
     def _append_log(self, text: str) -> None:
         stamp = time.strftime("%H:%M:%S")
@@ -1518,6 +1811,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if self.projection_window is not None:
             self.projection_window.close()
         super().closeEvent(event)
+
+
+def _point_int(point) -> tuple[int, int]:
+    arr = np.asarray(point, dtype=np.float32).reshape((2,))
+    return (int(round(float(arr[0]))), int(round(float(arr[1]))))
 
 
 def run_operator_ui(config: AppConfig) -> int:
