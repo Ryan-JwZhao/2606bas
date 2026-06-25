@@ -250,14 +250,24 @@ class SettingsDialog(QtWidgets.QDialog):
         ball_grid = QtWidgets.QGridLayout(ball_box)
         self.ball_comp_enabled = QtWidgets.QCheckBox("启用球心补偿")
         self.ball_comp_enabled.setChecked(bool(config.calibration.ball_center_compensation_enabled))
-        self.ball_comp_ref_x = self._dspin(float(config.calibration.ball_center_compensation_ref_x_px), -1.0, 7680.0, 1.0)
-        self.ball_comp_ref_y = self._dspin(float(config.calibration.ball_center_compensation_ref_y_px), -1.0, 4320.0, 1.0)
+        self.ball_comp_auto_ref = QtWidgets.QCheckBox("使用画面中心作为参考点")
+        self.ball_comp_auto_ref.setChecked(bool(config.calibration.ball_center_compensation_auto_reference))
+        ref_x_value = float(config.calibration.ball_center_compensation_ref_x_px)
+        ref_y_value = float(config.calibration.ball_center_compensation_ref_y_px)
+        if self.ball_comp_auto_ref.isChecked() and abs(ref_x_value) < 1e-6 and abs(ref_y_value) < 1e-6:
+            ref_x_value = 0.5 * float(max(0, int(config.camera.width)))
+            ref_y_value = 0.5 * float(max(0, int(config.camera.height)))
+        self.ball_comp_ref_x = self._dspin(ref_x_value, -7680.0, 7680.0, 1.0)
+        self.ball_comp_ref_y = self._dspin(ref_y_value, -4320.0, 4320.0, 1.0)
         self.ball_comp_scale_x = self._dspin(float(config.calibration.ball_center_compensation_scale_x_pct), -20.0, 20.0, 0.1)
         self.ball_comp_scale_y = self._dspin(float(config.calibration.ball_center_compensation_scale_y_pct), -20.0, 20.0, 0.1)
         ball_grid.addWidget(self.ball_comp_enabled, 0, 0, 1, 4)
-        self._grid_pair(ball_grid, 1, "参考点 X (px)", self.ball_comp_ref_x, "参考点 Y (px)", self.ball_comp_ref_y)
-        self._grid_pair(ball_grid, 2, "X 拉回比例 (%)", self.ball_comp_scale_x, "Y 拉回比例 (%)", self.ball_comp_scale_y)
-        ball_grid.addWidget(QtWidgets.QLabel("正数表示把球心向参考点拉回，适合修正边缘和远端区域的投影偏移。参考点 X / Y 设为 -1 时会自动使用相机主光心。"), 3, 0, 1, 4)
+        ball_grid.addWidget(self.ball_comp_auto_ref, 1, 0, 1, 4)
+        self._grid_pair(ball_grid, 2, "参考点 X (px)", self.ball_comp_ref_x, "参考点 Y (px)", self.ball_comp_ref_y)
+        self._grid_pair(ball_grid, 3, "X 拉回比例 (%)", self.ball_comp_scale_x, "Y 拉回比例 (%)", self.ball_comp_scale_y)
+        ball_grid.addWidget(QtWidgets.QLabel("正数表示把球心向参考点拉回。默认会以当前相机画面中心作为参考点；取消勾选后可手动输入，支持负值，适合处理投影仪中心落在画面外的情况。"), 4, 0, 1, 4)
+        self.ball_comp_auto_ref.toggled.connect(self._sync_ball_reference_inputs)
+        self._sync_ball_reference_inputs()
         tuning_layout.addWidget(ball_box)
         tuning_layout.addStretch(1)
         tabs.addTab(tuning, "投影修正")
@@ -374,10 +384,16 @@ class SettingsDialog(QtWidgets.QDialog):
         config.calibration.physical_middle_pocket_relief_bottom_mm = float(self.middle_relief_bottom.value())
         config.calibration.center_reachable_extra_margin_mm = float(self.center_margin.value())
         config.calibration.ball_center_compensation_enabled = self.ball_comp_enabled.isChecked()
+        config.calibration.ball_center_compensation_auto_reference = self.ball_comp_auto_ref.isChecked()
         config.calibration.ball_center_compensation_ref_x_px = float(self.ball_comp_ref_x.value())
         config.calibration.ball_center_compensation_ref_y_px = float(self.ball_comp_ref_y.value())
         config.calibration.ball_center_compensation_scale_x_pct = float(self.ball_comp_scale_x.value())
         config.calibration.ball_center_compensation_scale_y_pct = float(self.ball_comp_scale_y.value())
+
+    def _sync_ball_reference_inputs(self, *_args) -> None:
+        manual = not self.ball_comp_auto_ref.isChecked()
+        self.ball_comp_ref_x.setEnabled(manual)
+        self.ball_comp_ref_y.setEnabled(manual)
 
     def _bind_projection_tuning_preview(self) -> None:
         widgets = [
@@ -400,6 +416,7 @@ class SettingsDialog(QtWidgets.QDialog):
         for widget in widgets:
             widget.valueChanged.connect(self._preview_projection_tuning)
         self.ball_comp_enabled.toggled.connect(self._preview_projection_tuning)
+        self.ball_comp_auto_ref.toggled.connect(self._preview_projection_tuning)
 
     def _preview_projection_tuning(self, *_args) -> None:
         self._apply_projection_tuning_to_config(self.config)

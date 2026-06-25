@@ -51,6 +51,7 @@ class UserSettings:
     physical_middle_pocket_relief_bottom_mm: Optional[float] = None
     center_reachable_extra_margin_mm: Optional[float] = None
     ball_center_compensation_enabled: Optional[bool] = None
+    ball_center_compensation_auto_reference: Optional[bool] = None
     ball_center_compensation_ref_x_px: Optional[float] = None
     ball_center_compensation_ref_y_px: Optional[float] = None
     ball_center_compensation_scale_x_pct: Optional[float] = None
@@ -167,6 +168,12 @@ class UserSettings:
             config.calibration.center_reachable_extra_margin_mm = max(0.0, float(self.center_reachable_extra_margin_mm))
         if self.ball_center_compensation_enabled is not None:
             config.calibration.ball_center_compensation_enabled = bool(self.ball_center_compensation_enabled)
+        if self.ball_center_compensation_auto_reference is not None:
+            config.calibration.ball_center_compensation_auto_reference = bool(self.ball_center_compensation_auto_reference)
+        elif self._has("ball_center_compensation_ref_x_px") or self._has("ball_center_compensation_ref_y_px"):
+            ref_x = float(self.ball_center_compensation_ref_x_px) if self.ball_center_compensation_ref_x_px is not None else 0.0
+            ref_y = float(self.ball_center_compensation_ref_y_px) if self.ball_center_compensation_ref_y_px is not None else 0.0
+            config.calibration.ball_center_compensation_auto_reference = bool(ref_x == -1.0 and ref_y == -1.0)
         if self.ball_center_compensation_ref_x_px is not None:
             config.calibration.ball_center_compensation_ref_x_px = float(self.ball_center_compensation_ref_x_px)
         if self.ball_center_compensation_ref_y_px is not None:
@@ -241,6 +248,7 @@ class UserSettings:
             physical_middle_pocket_relief_bottom_mm=config.calibration.physical_middle_pocket_relief_bottom_mm,
             center_reachable_extra_margin_mm=config.calibration.center_reachable_extra_margin_mm,
             ball_center_compensation_enabled=config.calibration.ball_center_compensation_enabled,
+            ball_center_compensation_auto_reference=config.calibration.ball_center_compensation_auto_reference,
             ball_center_compensation_ref_x_px=config.calibration.ball_center_compensation_ref_x_px,
             ball_center_compensation_ref_y_px=config.calibration.ball_center_compensation_ref_y_px,
             ball_center_compensation_scale_x_pct=config.calibration.ball_center_compensation_scale_x_pct,

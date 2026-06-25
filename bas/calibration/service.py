@@ -31,8 +31,9 @@ def default_inner_polygon(width_mm: float, height_mm: float) -> List[Point]:
 @dataclass
 class BallCenterCompensation:
     enabled: bool = False
-    ref_x_px: float = -1.0
-    ref_y_px: float = -1.0
+    auto_reference: bool = True
+    ref_x_px: float = 0.0
+    ref_y_px: float = 0.0
     scale_x_pct: float = 0.0
     scale_y_pct: float = 0.0
 
@@ -160,14 +161,8 @@ class CalibrationService:
 
     def _ball_center_reference_px(self) -> tuple[float, float]:
         cfg = self.ball_center_compensation
-        ref_x = float(cfg.ref_x_px)
-        ref_y = float(cfg.ref_y_px)
-        if ref_x >= 0.0 and ref_y >= 0.0:
-            return ref_x, ref_y
-        if self.camera.camera_matrix is not None:
-            k = np.asarray(self.camera.camera_matrix, dtype=np.float64)
-            if k.shape[0] >= 3 and k.shape[1] >= 3:
-                return float(k[0, 2]), float(k[1, 2])
+        if not bool(cfg.auto_reference):
+            return float(cfg.ref_x_px), float(cfg.ref_y_px)
         if self.camera.image_size[0] > 0 and self.camera.image_size[1] > 0:
             return 0.5 * float(self.camera.image_size[0]), 0.5 * float(self.camera.image_size[1])
         poly = ensure_numpy_points(self.projection.table_polygon_cam)
@@ -196,6 +191,7 @@ def create_calibration_service(config: CalibrationConfig, frame_undistorted: boo
         frame_undistorted=bool(frame_undistorted),
         ball_center_compensation=BallCenterCompensation(
             enabled=bool(config.ball_center_compensation_enabled),
+            auto_reference=bool(config.ball_center_compensation_auto_reference),
             ref_x_px=float(config.ball_center_compensation_ref_x_px),
             ref_y_px=float(config.ball_center_compensation_ref_y_px),
             scale_x_pct=float(config.ball_center_compensation_scale_x_pct),

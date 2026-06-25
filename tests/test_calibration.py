@@ -146,8 +146,41 @@ def test_ball_center_compensation_pulls_points_toward_reference() -> None:
         ),
         ball_center_compensation=BallCenterCompensation(
             enabled=True,
+            auto_reference=False,
             ref_x_px=100.0,
             ref_y_px=50.0,
+            scale_x_pct=10.0,
+            scale_y_pct=10.0,
+        ),
+    )
+
+    out = service.ball_camera_px_to_table_mm(np.array([[160, 80]], dtype=np.float32))
+
+    assert np.allclose(out[0], [154.0, 77.0], atol=1e-3)
+
+
+def test_ball_center_compensation_auto_reference_uses_image_center() -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [200, 0], [200, 100], [0, 100]], dtype=np.float64),
+        np.array([[0, 0], [200, 0], [200, 100], [0, 100]], dtype=np.float64),
+        projector_size=(200, 100),
+    )
+    projection.table_polygon_proj = np.array([[0, 0], [200, 0], [200, 100], [0, 100]], dtype=np.float64)
+    service = CalibrationService(
+        camera=CameraCalibration(image_size=(200, 100), metadata={}),
+        projection=projection,
+        table=TableModel(
+            width_mm=200,
+            height_mm=100,
+            ball_diameter_mm=57.15,
+            inner_polygon_mm=[(0, 0), (200, 0), (200, 100), (0, 100)],
+            pockets_mm=[],
+        ),
+        ball_center_compensation=BallCenterCompensation(
+            enabled=True,
+            auto_reference=True,
+            ref_x_px=-500.0,
+            ref_y_px=-300.0,
             scale_x_pct=10.0,
             scale_y_pct=10.0,
         ),

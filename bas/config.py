@@ -73,8 +73,9 @@ class CalibrationConfig:
     physical_middle_pocket_relief_bottom_mm: float = 0.0
     center_reachable_extra_margin_mm: float = 2.0
     ball_center_compensation_enabled: bool = False
-    ball_center_compensation_ref_x_px: float = -1.0
-    ball_center_compensation_ref_y_px: float = -1.0
+    ball_center_compensation_auto_reference: bool = True
+    ball_center_compensation_ref_x_px: float = 0.0
+    ball_center_compensation_ref_y_px: float = 0.0
     ball_center_compensation_scale_x_pct: float = 0.0
     ball_center_compensation_scale_y_pct: float = 0.0
 

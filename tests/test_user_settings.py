@@ -80,6 +80,7 @@ def test_user_settings_applies_boundary_inset_configuration(tmp_path) -> None:
                 "physical_middle_pocket_relief_top_mm": 6.0,
                 "center_reachable_extra_margin_mm": 3.0,
                 "ball_center_compensation_enabled": True,
+                "ball_center_compensation_auto_reference": True,
                 "ball_center_compensation_scale_x_pct": 2.5,
             }
         ),
@@ -95,4 +96,26 @@ def test_user_settings_applies_boundary_inset_configuration(tmp_path) -> None:
     assert cfg.calibration.physical_middle_pocket_relief_top_mm == 6.0
     assert cfg.calibration.center_reachable_extra_margin_mm == 3.0
     assert cfg.calibration.ball_center_compensation_enabled is True
+    assert cfg.calibration.ball_center_compensation_auto_reference is True
     assert cfg.calibration.ball_center_compensation_scale_x_pct == 2.5
+
+
+def test_user_settings_legacy_manual_ball_reference_disables_auto_reference(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "ball_center_compensation_ref_x_px": 120.0,
+                "ball_center_compensation_ref_y_px": -240.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig()
+
+    UserSettings.load(path).apply_to_config(cfg)
+
+    assert cfg.calibration.ball_center_compensation_auto_reference is False
+    assert cfg.calibration.ball_center_compensation_ref_x_px == 120.0
+    assert cfg.calibration.ball_center_compensation_ref_y_px == -240.0
