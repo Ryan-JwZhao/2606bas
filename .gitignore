@@ -81,6 +81,7 @@ calib/
 local_calib/
 example/
 Nori_Xvision_Development_Kit*/
+presets/
 
 # IDE/OS
 .idea/

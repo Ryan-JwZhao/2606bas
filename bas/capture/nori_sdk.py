@@ -123,7 +123,7 @@ class NoriProtocolController:
         roots.extend(
             [
                 Path.cwd() / "example" / "Nori_Xvision_Development_Kit_Ver10.00.06_Windows",
-                Path("C:/CodeProject/2604BilliardsAssistanceSystem/example/Nori_Xvision_Development_Kit_Ver10.00.06_Windows"),
+                Path("C:/CodeProject/2606BAS/example/Nori_Xvision_Development_Kit_Ver10.00.06_Windows"),
             ]
         )
         is_64 = ctypes.sizeof(ctypes.c_void_p) == 8

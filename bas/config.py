@@ -23,7 +23,7 @@ class CameraConfig:
     exposure_auto: Optional[bool] = False
     exposure_level: Optional[int] = -5
     distortion_correction_enabled: bool = True
-    distortion_correction_file: Optional[str] = "C:/CodeProject/2604BilliardsAssistanceSystem/calib/intrinsics_opencv.yaml"
+    distortion_correction_file: Optional[str] = "C:/CodeProject/2606BAS/calib/intrinsics_opencv.yaml"
 
 
 @dataclass

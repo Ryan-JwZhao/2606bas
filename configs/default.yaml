@@ -6,17 +6,17 @@ camera:
   height: 1080
   fps: 30
   video_path:
-  nori_sdk_root: C:/CodeProject/2604BilliardsAssistanceSystem/example/Nori_Xvision_Development_Kit_Ver10.00.06_Windows
+  nori_sdk_root: C:/CodeProject/2606BAS/example/Nori_Xvision_Development_Kit_Ver10.00.06_Windows
   nori_device_id: 0
   exposure_auto: false
   exposure_level: -5
   distortion_correction_enabled: true
-  distortion_correction_file: C:/CodeProject/2604BilliardsAssistanceSystem/calib/intrinsics_opencv.yaml
+  distortion_correction_file: C:/CodeProject/2606BAS/calib/intrinsics_opencv.yaml
 
 detector:
   backend: disabled  # disabled | debug_color | ultralytics
-  model_path: C:/CodeProject/2604BilliardsAssistanceSystem/example/parameters/0323_225p_yolo11m_best.pt
-  class_file_path: C:/CodeProject/2604BilliardsAssistanceSystem/example/parameters/seg.txt
+  model_path: C:/CodeProject/2606BAS/example/parameters/0323_225p_yolo11m_best.pt
+  class_file_path: C:/CodeProject/2606BAS/example/parameters/seg.txt
   class_names: [cue, solid, stripe, black, cue_stick]
   conf: 0.35
   iou: 0.45
@@ -38,9 +38,8 @@ tracker:
   velocity_smoothing: 0.35
 
 calibration:
-  # You can point these to the existing 2604 calibration files.
-  camera_file: C:/CodeProject/2604BilliardsAssistanceSystem/calib/calibration_opencv.yaml
-  projection_file: C:/CodeProject/2604BilliardsAssistanceSystem/presets/projection_calibration.json
+  camera_file: C:/CodeProject/2606BAS/calib/calibration_opencv.yaml
+  projection_file: C:/CodeProject/2606BAS/presets/projection_calibration.json
   table_width_mm: 2540.0
   table_height_mm: 1270.0
   ball_diameter_mm: 57.15
