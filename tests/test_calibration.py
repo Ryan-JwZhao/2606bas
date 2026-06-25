@@ -21,6 +21,49 @@ def test_projection_residual_maps_control_points_exactly() -> None:
     assert np.max(np.linalg.norm(pred - proj, axis=1)) < 1e-3
 
 
+def test_projection_residual_ignores_ransac_outliers() -> None:
+    cam_good = np.array(
+        [
+            [0, 0],
+            [20, 0],
+            [40, 0],
+            [60, 0],
+            [0, 20],
+            [20, 20],
+            [40, 20],
+            [60, 20],
+            [0, 40],
+            [20, 40],
+            [40, 40],
+            [60, 40],
+        ],
+        dtype=np.float64,
+    )
+    proj_good = cam_good * 2.0 + np.array([100.0, 50.0])
+    cam_bad = np.array(
+        [
+            [45, 4],
+            [50, 4],
+            [55, 4],
+            [58, 8],
+        ],
+        dtype=np.float64,
+    )
+    proj_bad = cam_bad * 2.0 + np.array([100.0, 350.0])
+
+    cam = np.vstack([cam_good, cam_bad])
+    proj = np.vstack([proj_good, proj_bad])
+    calib = ProjectionCalibration.fit_from_correspondences(cam, proj, projector_size=(400, 300))
+
+    probe = np.array([[60, 0]], dtype=np.float64)
+    pred = calib.camera_to_projector_points(probe)[0]
+    expected = np.array([220.0, 50.0], dtype=np.float64)
+    assert np.linalg.norm(pred - expected) < 2.0
+    assert calib.quality_report["ransac_inliers"] == len(cam_good)
+    assert calib.quality_report["ransac_outliers"] == len(cam_bad)
+    assert calib.calibration_error_stats()["max_px"] > 250.0
+
+
 def test_rendered_charuco_board_can_be_detected() -> None:
     aruco = getattr(cv2, "aruco", None)
     if aruco is None or (not hasattr(aruco, "CharucoDetector") and not hasattr(aruco, "interpolateCornersCharuco")):

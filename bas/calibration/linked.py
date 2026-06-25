@@ -182,14 +182,14 @@ def solve_linked_projection_calibration(
         "matched_points_by_pattern": {obs.pattern_id: int(obs.matched_count) for obs in usable},
         "zones": sorted({obs.emphasis_zone for obs in usable}),
     }
-    projection.quality_report = {
+    projection.quality_report.update({
         "workflow": "linked_hybrid_charuco",
         "patterns_total": summary["patterns_total"],
         "patterns_used": summary["patterns_used"],
         "matched_points_total": summary["matched_points_total"],
         "matched_points_by_pattern": summary["matched_points_by_pattern"],
         "zones": summary["zones"],
-    }
+    })
     projection.quality_report.update(projection.calibration_error_stats())
     return LinkedCalibrationResult(projection=projection, observations=usable, summary=summary)
 

@@ -91,13 +91,20 @@ class ProjectionCalibration:
         dst = np.asarray(proj_points, dtype=np.float64).reshape((-1, 2))
         if src.shape[0] < 4 or src.shape != dst.shape:
             raise ValueError("At least four paired camera/projector points are required.")
-        H, _ = cv2.findHomography(src, dst, cv2.RANSAC, float(ransac_threshold))
+        H, mask = cv2.findHomography(src, dst, cv2.RANSAC, float(ransac_threshold))
         if H is None:
             raise RuntimeError("cv2.findHomography failed.")
+        inlier_mask = _normalize_homography_mask(mask, src.shape[0])
         residual = ResidualField()
-        if src.shape[0] >= 12:
+        quality_report = {
+            "ransac_threshold_px": float(ransac_threshold),
+            "ransac_inliers": int(np.count_nonzero(inlier_mask)),
+            "ransac_outliers": int(src.shape[0] - np.count_nonzero(inlier_mask)),
+            "ransac_inlier_ratio": float(np.count_nonzero(inlier_mask) / max(1, src.shape[0])),
+        }
+        if src.shape[0] >= 12 and int(np.count_nonzero(inlier_mask)) >= 4:
             base = _perspective_transform(src, H)
-            residual = ResidualField(control_points_cam=src.copy(), offsets_proj=dst - base)
+            residual = ResidualField(control_points_cam=src[inlier_mask].copy(), offsets_proj=(dst - base)[inlier_mask])
         return cls(
             mode=mode,
             homography=H,
@@ -105,6 +112,7 @@ class ProjectionCalibration:
             proj_points=dst,
             residual_field=residual,
             projector_size=projector_size,
+            quality_report=quality_report,
         )
 
     @property
@@ -170,6 +178,15 @@ def _perspective_transform(points: np.ndarray, H: np.ndarray) -> np.ndarray:
     pts = np.asarray(points, dtype=np.float64).reshape((-1, 1, 2))
     out = cv2.perspectiveTransform(pts, H)
     return out.reshape((-1, 2)).astype(np.float64)
+
+
+def _normalize_homography_mask(mask: Optional[np.ndarray], count: int) -> np.ndarray:
+    if mask is None:
+        return np.ones((count,), dtype=bool)
+    arr = np.asarray(mask).reshape((-1,))
+    if arr.shape[0] != count:
+        return np.ones((count,), dtype=bool)
+    return arr.astype(bool)
 
 
 def table_bbox_from_polygon(poly: np.ndarray, projector_size: Tuple[int, int]) -> Tuple[float, float, float, float]:
