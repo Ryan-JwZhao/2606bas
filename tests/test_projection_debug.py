@@ -45,8 +45,9 @@ def test_projection_debug_appends_visible_track_markers() -> None:
     count = append_projected_ball_overlays(overlay, _service(), tracks=[track])
 
     assert count == 1
-    assert len(overlay.circles) == 2
-    assert overlay.labels[0][1] == "#7"
+    assert len(overlay.circles) == 1
+    assert overlay.circles[0][2] == (255, 255, 255)
+    assert not overlay.labels
 
 
 def test_projection_debug_falls_back_to_detections_when_tracks_absent() -> None:
@@ -56,5 +57,6 @@ def test_projection_debug_falls_back_to_detections_when_tracks_absent() -> None:
     count = append_projected_ball_overlays(overlay, _service(), detections=[detection])
 
     assert count == 1
-    assert len(overlay.circles) == 2
-    assert overlay.labels[0][1] == "cue"
+    assert len(overlay.circles) == 1
+    assert overlay.circles[0][2] == (255, 255, 255)
+    assert not overlay.labels

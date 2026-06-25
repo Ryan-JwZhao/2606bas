@@ -4,14 +4,13 @@ from typing import Iterable
 
 import numpy as np
 
+from ..projection.overlay import ROUTE_COLOR
 from ..calibration.service import CalibrationService
 from ..schemas import Detection, ProjectionOverlay, TrackObservation
 from ..utils import group_from_class
 
 
 BALL_GROUPS = {"cue", "solid", "stripe", "black"}
-DEBUG_BALL_COLOR = (255, 0, 255)
-DEBUG_BALL_CENTER_COLOR = (255, 255, 0)
 
 
 def append_projected_ball_overlays(
@@ -30,7 +29,6 @@ def append_projected_ball_overlays(
                 calibration,
                 center_px=track.center_px,
                 radius_px=track.radius_px,
-                label=f"#{track.track_id}",
             ):
                 appended += 1
         return appended
@@ -43,7 +41,6 @@ def append_projected_ball_overlays(
             calibration,
             center_px=det.center,
             radius_px=det.radius_px,
-            label=str(getattr(det, "cls_name", "") or "ball"),
         ):
             appended += 1
     return appended
@@ -55,7 +52,6 @@ def _append_projected_ball_marker(
     *,
     center_px,
     radius_px: float,
-    label: str,
 ) -> bool:
     cx, cy = [float(v) for v in center_px]
     radius = float(max(1.0, radius_px))
@@ -75,9 +71,7 @@ def _append_projected_ball_marker(
     ry = float(np.linalg.norm(proj[2] - proj[0]))
     radius_proj = max(4.0, 0.5 * (rx + ry))
     center = (float(proj[0, 0]), float(proj[0, 1]))
-    overlay.circles.append((center, radius_proj, DEBUG_BALL_COLOR))
-    overlay.circles.append((center, max(2.0, radius_proj * 0.18), DEBUG_BALL_CENTER_COLOR))
-    overlay.labels.append(((center[0] + radius_proj + 6.0, center[1] - radius_proj - 4.0), label, DEBUG_BALL_COLOR))
+    overlay.circles.append((center, radius_proj, ROUTE_COLOR))
     return True
 
 
