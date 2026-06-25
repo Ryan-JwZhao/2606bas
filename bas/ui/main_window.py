@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import copy
 import logging
 import time
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -103,6 +105,9 @@ class SettingsDialog(QtWidgets.QDialog):
     def __init__(self, config: AppConfig, star_formula: StarFormulaConfig, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
         self.config = config
+        self._operator = parent if hasattr(parent, "_apply_projection_tuning_preview") else None
+        self._original_calibration = copy.deepcopy(config.calibration)
+        self._preview_active = False
         self.setWindowTitle("设置")
         self.resize(820, 760)
         layout = QtWidgets.QVBoxLayout(self)
@@ -205,13 +210,13 @@ class SettingsDialog(QtWidgets.QDialog):
         tuning = QtWidgets.QWidget()
         tuning_layout = QtWidgets.QVBoxLayout(tuning)
         tuning_note = QtWidgets.QLabel(
-            "杈圭晫淇鍙傛暟鍗曚綅涓?mm锛涚悆蹇冭ˉ鍋夸娇鐢ㄢ€滄妸鐞冨績鍚戝弬鑰冪偣鎷夊洖涓€瀹氱櫨鍒嗘瘮鈥濈殑鏂瑰紡銆?br>"
-            "鍙傝€冪偣 X / Y 璁句负 -1 鏃朵細鑷姩浣跨敤鐩告満涓诲厜蹇冦€?"
+            "这里的参数单位都是 mm。调节后会立即刷新当前投影预览，便于直接观察边界线和球圈变化。<br>"
+            "如果直接关闭设置窗口而不保存，本页的修改不会落盘，也会恢复到打开设置前的状态。"
         )
         tuning_note.setWordWrap(True)
         tuning_layout.addWidget(tuning_note)
 
-        boundary_box = QtWidgets.QGroupBox("杈圭晫淇")
+        boundary_box = QtWidgets.QGroupBox("边界修正")
         boundary_grid = QtWidgets.QGridLayout(boundary_box)
         self.visible_inset_top = self._dspin(float(config.calibration.projection_visible_inset_top_mm), 0.0, 120.0, 1.0)
         self.visible_inset_right = self._dspin(float(config.calibration.projection_visible_inset_right_mm), 0.0, 120.0, 1.0)
@@ -225,37 +230,38 @@ class SettingsDialog(QtWidgets.QDialog):
         self.middle_relief_bottom = self._dspin(float(config.calibration.physical_middle_pocket_relief_bottom_mm), 0.0, 120.0, 1.0)
         self.center_margin = self._dspin(float(config.calibration.center_reachable_extra_margin_mm), 0.0, 80.0, 0.5)
         row = 0
-        self._grid_pair(boundary_grid, row, "鍙-涓? (mm)", self.visible_inset_top, "鍙-鍙? (mm)", self.visible_inset_right)
+        self._grid_pair(boundary_grid, row, "可见边界-上 (mm)", self.visible_inset_top, "可见边界-右 (mm)", self.visible_inset_right)
         row += 1
-        self._grid_pair(boundary_grid, row, "鍙-涓? (mm)", self.visible_inset_bottom, "鍙-宸? (mm)", self.visible_inset_left)
+        self._grid_pair(boundary_grid, row, "可见边界-下 (mm)", self.visible_inset_bottom, "可见边界-左 (mm)", self.visible_inset_left)
         row += 1
-        self._grid_pair(boundary_grid, row, "鐗╃悊-涓? (mm)", self.physical_inset_top, "鐗╃悊-鍙? (mm)", self.physical_inset_right)
+        self._grid_pair(boundary_grid, row, "物理库边-上 (mm)", self.physical_inset_top, "物理库边-右 (mm)", self.physical_inset_right)
         row += 1
-        self._grid_pair(boundary_grid, row, "鐗╃悊-涓? (mm)", self.physical_inset_bottom, "鐗╃悊-宸? (mm)", self.physical_inset_left)
+        self._grid_pair(boundary_grid, row, "物理库边-下 (mm)", self.physical_inset_bottom, "物理库边-左 (mm)", self.physical_inset_left)
         row += 1
-        self._grid_pair(boundary_grid, row, "涓婁腑琚嬪彛 relief (mm)", self.middle_relief_top, "涓嬩腑琚嬪彛 relief (mm)", self.middle_relief_bottom)
+        self._grid_pair(boundary_grid, row, "上中袋 relief (mm)", self.middle_relief_top, "下中袋 relief (mm)", self.middle_relief_bottom)
         row += 1
-        boundary_grid.addWidget(QtWidgets.QLabel("鐞冨績棰濆瀹夊叏杈? (mm)"), row, 0)
+        boundary_grid.addWidget(QtWidgets.QLabel("球心额外安全边 (mm)"), row, 0)
         boundary_grid.addWidget(self.center_margin, row, 1)
-        boundary_grid.addWidget(QtWidgets.QLabel("璇存槑"), row, 2)
-        boundary_grid.addWidget(QtWidgets.QLabel("relief 鐢ㄤ簬璁╀笂/涓嬩腑琚嬪彛鐨勭墿鐞嗗簱杈规洿鎺ヨ繎鍙杈圭晫"), row, 3)
+        boundary_grid.addWidget(QtWidgets.QLabel("说明"), row, 2)
+        boundary_grid.addWidget(QtWidgets.QLabel("relief 用于把上中袋、下中袋附近的物理库边往可见边界方向拉回。"), row, 3)
         tuning_layout.addWidget(boundary_box)
 
-        ball_box = QtWidgets.QGroupBox("鐞冨績鎶曞奖淇")
+        ball_box = QtWidgets.QGroupBox("球心投影修正")
         ball_grid = QtWidgets.QGridLayout(ball_box)
-        self.ball_comp_enabled = QtWidgets.QCheckBox("鍚敤鐞冨績琛ュ伩")
+        self.ball_comp_enabled = QtWidgets.QCheckBox("启用球心补偿")
         self.ball_comp_enabled.setChecked(bool(config.calibration.ball_center_compensation_enabled))
         self.ball_comp_ref_x = self._dspin(float(config.calibration.ball_center_compensation_ref_x_px), -1.0, 7680.0, 1.0)
         self.ball_comp_ref_y = self._dspin(float(config.calibration.ball_center_compensation_ref_y_px), -1.0, 4320.0, 1.0)
         self.ball_comp_scale_x = self._dspin(float(config.calibration.ball_center_compensation_scale_x_pct), -20.0, 20.0, 0.1)
         self.ball_comp_scale_y = self._dspin(float(config.calibration.ball_center_compensation_scale_y_pct), -20.0, 20.0, 0.1)
         ball_grid.addWidget(self.ball_comp_enabled, 0, 0, 1, 4)
-        self._grid_pair(ball_grid, 1, "鍙傝€冪偣 X (px)", self.ball_comp_ref_x, "鍙傝€冪偣 Y (px)", self.ball_comp_ref_y)
-        self._grid_pair(ball_grid, 2, "X 鎷夊洖姣斾緥 (%)", self.ball_comp_scale_x, "Y 鎷夊洖姣斾緥 (%)", self.ball_comp_scale_y)
-        ball_grid.addWidget(QtWidgets.QLabel("姝ｆ暟琛ㄧず鎶婄悆蹇冨悜鍙傝€冪偣鎷夊洖锛岄€傚悎澶勭悊杈圭紭鍜岃繙绔悆鍦堝亸绉汇€?"), 3, 0, 1, 4)
+        self._grid_pair(ball_grid, 1, "参考点 X (px)", self.ball_comp_ref_x, "参考点 Y (px)", self.ball_comp_ref_y)
+        self._grid_pair(ball_grid, 2, "X 拉回比例 (%)", self.ball_comp_scale_x, "Y 拉回比例 (%)", self.ball_comp_scale_y)
+        ball_grid.addWidget(QtWidgets.QLabel("正数表示把球心向参考点拉回，适合修正边缘和远端区域的投影偏移。参考点 X / Y 设为 -1 时会自动使用相机主光心。"), 3, 0, 1, 4)
         tuning_layout.addWidget(ball_box)
         tuning_layout.addStretch(1)
-        tabs.addTab(tuning, "鎶曞奖淇")
+        tabs.addTab(tuning, "投影修正")
+        self._bind_projection_tuning_preview()
 
         star = QtWidgets.QWidget()
         grid = QtWidgets.QGridLayout(star)
@@ -320,6 +326,12 @@ class SettingsDialog(QtWidgets.QDialog):
         buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+        save_button = buttons.button(QtWidgets.QDialogButtonBox.Save)
+        cancel_button = buttons.button(QtWidgets.QDialogButtonBox.Cancel)
+        if save_button is not None:
+            save_button.setText("保存")
+        if cancel_button is not None:
+            cancel_button.setText("取消")
         layout.addWidget(buttons)
 
     def apply_to_config(self, config: AppConfig) -> None:
@@ -347,6 +359,9 @@ class SettingsDialog(QtWidgets.QDialog):
         config.projection.screen_index = int(self.proj_screen.currentData() or 0)
         config.projection.projector_width = int(self.proj_w.value())
         config.projection.projector_height = int(self.proj_h.value())
+        self._apply_projection_tuning_to_config(config)
+
+    def _apply_projection_tuning_to_config(self, config: AppConfig) -> None:
         config.calibration.projection_visible_inset_top_mm = float(self.visible_inset_top.value())
         config.calibration.projection_visible_inset_right_mm = float(self.visible_inset_right.value())
         config.calibration.projection_visible_inset_bottom_mm = float(self.visible_inset_bottom.value())
@@ -364,6 +379,44 @@ class SettingsDialog(QtWidgets.QDialog):
         config.calibration.ball_center_compensation_scale_x_pct = float(self.ball_comp_scale_x.value())
         config.calibration.ball_center_compensation_scale_y_pct = float(self.ball_comp_scale_y.value())
 
+    def _bind_projection_tuning_preview(self) -> None:
+        widgets = [
+            self.visible_inset_top,
+            self.visible_inset_right,
+            self.visible_inset_bottom,
+            self.visible_inset_left,
+            self.physical_inset_top,
+            self.physical_inset_right,
+            self.physical_inset_bottom,
+            self.physical_inset_left,
+            self.middle_relief_top,
+            self.middle_relief_bottom,
+            self.center_margin,
+            self.ball_comp_ref_x,
+            self.ball_comp_ref_y,
+            self.ball_comp_scale_x,
+            self.ball_comp_scale_y,
+        ]
+        for widget in widgets:
+            widget.valueChanged.connect(self._preview_projection_tuning)
+        self.ball_comp_enabled.toggled.connect(self._preview_projection_tuning)
+
+    def _preview_projection_tuning(self, *_args) -> None:
+        self._apply_projection_tuning_to_config(self.config)
+        self._preview_active = True
+        if self._operator is None:
+            return
+        try:
+            self._operator._apply_projection_tuning_preview()
+        except Exception as exc:
+            self._operator._append_log(f"投影修正预览失败: {exc}")
+
+    def _restore_projection_tuning_preview(self) -> None:
+        self.config.calibration = copy.deepcopy(self._original_calibration)
+        if self._operator is not None:
+            self._operator._apply_projection_tuning_preview()
+        self._preview_active = False
+
     def star_formula_config(self) -> StarFormulaConfig:
         return StarFormulaConfig(
             enabled=self.star_enabled.isChecked(),
@@ -379,6 +432,15 @@ class SettingsDialog(QtWidgets.QDialog):
             scale_y_pct=self.star_scale_y.value(),
             angle_deg=self.star_angle.value(),
         ).clamp_for_projection(int(self.proj_w.value()), int(self.proj_h.value()))
+
+    def accept(self) -> None:
+        self._preview_active = False
+        super().accept()
+
+    def reject(self) -> None:
+        if self._preview_active:
+            self._restore_projection_tuning_preview()
+        super().reject()
 
     def _path_row(self, value: Optional[str], file_filter: str) -> QtWidgets.QWidget:
         box = QtWidgets.QWidget()
@@ -1295,6 +1357,32 @@ class OperatorWindow(QtWidgets.QMainWindow):
         else:
             self._append_log("投影调试模式已开启" if checked else "投影调试模式已关闭")
 
+    def _apply_projection_tuning_preview(self) -> None:
+        calibration = create_calibration_service(
+            self.config.calibration,
+            frame_undistorted=bool(self.config.camera.distortion_correction_enabled),
+        )
+        if self.pipeline is not None:
+            self.pipeline.calibration = calibration
+            self.pipeline.planner.calibration = calibration
+            self.pipeline.planner.free_planner.calibration = calibration
+            self.pipeline.overlay_builder.calibration = calibration
+            if self.last_output is not None:
+                self.pipeline._update_table_geometry_for_frame(self.last_output.frame)
+                plan = self.pipeline.planner.plan(self.last_output.state, frame_bgr=self.last_output.frame.image)
+                overlay = self.pipeline.overlay_builder.from_plan(plan)
+                self.last_output = replace(self.last_output, plan=plan, overlay=overlay)
+                self.pipeline._last_state = self.last_output.state
+                self.pipeline._last_plan = plan
+                self.pipeline._last_overlay = overlay
+                self._update_plan(self.last_output)
+                self._update_module_status(self.last_output)
+                self._update_preview(self.last_output)
+            else:
+                self.pipeline._last_plan = None
+                self.pipeline._last_overlay = None
+        self._refresh_projection()
+
     def _save_user_settings(self) -> None:
         UserSettings.from_config(self.config, self.star_formula.to_dict()).save()
 
@@ -1330,22 +1418,6 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.config.calibration.table_width_mm,
             self.config.calibration.table_height_mm,
             self.config.calibration.ball_diameter_mm,
-            self.config.calibration.projection_visible_inset_top_mm,
-            self.config.calibration.projection_visible_inset_right_mm,
-            self.config.calibration.projection_visible_inset_bottom_mm,
-            self.config.calibration.projection_visible_inset_left_mm,
-            self.config.calibration.physical_rail_inset_top_mm,
-            self.config.calibration.physical_rail_inset_right_mm,
-            self.config.calibration.physical_rail_inset_bottom_mm,
-            self.config.calibration.physical_rail_inset_left_mm,
-            self.config.calibration.physical_middle_pocket_relief_top_mm,
-            self.config.calibration.physical_middle_pocket_relief_bottom_mm,
-            self.config.calibration.center_reachable_extra_margin_mm,
-            self.config.calibration.ball_center_compensation_enabled,
-            self.config.calibration.ball_center_compensation_ref_x_px,
-            self.config.calibration.ball_center_compensation_ref_y_px,
-            self.config.calibration.ball_center_compensation_scale_x_pct,
-            self.config.calibration.ball_center_compensation_scale_y_pct,
             self.config.geometry.outline_path,
             self.config.geometry.inline_path,
             self.config.geometry.pocket_path,
