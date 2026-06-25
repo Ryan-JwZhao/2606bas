@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 import numpy as np
 
@@ -68,31 +68,30 @@ def apply_edge_insets(points_mm: np.ndarray, width_mm: float, height_mm: float, 
         return pts
     width = max(1.0, float(width_mm))
     height = max(1.0, float(height_mm))
-    softness = max(18.0, 0.06 * min(width, height))
-    power = 2.4
+    band = _edge_band(width, height, insets)
 
     left_dist = np.clip(pts[:, 0], 0.0, width)
     right_dist = np.clip(width - pts[:, 0], 0.0, width)
     top_dist = np.clip(pts[:, 1], 0.0, height)
     bottom_dist = np.clip(height - pts[:, 1], 0.0, height)
+    distances = np.stack([top_dist, right_dist, bottom_dist, left_dist], axis=1)
+    nearest = np.argmin(distances, axis=1)
 
-    weights = np.stack(
-        [
-            _edge_weight(top_dist, softness, power),
-            _edge_weight(right_dist, softness, power),
-            _edge_weight(bottom_dist, softness, power),
-            _edge_weight(left_dist, softness, power),
-        ],
-        axis=1,
-    )
-    weights_sum = np.sum(weights, axis=1, keepdims=True)
-    weights = weights / np.maximum(weights_sum, 1e-6)
+    near_top = top_dist <= band
+    near_right = right_dist <= band
+    near_bottom = bottom_dist <= band
+    near_left = left_dist <= band
+    has_assignment = near_top | near_right | near_bottom | near_left
+    near_top = near_top | (~has_assignment & (nearest == 0))
+    near_right = near_right | (~has_assignment & (nearest == 1))
+    near_bottom = near_bottom | (~has_assignment & (nearest == 2))
+    near_left = near_left | (~has_assignment & (nearest == 3))
 
     out = pts.copy()
-    out[:, 0] += weights[:, 3] * float(max(0.0, insets.left_mm))
-    out[:, 0] -= weights[:, 1] * float(max(0.0, insets.right_mm))
-    out[:, 1] += weights[:, 0] * float(max(0.0, insets.top_mm))
-    out[:, 1] -= weights[:, 2] * float(max(0.0, insets.bottom_mm))
+    out[:, 0] += near_left.astype(np.float32) * float(max(0.0, insets.left_mm))
+    out[:, 0] -= near_right.astype(np.float32) * float(max(0.0, insets.right_mm))
+    out[:, 1] += near_top.astype(np.float32) * float(max(0.0, insets.top_mm))
+    out[:, 1] -= near_bottom.astype(np.float32) * float(max(0.0, insets.bottom_mm))
     out[:, 0] = np.clip(out[:, 0], 0.0, width)
     out[:, 1] = np.clip(out[:, 1], 0.0, height)
     return out.astype(np.float32)
@@ -122,5 +121,6 @@ def _fallback_polygon(points_mm: np.ndarray, width_mm: float, height_mm: float) 
     return np.asarray([(0.0, 0.0), (width_mm, 0.0), (width_mm, height_mm), (0.0, height_mm)], dtype=np.float32)
 
 
-def _edge_weight(distance: np.ndarray, softness: float, power: float) -> np.ndarray:
-    return 1.0 / np.maximum(1.0, distance + softness) ** float(power)
+def _edge_band(width_mm: float, height_mm: float, insets: EdgeInsets) -> float:
+    max_inset = max(float(insets.top_mm), float(insets.right_mm), float(insets.bottom_mm), float(insets.left_mm), 0.0)
+    return float(max(24.0, 0.08 * min(width_mm, height_mm), 2.0 * max_inset))

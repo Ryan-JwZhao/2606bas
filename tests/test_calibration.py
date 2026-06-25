@@ -98,6 +98,35 @@ def test_table_mapping_uses_projection_table_bbox() -> None:
     assert np.allclose(out[0], [1000, 500], atol=1e-3)
 
 
+def test_table_mapping_uses_projection_table_quad() -> None:
+    quad = np.array([[10, 20], [210, 35], [195, 118], [24, 110]], dtype=np.float64)
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [100, 0], [100, 50], [0, 50]], dtype=np.float64),
+        quad,
+        projector_size=(220, 140),
+    )
+    projection.table_polygon_proj = quad.copy()
+    service = CalibrationService(
+        camera=CameraCalibration(metadata={}),
+        projection=projection,
+        table=TableModel(
+            width_mm=2000,
+            height_mm=1000,
+            ball_diameter_mm=57.15,
+            inner_polygon_mm=[(0, 0), (2000, 0), (2000, 1000), (0, 1000)],
+            pockets_mm=[],
+        ),
+    )
+
+    center_mm = service.camera_px_to_table_mm(np.array([[50, 25]], dtype=np.float32))
+    corners_proj = service.table_mm_to_projector_px(np.array([[0, 0], [2000, 0], [2000, 1000], [0, 1000]], dtype=np.float32))
+    roundtrip_mm = service.projector_px_to_table_mm(corners_proj)
+
+    assert np.allclose(center_mm[0], [1000, 500], atol=1e-3)
+    assert np.allclose(corners_proj, quad, atol=1e-3)
+    assert np.allclose(roundtrip_mm, np.array([[0, 0], [2000, 0], [2000, 1000], [0, 1000]], dtype=np.float32), atol=1e-3)
+
+
 def test_holdout_verification_reports_mm_and_image_errors() -> None:
     projection = ProjectionCalibration.fit_from_correspondences(
         np.array([[0, 0], [100, 0], [100, 50], [0, 50]], dtype=np.float64),

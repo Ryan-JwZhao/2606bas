@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from bas.table_boundaries import EdgeInsets, derive_table_boundaries
+from bas.table_boundaries import apply_edge_insets
 
 
 def test_derive_table_boundaries_applies_separate_visible_physical_and_center_offsets() -> None:
@@ -50,3 +51,17 @@ def test_derive_table_boundaries_applies_separate_visible_physical_and_center_of
     assert center_bbox[2] < physical_bbox[2]
     assert center_bbox[3] < physical_bbox[3]
     assert boundaries.physical_pocket_points_mm[0][1] > boundaries.projection_visible_pocket_points_mm[0][1]
+
+
+def test_apply_edge_insets_keeps_straight_rail_segments_straight() -> None:
+    top_rail = np.array([[120, 0], [320, 0], [520, 0], [720, 0], [920, 0]], dtype=np.float32)
+
+    adjusted = apply_edge_insets(
+        top_rail,
+        width_mm=1000.0,
+        height_mm=500.0,
+        insets=EdgeInsets(top_mm=14.0, right_mm=8.0, bottom_mm=12.0, left_mm=8.0),
+    )
+
+    np.testing.assert_allclose(adjusted[:, 0], top_rail[:, 0], atol=1e-5)
+    np.testing.assert_allclose(adjusted[:, 1], np.full((top_rail.shape[0],), 14.0, dtype=np.float32), atol=1e-5)

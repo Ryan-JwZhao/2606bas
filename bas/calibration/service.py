@@ -54,6 +54,9 @@ class CalibrationService:
         pts = ensure_numpy_points(points)
         if pts.size == 0:
             return pts
+        _, projector_to_table = self._table_projector_homographies()
+        if projector_to_table is not None:
+            return cv2.perspectiveTransform(pts.reshape((-1, 1, 2)).astype(np.float32), projector_to_table).reshape((-1, 2))
         x1, y1, x2, y2 = table_bbox_from_polygon(self.projection.table_polygon_proj, self.projection.projector_size)
         w = max(1e-6, x2 - x1)
         h = max(1e-6, y2 - y1)
@@ -66,6 +69,9 @@ class CalibrationService:
         pts = ensure_numpy_points(points)
         if pts.size == 0:
             return pts
+        table_to_projector, _ = self._table_projector_homographies()
+        if table_to_projector is not None:
+            return cv2.perspectiveTransform(pts.reshape((-1, 1, 2)).astype(np.float32), table_to_projector).reshape((-1, 2))
         x1, y1, x2, y2 = table_bbox_from_polygon(self.projection.table_polygon_proj, self.projection.projector_size)
         out = pts.copy().astype(np.float32)
         out[:, 0] = x1 + out[:, 0] / max(1e-6, float(self.table.width_mm)) * (x2 - x1)
@@ -94,6 +100,25 @@ class CalibrationService:
         edge = np.asarray([[center_px[0] + radius_px, center_px[1]]], dtype=np.float32)
         mm = self.camera_px_to_table_mm(np.vstack([center, edge]))
         return float(np.linalg.norm(mm[1] - mm[0]))
+
+    def _table_projector_homographies(self) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        poly = ensure_numpy_points(self.projection.table_polygon_proj).astype(np.float32)
+        if poly.shape[0] != 4:
+            return None, None
+        width = max(1e-3, float(self.table.width_mm))
+        height = max(1e-3, float(self.table.height_mm))
+        rect = np.asarray(
+            [
+                [0.0, 0.0],
+                [width, 0.0],
+                [width, height],
+                [0.0, height],
+            ],
+            dtype=np.float32,
+        )
+        table_to_projector = cv2.getPerspectiveTransform(rect, poly)
+        projector_to_table = cv2.getPerspectiveTransform(poly, rect)
+        return table_to_projector, projector_to_table
 
 
 def create_calibration_service(config: CalibrationConfig, frame_undistorted: bool = False) -> CalibrationService:
