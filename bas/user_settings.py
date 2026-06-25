@@ -47,7 +47,14 @@ class UserSettings:
     physical_rail_inset_right_mm: Optional[float] = None
     physical_rail_inset_bottom_mm: Optional[float] = None
     physical_rail_inset_left_mm: Optional[float] = None
+    physical_middle_pocket_relief_top_mm: Optional[float] = None
+    physical_middle_pocket_relief_bottom_mm: Optional[float] = None
     center_reachable_extra_margin_mm: Optional[float] = None
+    ball_center_compensation_enabled: Optional[bool] = None
+    ball_center_compensation_ref_x_px: Optional[float] = None
+    ball_center_compensation_ref_y_px: Optional[float] = None
+    ball_center_compensation_scale_x_pct: Optional[float] = None
+    ball_center_compensation_scale_y_pct: Optional[float] = None
     projection_geometry_reference_enabled: Optional[bool] = None
     ui_geometry_reference_enabled: Optional[bool] = None
     replay_enabled: Optional[bool] = None
@@ -152,8 +159,22 @@ class UserSettings:
             config.calibration.physical_rail_inset_bottom_mm = max(0.0, float(self.physical_rail_inset_bottom_mm))
         if self.physical_rail_inset_left_mm is not None:
             config.calibration.physical_rail_inset_left_mm = max(0.0, float(self.physical_rail_inset_left_mm))
+        if self.physical_middle_pocket_relief_top_mm is not None:
+            config.calibration.physical_middle_pocket_relief_top_mm = max(0.0, float(self.physical_middle_pocket_relief_top_mm))
+        if self.physical_middle_pocket_relief_bottom_mm is not None:
+            config.calibration.physical_middle_pocket_relief_bottom_mm = max(0.0, float(self.physical_middle_pocket_relief_bottom_mm))
         if self.center_reachable_extra_margin_mm is not None:
             config.calibration.center_reachable_extra_margin_mm = max(0.0, float(self.center_reachable_extra_margin_mm))
+        if self.ball_center_compensation_enabled is not None:
+            config.calibration.ball_center_compensation_enabled = bool(self.ball_center_compensation_enabled)
+        if self.ball_center_compensation_ref_x_px is not None:
+            config.calibration.ball_center_compensation_ref_x_px = float(self.ball_center_compensation_ref_x_px)
+        if self.ball_center_compensation_ref_y_px is not None:
+            config.calibration.ball_center_compensation_ref_y_px = float(self.ball_center_compensation_ref_y_px)
+        if self.ball_center_compensation_scale_x_pct is not None:
+            config.calibration.ball_center_compensation_scale_x_pct = float(self.ball_center_compensation_scale_x_pct)
+        if self.ball_center_compensation_scale_y_pct is not None:
+            config.calibration.ball_center_compensation_scale_y_pct = float(self.ball_center_compensation_scale_y_pct)
         if self.ui_geometry_reference_enabled is not None:
             config.projection.geometry_reference_enabled = bool(self.ui_geometry_reference_enabled)
         elif self.projection_geometry_reference_enabled is not None:
@@ -216,7 +237,14 @@ class UserSettings:
             physical_rail_inset_right_mm=config.calibration.physical_rail_inset_right_mm,
             physical_rail_inset_bottom_mm=config.calibration.physical_rail_inset_bottom_mm,
             physical_rail_inset_left_mm=config.calibration.physical_rail_inset_left_mm,
+            physical_middle_pocket_relief_top_mm=config.calibration.physical_middle_pocket_relief_top_mm,
+            physical_middle_pocket_relief_bottom_mm=config.calibration.physical_middle_pocket_relief_bottom_mm,
             center_reachable_extra_margin_mm=config.calibration.center_reachable_extra_margin_mm,
+            ball_center_compensation_enabled=config.calibration.ball_center_compensation_enabled,
+            ball_center_compensation_ref_x_px=config.calibration.ball_center_compensation_ref_x_px,
+            ball_center_compensation_ref_y_px=config.calibration.ball_center_compensation_ref_y_px,
+            ball_center_compensation_scale_x_pct=config.calibration.ball_center_compensation_scale_x_pct,
+            ball_center_compensation_scale_y_pct=config.calibration.ball_center_compensation_scale_y_pct,
             ui_geometry_reference_enabled=config.projection.geometry_reference_enabled,
             replay_enabled=config.replay.enabled,
             shot_mode=config.planner.shot_mode,

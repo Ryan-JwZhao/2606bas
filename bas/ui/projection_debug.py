@@ -92,7 +92,7 @@ def _append_projected_ball_marker(
         dtype=np.float32,
     )
     try:
-        proj = calibration.camera_px_to_projector_px(refs).astype(np.float32)
+        proj = calibration.ball_camera_px_to_projector_px(refs).astype(np.float32)
     except Exception:
         return False
     rx = float(np.linalg.norm(proj[1] - proj[0]))

@@ -51,7 +51,14 @@ calibration:
   physical_rail_inset_right_mm: 0.0
   physical_rail_inset_bottom_mm: 0.0
   physical_rail_inset_left_mm: 0.0
+  physical_middle_pocket_relief_top_mm: 0.0
+  physical_middle_pocket_relief_bottom_mm: 0.0
   center_reachable_extra_margin_mm: 2.0
+  ball_center_compensation_enabled: false
+  ball_center_compensation_ref_x_px: -1.0
+  ball_center_compensation_ref_y_px: -1.0
+  ball_center_compensation_scale_x_pct: 0.0
+  ball_center_compensation_scale_y_pct: 0.0
 
 geometry:
   outline_path: C:/CodeProject/data/0618_DrawLine/outline.json

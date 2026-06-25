@@ -18,6 +18,8 @@ def test_derive_table_boundaries_applies_separate_visible_physical_and_center_of
         ball_diameter_mm=57.15,
         projection_visible_insets=EdgeInsets(bottom_mm=12.0),
         physical_rail_insets=EdgeInsets.uniform(10.0),
+        physical_middle_pocket_relief_top_mm=0.0,
+        physical_middle_pocket_relief_bottom_mm=0.0,
         center_reachable_extra_margin_mm=2.0,
     )
 
@@ -65,3 +67,39 @@ def test_apply_edge_insets_keeps_straight_rail_segments_straight() -> None:
 
     np.testing.assert_allclose(adjusted[:, 0], top_rail[:, 0], atol=1e-5)
     np.testing.assert_allclose(adjusted[:, 1], np.full((top_rail.shape[0],), 14.0, dtype=np.float32), atol=1e-5)
+
+
+def test_middle_pocket_relief_brings_physical_boundary_closer_to_visible() -> None:
+    visible_polygon = np.array(
+        [[0, 0], [430, 0], [470, 20], [500, 28], [530, 20], [570, 0], [1000, 0], [1000, 500], [0, 500]],
+        dtype=np.float32,
+    )
+    top_middle_pocket = np.array([[470, 20], [500, 28], [530, 20]], dtype=np.float32)
+
+    without_relief = derive_table_boundaries(
+        visible_polygon,
+        [top_middle_pocket],
+        table_width_mm=1000.0,
+        table_height_mm=500.0,
+        ball_diameter_mm=57.15,
+        projection_visible_insets=EdgeInsets(),
+        physical_rail_insets=EdgeInsets(top_mm=10.0),
+        physical_middle_pocket_relief_top_mm=0.0,
+        physical_middle_pocket_relief_bottom_mm=0.0,
+        center_reachable_extra_margin_mm=2.0,
+    )
+    with_relief = derive_table_boundaries(
+        visible_polygon,
+        [top_middle_pocket],
+        table_width_mm=1000.0,
+        table_height_mm=500.0,
+        ball_diameter_mm=57.15,
+        projection_visible_insets=EdgeInsets(),
+        physical_rail_insets=EdgeInsets(top_mm=10.0),
+        physical_middle_pocket_relief_top_mm=8.0,
+        physical_middle_pocket_relief_bottom_mm=0.0,
+        center_reachable_extra_margin_mm=2.0,
+    )
+
+    mid_idx = int(np.argmin(np.abs(visible_polygon[:, 0] - 500.0)))
+    assert with_relief.physical_rail_polygon_mm[mid_idx, 1] < without_relief.physical_rail_polygon_mm[mid_idx, 1]

@@ -7,7 +7,7 @@ import pytest
 from bas.calibration.camera import CameraCalibration
 from bas.calibration.charuco import CharucoBoardSpec, detect_charuco_corners, render_charuco_board
 from bas.calibration.projector import ProjectionCalibration
-from bas.calibration.service import CalibrationService
+from bas.calibration.service import BallCenterCompensation, CalibrationService
 from bas.calibration.verification import format_holdout_report, verify_holdout_samples
 from bas.schemas import TableModel
 
@@ -125,6 +125,37 @@ def test_table_mapping_uses_projection_table_quad() -> None:
     assert np.allclose(center_mm[0], [1000, 500], atol=1e-3)
     assert np.allclose(corners_proj, quad, atol=1e-3)
     assert np.allclose(roundtrip_mm, np.array([[0, 0], [2000, 0], [2000, 1000], [0, 1000]], dtype=np.float32), atol=1e-3)
+
+
+def test_ball_center_compensation_pulls_points_toward_reference() -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [200, 0], [200, 100], [0, 100]], dtype=np.float64),
+        np.array([[0, 0], [200, 0], [200, 100], [0, 100]], dtype=np.float64),
+        projector_size=(200, 100),
+    )
+    projection.table_polygon_proj = np.array([[0, 0], [200, 0], [200, 100], [0, 100]], dtype=np.float64)
+    service = CalibrationService(
+        camera=CameraCalibration(metadata={}),
+        projection=projection,
+        table=TableModel(
+            width_mm=200,
+            height_mm=100,
+            ball_diameter_mm=57.15,
+            inner_polygon_mm=[(0, 0), (200, 0), (200, 100), (0, 100)],
+            pockets_mm=[],
+        ),
+        ball_center_compensation=BallCenterCompensation(
+            enabled=True,
+            ref_x_px=100.0,
+            ref_y_px=50.0,
+            scale_x_pct=10.0,
+            scale_y_pct=10.0,
+        ),
+    )
+
+    out = service.ball_camera_px_to_table_mm(np.array([[160, 80]], dtype=np.float32))
+
+    assert np.allclose(out[0], [154.0, 77.0], atol=1e-3)
 
 
 def test_holdout_verification_reports_mm_and_image_errors() -> None:

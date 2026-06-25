@@ -100,8 +100,8 @@ class GeometryPhysicsPlanner:
         for tr in tracks:
             if tr.group not in {"cue", "solid", "stripe", "black"}:
                 continue
-            center = self.calibration.camera_px_to_table_mm(np.asarray([tr.center_px], dtype=np.float32))[0]
-            radius_mm = self.calibration.pixel_radius_to_mm(tr.center_px, tr.radius_px)
+            center = self.calibration.ball_camera_px_to_table_mm(np.asarray([tr.center_px], dtype=np.float32))[0]
+            radius_mm = self.calibration.ball_pixel_radius_to_mm(tr.center_px, tr.radius_px)
             if radius_mm <= 1.0 or radius_mm > 80.0:
                 radius_mm = 0.5 * self.calibration.table.ball_diameter_mm
             balls.append(

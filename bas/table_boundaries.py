@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Sequence, Tuple
 
+import cv2
 import numpy as np
 
 from .utils import ensure_numpy_points
@@ -42,6 +43,8 @@ def derive_table_boundaries(
     ball_diameter_mm: float,
     projection_visible_insets: EdgeInsets,
     physical_rail_insets: EdgeInsets,
+    physical_middle_pocket_relief_top_mm: float,
+    physical_middle_pocket_relief_bottom_mm: float,
     center_reachable_extra_margin_mm: float,
 ) -> TableBoundarySet:
     width = max(1.0, float(table_width_mm))
@@ -49,10 +52,27 @@ def derive_table_boundaries(
     visible_base = _fallback_polygon(visible_polygon_mm, width, height)
     projection_visible = apply_edge_insets(visible_base, width, height, projection_visible_insets)
     physical_rail = apply_edge_insets(visible_base, width, height, physical_rail_insets)
+    physical_rail = apply_middle_pocket_relief(
+        physical_rail,
+        visible_base,
+        pocket_curves_mm,
+        width_mm=width,
+        height_mm=height,
+        top_relief_mm=float(physical_middle_pocket_relief_top_mm),
+        bottom_relief_mm=float(physical_middle_pocket_relief_bottom_mm),
+        insets=physical_rail_insets,
+    )
     center_margin = 0.5 * max(0.0, float(ball_diameter_mm)) + max(0.0, float(center_reachable_extra_margin_mm))
-    center_playable = apply_edge_insets(physical_rail, width, height, EdgeInsets.uniform(center_margin))
+    center_playable = inset_polygon_uniform(physical_rail, center_margin, width, height)
     visible_pockets = _pocket_centers_mm(pocket_curves_mm, width, height, projection_visible_insets)
-    physical_pockets = _pocket_centers_mm(pocket_curves_mm, width, height, physical_rail_insets)
+    physical_pockets = _pocket_centers_mm(
+        pocket_curves_mm,
+        width,
+        height,
+        physical_rail_insets,
+        middle_relief_top_mm=float(physical_middle_pocket_relief_top_mm),
+        middle_relief_bottom_mm=float(physical_middle_pocket_relief_bottom_mm),
+    )
     return TableBoundarySet(
         projection_visible_polygon_mm=projection_visible,
         physical_rail_polygon_mm=physical_rail,
@@ -102,8 +122,12 @@ def _pocket_centers_mm(
     width_mm: float,
     height_mm: float,
     insets: EdgeInsets,
+    *,
+    middle_relief_top_mm: float = 0.0,
+    middle_relief_bottom_mm: float = 0.0,
 ) -> List[Tuple[float, float]]:
     centers: List[Tuple[float, float]] = []
+    top_middle_idx, bottom_middle_idx = _middle_pocket_indices(pocket_curves_mm, width_mm, height_mm)
     for curve in pocket_curves_mm:
         pts = ensure_numpy_points(curve)
         if pts.shape[0] < 2:
@@ -111,7 +135,14 @@ def _pocket_centers_mm(
         adjusted = apply_edge_insets(pts, width_mm, height_mm, insets)
         center = np.mean(adjusted, axis=0)
         centers.append((float(center[0]), float(center[1])))
-    return centers
+    out = list(centers)
+    if top_middle_idx is not None and 0 <= top_middle_idx < len(out):
+        x, y = out[top_middle_idx]
+        out[top_middle_idx] = (x, y - min(max(0.0, float(middle_relief_top_mm)), max(0.0, float(insets.top_mm))))
+    if bottom_middle_idx is not None and 0 <= bottom_middle_idx < len(out):
+        x, y = out[bottom_middle_idx]
+        out[bottom_middle_idx] = (x, y + min(max(0.0, float(middle_relief_bottom_mm)), max(0.0, float(insets.bottom_mm))))
+    return out
 
 
 def _fallback_polygon(points_mm: np.ndarray, width_mm: float, height_mm: float) -> PointArray:
@@ -124,3 +155,119 @@ def _fallback_polygon(points_mm: np.ndarray, width_mm: float, height_mm: float) 
 def _edge_band(width_mm: float, height_mm: float, insets: EdgeInsets) -> float:
     max_inset = max(float(insets.top_mm), float(insets.right_mm), float(insets.bottom_mm), float(insets.left_mm), 0.0)
     return float(max(24.0, 0.08 * min(width_mm, height_mm), 2.0 * max_inset))
+
+
+def apply_middle_pocket_relief(
+    adjusted_points_mm: np.ndarray,
+    base_points_mm: np.ndarray,
+    pocket_curves_mm: Sequence[np.ndarray],
+    *,
+    width_mm: float,
+    height_mm: float,
+    top_relief_mm: float,
+    bottom_relief_mm: float,
+    insets: EdgeInsets,
+) -> PointArray:
+    pts = ensure_numpy_points(adjusted_points_mm).astype(np.float32)
+    base = ensure_numpy_points(base_points_mm).astype(np.float32)
+    if pts.shape[0] == 0 or base.shape[0] != pts.shape[0]:
+        return pts
+    top_middle_idx, bottom_middle_idx = _middle_pocket_indices(pocket_curves_mm, width_mm, height_mm)
+    out = pts.copy()
+    if top_middle_idx is not None and top_middle_idx < len(pocket_curves_mm) and top_relief_mm > 0.0 and float(insets.top_mm) > 0.0:
+        curve = ensure_numpy_points(pocket_curves_mm[top_middle_idx]).astype(np.float32)
+        out[:, 1] -= _pocket_relief_weights(base, curve, width_mm) * min(float(top_relief_mm), float(insets.top_mm))
+    if bottom_middle_idx is not None and bottom_middle_idx < len(pocket_curves_mm) and bottom_relief_mm > 0.0 and float(insets.bottom_mm) > 0.0:
+        curve = ensure_numpy_points(pocket_curves_mm[bottom_middle_idx]).astype(np.float32)
+        out[:, 1] += _pocket_relief_weights(base, curve, width_mm) * min(float(bottom_relief_mm), float(insets.bottom_mm))
+    out[:, 0] = np.clip(out[:, 0], 0.0, float(width_mm))
+    out[:, 1] = np.clip(out[:, 1], 0.0, float(height_mm))
+    return out.astype(np.float32)
+
+
+def inset_polygon_uniform(points_mm: np.ndarray, inset_mm: float, width_mm: float, height_mm: float) -> PointArray:
+    pts = ensure_numpy_points(points_mm).astype(np.float32)
+    inset = max(0.0, float(inset_mm))
+    if pts.shape[0] < 3 or inset <= 1e-6:
+        return pts
+    scale = float(min(1.0, max(0.35, 900.0 / max(width_mm, height_mm, 1.0))))
+    inset_px = max(1, int(round(inset * scale)))
+    pad = inset_px + 8
+    canvas_w = max(32, int(round(width_mm * scale)) + 2 * pad + 4)
+    canvas_h = max(32, int(round(height_mm * scale)) + 2 * pad + 4)
+    poly_px = np.round(pts * scale).astype(np.int32) + np.asarray([pad, pad], dtype=np.int32)
+    mask = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
+    cv2.fillPoly(mask, [poly_px.reshape((-1, 1, 2))], 255)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * inset_px + 1, 2 * inset_px + 1))
+    eroded = cv2.erode(mask, kernel)
+    contours, _ = cv2.findContours(eroded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if not contours:
+        return pts
+    contour = max(contours, key=cv2.contourArea).reshape((-1, 2)).astype(np.float32)
+    contour -= np.asarray([pad, pad], dtype=np.float32)
+    contour /= scale
+    contour[:, 0] = np.clip(contour[:, 0], 0.0, float(width_mm))
+    contour[:, 1] = np.clip(contour[:, 1], 0.0, float(height_mm))
+    return contour.astype(np.float32)
+
+
+def _middle_pocket_indices(
+    pocket_curves_mm: Sequence[np.ndarray],
+    width_mm: float,
+    height_mm: float,
+) -> tuple[int | None, int | None]:
+    top_idx: int | None = None
+    bottom_idx: int | None = None
+    top_score = float("inf")
+    bottom_score = -float("inf")
+    x_lo = 0.25 * float(width_mm)
+    x_hi = 0.75 * float(width_mm)
+    mid_y = 0.5 * float(height_mm)
+    for idx, curve in enumerate(pocket_curves_mm):
+        pts = ensure_numpy_points(curve)
+        if pts.shape[0] < 2:
+            continue
+        center = np.mean(pts, axis=0)
+        if not (x_lo <= float(center[0]) <= x_hi):
+            continue
+        if float(center[1]) <= mid_y and float(center[1]) < top_score:
+            top_score = float(center[1])
+            top_idx = idx
+        if float(center[1]) >= mid_y and float(center[1]) > bottom_score:
+            bottom_score = float(center[1])
+            bottom_idx = idx
+    return top_idx, bottom_idx
+
+
+def _pocket_relief_weights(points_mm: np.ndarray, curve_mm: np.ndarray, width_mm: float) -> np.ndarray:
+    pts = ensure_numpy_points(points_mm).astype(np.float32)
+    curve = ensure_numpy_points(curve_mm).astype(np.float32)
+    if pts.shape[0] == 0 or curve.shape[0] < 2:
+        return np.zeros((pts.shape[0],), dtype=np.float32)
+    span_x = float(np.max(curve[:, 0]) - np.min(curve[:, 0]))
+    radius = max(80.0, 0.11 * float(width_mm), 1.2 * span_x)
+    weights = np.zeros((pts.shape[0],), dtype=np.float32)
+    for idx, point in enumerate(pts):
+        dist = _point_to_polyline_distance(point, curve)
+        if dist >= radius:
+            continue
+        weights[idx] = float((1.0 - dist / radius) ** 2)
+    return weights
+
+
+def _point_to_polyline_distance(point: np.ndarray, curve: np.ndarray) -> float:
+    best = float("inf")
+    for idx in range(curve.shape[0] - 1):
+        best = min(best, _point_to_segment_distance(point, curve[idx], curve[idx + 1]))
+    return best if np.isfinite(best) else 0.0
+
+
+def _point_to_segment_distance(point: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+    seg = b - a
+    denom = float(np.dot(seg, seg))
+    if denom <= 1e-6:
+        return float(np.linalg.norm(point - a))
+    t = float(np.dot(point - a, seg) / denom)
+    t = min(1.0, max(0.0, t))
+    proj = a + seg * t
+    return float(np.linalg.norm(point - proj))

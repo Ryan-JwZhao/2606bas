@@ -77,7 +77,10 @@ def test_user_settings_applies_boundary_inset_configuration(tmp_path) -> None:
             {
                 "projection_visible_inset_bottom_mm": 12.0,
                 "physical_rail_inset_top_mm": 10.0,
+                "physical_middle_pocket_relief_top_mm": 6.0,
                 "center_reachable_extra_margin_mm": 3.0,
+                "ball_center_compensation_enabled": True,
+                "ball_center_compensation_scale_x_pct": 2.5,
             }
         ),
         encoding="utf-8",
@@ -89,4 +92,7 @@ def test_user_settings_applies_boundary_inset_configuration(tmp_path) -> None:
 
     assert cfg.calibration.projection_visible_inset_bottom_mm == 12.0
     assert cfg.calibration.physical_rail_inset_top_mm == 10.0
+    assert cfg.calibration.physical_middle_pocket_relief_top_mm == 6.0
     assert cfg.calibration.center_reachable_extra_margin_mm == 3.0
+    assert cfg.calibration.ball_center_compensation_enabled is True
+    assert cfg.calibration.ball_center_compensation_scale_x_pct == 2.5

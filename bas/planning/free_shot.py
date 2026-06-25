@@ -407,24 +407,24 @@ class FreeShotPlanner:
         pocket_point: Optional[np.ndarray],
     ) -> FreeRouteSuggestion:
         def pt(point: np.ndarray) -> Tuple[float, float]:
-            mm = self.calibration.camera_px_to_table_mm(np.asarray([point], dtype=np.float32))[0]
+            mm = self.calibration.ball_camera_px_to_table_mm(np.asarray([point], dtype=np.float32))[0]
             return (float(mm[0]), float(mm[1]))
 
         def pts(points: Sequence[np.ndarray]) -> List[Tuple[float, float]]:
             if not points:
                 return []
             arr = np.asarray(points, dtype=np.float32).reshape((-1, 2))
-            mm = self.calibration.camera_px_to_table_mm(arr)
+            mm = self.calibration.ball_camera_px_to_table_mm(arr)
             return [(float(x), float(y)) for x, y in mm]
 
         def direction_at(point: np.ndarray, direction: np.ndarray) -> Tuple[float, float]:
             step = max(20.0, cue_ball.radius_px)
             arr = np.asarray([point, point + unit(direction) * step], dtype=np.float32)
-            mm = self.calibration.camera_px_to_table_mm(arr)
+            mm = self.calibration.ball_camera_px_to_table_mm(arr)
             d = unit(mm[1] - mm[0])
             return (float(d[0]), float(d[1]))
 
-        cue_radius_mm = self.calibration.pixel_radius_to_mm((float(cue_ball.center_px[0]), float(cue_ball.center_px[1])), cue_ball.radius_px)
+        cue_radius_mm = self.calibration.ball_pixel_radius_to_mm((float(cue_ball.center_px[0]), float(cue_ball.center_px[1])), cue_ball.radius_px)
         pocket_mm = pt(pocket_point) if pocket_point is not None else None
         collision_normals = [
             direction_at(collisions[idx], normals[idx])

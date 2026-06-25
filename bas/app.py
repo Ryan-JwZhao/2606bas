@@ -208,6 +208,8 @@ class RuntimePipeline:
                 bottom_mm=float(self.config.calibration.physical_rail_inset_bottom_mm),
                 left_mm=float(self.config.calibration.physical_rail_inset_left_mm),
             ),
+            physical_middle_pocket_relief_top_mm=float(self.config.calibration.physical_middle_pocket_relief_top_mm),
+            physical_middle_pocket_relief_bottom_mm=float(self.config.calibration.physical_middle_pocket_relief_bottom_mm),
             center_reachable_extra_margin_mm=float(self.config.calibration.center_reachable_extra_margin_mm),
         )
         self.calibration.table.projection_visible_polygon_mm = _points_to_tuples(boundaries.projection_visible_polygon_mm)
@@ -224,12 +226,12 @@ class RuntimePipeline:
         for track in tracks.tracks:
             try:
                 center_px = np.asarray([track.center_px], dtype=np.float32)
-                center_mm = self.calibration.camera_px_to_table_mm(center_px)[0]
+                center_mm = self.calibration.ball_camera_px_to_table_mm(center_px)[0]
                 v_px = np.asarray(track.velocity_px_s, dtype=np.float32)
                 edge_px = np.asarray([[track.center_px[0] + float(v_px[0]) * dt, track.center_px[1] + float(v_px[1]) * dt]], dtype=np.float32)
-                edge_mm = self.calibration.camera_px_to_table_mm(edge_px)[0]
+                edge_mm = self.calibration.ball_camera_px_to_table_mm(edge_px)[0]
                 velocity_mm = (edge_mm - center_mm) / dt
-                radius_mm = self.calibration.pixel_radius_to_mm(track.center_px, track.radius_px)
+                radius_mm = self.calibration.ball_pixel_radius_to_mm(track.center_px, track.radius_px)
                 enriched.append(
                     replace(
                         track,
