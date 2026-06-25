@@ -1121,6 +1121,25 @@ class OperatorWindow(QtWidgets.QMainWindow):
             color: #ffffff;
         }}
         QCheckBox {{ color: #ffffff; spacing: {px(8)}px; }}
+        QCheckBox::indicator {{
+            width: {px(15)}px;
+            height: {px(15)}px;
+            border: 1px solid #9a9a9a;
+            border-radius: {px(2)}px;
+            background: #d8d8d8;
+        }}
+        QCheckBox::indicator:hover {{
+            background: #eeeeee;
+            border-color: #c8c8c8;
+        }}
+        QCheckBox::indicator:checked {{
+            background: #f0f0f0;
+            border-color: #ffffff;
+        }}
+        QCheckBox::indicator:disabled {{
+            background: #777777;
+            border-color: #555555;
+        }}
         QTableWidget, QListWidget, QPlainTextEdit {{
             background: #111111;
             border: 1px solid #343434;
