@@ -98,3 +98,9 @@ python -m bas
 - 默认联动校正结果会保存到当前 `calibration.projection_file`。
 - 如果没有配置投影校正输出路径，程序会回落到 `local_settings/projection_calibration_linked.json`。
 - `local_settings/`、日志、回放、临时目录和大文件应保持在 `.gitignore` 中，避免提交运行产物。
+
+## 联动校正故障补充说明
+
+- 已规避一类 OpenCV 4.13 的 ChArUco 生成问题：当局部 ROI 尺寸落在类似 `384x209` 的边界组合时，OpenCV 可能在 `board.generateImage()` 内部触发 `cv::Mat::Mat` 的 ROI 越界断言；程序现在会自动回退到安全尺寸生成并居中贴回原画布。
+- 联动校正失败时，不会覆盖当前 `calibration.projection_file`，也不会保存半成品结果。
+- 如果失败前配置里已经指向旧的投影校正文件，后续重新初始化模块或重新启动采集时，程序仍会按这个旧路径继续加载之前的校正结果。

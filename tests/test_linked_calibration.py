@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
+from bas.calibration.charuco import CharucoBoardSpec, detect_charuco_corners, render_charuco_board
 from bas.calibration.linked import (
     build_linked_patterns,
     match_linked_pattern_observation,
@@ -59,6 +60,17 @@ def test_build_linked_patterns_covers_full_and_focus_zones() -> None:
     assert any(pattern.emphasis_zone == "full" for pattern in patterns)
     assert any(pattern.emphasis_zone == "center" for pattern in patterns)
     assert any(pattern.emphasis_zone.startswith("pocket_") for pattern in patterns)
+
+
+@pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
+def test_render_charuco_board_handles_problematic_roi_dimensions() -> None:
+    spec = CharucoBoardSpec(squares_x=8, squares_y=6, square_length_m=0.030, marker_length_m=0.022)
+    image = render_charuco_board(spec, 384, 209)
+    points, ids = detect_charuco_corners(image, spec)
+
+    assert image.shape == (209, 384, 3)
+    assert points.shape[0] >= 4
+    assert ids.size == points.shape[0]
 
 
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
