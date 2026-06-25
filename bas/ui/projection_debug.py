@@ -6,11 +6,39 @@ import numpy as np
 
 from ..projection.overlay import ROUTE_COLOR
 from ..calibration.service import CalibrationService
-from ..schemas import Detection, ProjectionOverlay, TrackObservation
+from ..schemas import Detection, OverlayLine, ProjectionOverlay, TrackObservation
 from ..utils import group_from_class
 
 
 BALL_GROUPS = {"cue", "solid", "stripe", "black"}
+BOUNDARY_OVERLAY_SPECS = (
+    ("projection_visible_polygon_mm", "debug_visible_boundary", "visible", (255, 255, 0), 2),
+    ("inner_polygon_mm", "debug_physical_boundary", "physical", (255, 0, 255), 2),
+    ("center_playable_polygon_mm", "debug_center_boundary", "center", (80, 80, 255), 2),
+)
+
+
+def append_projected_boundary_overlays(
+    overlay: ProjectionOverlay,
+    calibration: CalibrationService,
+) -> int:
+    appended = 0
+    table = calibration.table
+    for attr_name, line_label, text_label, color, width in BOUNDARY_OVERLAY_SPECS:
+        polygon = list(getattr(table, attr_name, []) or [])
+        if attr_name != "inner_polygon_mm" and not polygon:
+            polygon = list(table.inner_polygon_mm or [])
+        if _append_projected_boundary_line(
+            overlay,
+            calibration,
+            polygon_mm=polygon,
+            line_label=line_label,
+            text_label=text_label,
+            color=color,
+            width=width,
+        ):
+            appended += 1
+    return appended
 
 
 def append_projected_ball_overlays(
@@ -72,6 +100,31 @@ def _append_projected_ball_marker(
     radius_proj = max(4.0, 0.5 * (rx + ry))
     center = (float(proj[0, 0]), float(proj[0, 1]))
     overlay.circles.append((center, radius_proj, ROUTE_COLOR))
+    return True
+
+
+def _append_projected_boundary_line(
+    overlay: ProjectionOverlay,
+    calibration: CalibrationService,
+    *,
+    polygon_mm,
+    line_label: str,
+    text_label: str,
+    color: tuple[int, int, int],
+    width: int,
+) -> bool:
+    pts = np.asarray(polygon_mm, dtype=np.float32).reshape((-1, 2))
+    if pts.shape[0] < 3:
+        return False
+    try:
+        proj = calibration.table_mm_to_projector_px(pts).astype(np.float32)
+    except Exception:
+        return False
+    closed = np.vstack([proj, proj[0]])
+    points = [(float(x), float(y)) for x, y in closed]
+    overlay.lines.append(OverlayLine(points=points, color=color, width=width, label=line_label))
+    anchor = proj[0]
+    overlay.labels.append(((float(anchor[0] + 12.0), float(anchor[1] - 8.0)), text_label, color))
     return True
 
 

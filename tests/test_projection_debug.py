@@ -6,7 +6,7 @@ from bas.calibration.camera import CameraCalibration
 from bas.calibration.projector import ProjectionCalibration
 from bas.calibration.service import CalibrationService
 from bas.schemas import Detection, ProjectionOverlay, TableModel, TrackObservation
-from bas.ui.projection_debug import append_projected_ball_overlays
+from bas.ui.projection_debug import append_projected_ball_overlays, append_projected_boundary_overlays
 
 
 def _service() -> CalibrationService:
@@ -25,8 +25,26 @@ def _service() -> CalibrationService:
             ball_diameter_mm=57.15,
             inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
             pockets_mm=[],
+            projection_visible_polygon_mm=[(20, 10), (980, 10), (980, 490), (20, 490)],
+            center_playable_polygon_mm=[(30, 20), (970, 20), (970, 480), (30, 480)],
         ),
     )
+
+
+def test_projection_debug_appends_three_boundary_layers() -> None:
+    overlay = ProjectionOverlay(overlay_id="debug", frame_id=1, projector_size=(1000, 500))
+
+    count = append_projected_boundary_overlays(overlay, _service())
+
+    assert count == 3
+    assert [line.label for line in overlay.lines] == [
+        "debug_visible_boundary",
+        "debug_physical_boundary",
+        "debug_center_boundary",
+    ]
+    assert [text for _, text, _ in overlay.labels] == ["visible", "physical", "center"]
+    assert all(len(line.points) == 5 for line in overlay.lines)
+    assert overlay.lines[0].points[0] == overlay.lines[0].points[-1]
 
 
 def test_projection_debug_appends_visible_track_markers() -> None:

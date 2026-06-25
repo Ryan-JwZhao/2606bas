@@ -44,7 +44,7 @@ from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_s
 from ..schemas import MatchPhase, OverlayLine, ProjectionOverlay, to_jsonable
 from ..utils import unit
 from .geometry_reference import draw_geometry_reference_lines
-from .projection_debug import append_projected_ball_overlays
+from .projection_debug import append_projected_ball_overlays, append_projected_boundary_overlays
 
 LOGGER = logging.getLogger(__name__)
 
@@ -2218,6 +2218,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def _append_projection_debug_overlay(self, overlay: ProjectionOverlay, out: PipelineOutput) -> None:
         if self.pipeline is None or out.frame.image is None:
             return
+        append_projected_boundary_overlays(overlay, self.pipeline.calibration)
         h, w = out.frame.image.shape[:2]
         _, inline_px, pockets_px = self.pipeline.geometry.reference_scaled(w, h)
         for points in inline_px:
