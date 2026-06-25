@@ -709,6 +709,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._route_video_recorder: Optional[FfmpegH264Recorder] = None
         self._raw_video_path: Optional[Path] = None
         self._route_video_path: Optional[Path] = None
+        self._projection_debug_enabled = False
 
         self.timer = QtCore.QTimer(self)
         self.timer.setSingleShot(True)
@@ -797,6 +798,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.geometry_reference_check.setChecked(bool(self.config.projection.geometry_reference_enabled))
         self.geometry_reference_check.toggled.connect(self._geometry_reference_toggled)
         self.side_layout.addWidget(self.geometry_reference_check)
+        self.projection_debug_check = QtWidgets.QCheckBox("投影调试模式")
+        self.projection_debug_check.setChecked(False)
+        self.projection_debug_check.toggled.connect(self._projection_debug_toggled)
+        self.side_layout.addWidget(self.projection_debug_check)
         self.shot_mode_combo = QtWidgets.QComboBox()
         self.shot_mode_combo.addItem("规则模式", "rule")
         self.shot_mode_combo.addItem("自由模式", "free")
@@ -1070,6 +1075,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.geometry_reference_check.blockSignals(True)
         self.geometry_reference_check.setChecked(bool(self.config.projection.geometry_reference_enabled))
         self.geometry_reference_check.blockSignals(False)
+        self.projection_debug_check.blockSignals(True)
+        self.projection_debug_check.setChecked(bool(self._projection_debug_enabled))
+        self.projection_debug_check.blockSignals(False)
 
     def _sync_config_from_controls(self) -> None:
         self.config.camera.backend = self.backend_combo.currentText()
@@ -1110,6 +1118,15 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if self.last_output is not None:
             self._update_preview(self.last_output)
         self._append_log("几何参考线已开启" if checked else "几何参考线已关闭")
+
+    @QtCore.pyqtSlot(bool)
+    def _projection_debug_toggled(self, checked: bool) -> None:
+        self._projection_debug_enabled = bool(checked)
+        self._refresh_projection()
+        if checked and self.projection_window is None:
+            self._append_log("投影调试模式已开启，打开投影窗口后生效")
+        else:
+            self._append_log("投影调试模式已开启" if checked else "投影调试模式已关闭")
 
     def _save_user_settings(self) -> None:
         UserSettings.from_config(self.config, self.star_formula.to_dict()).save()
@@ -2078,7 +2095,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if self._projection_calibration_mode:
             return
         if self.last_output is not None:
-            self.projection_window.set_overlay(self.last_output.overlay)
+            self.projection_window.set_overlay(self._projection_overlay_for_output(self.last_output))
         else:
             overlay = ProjectionOverlay(
                 overlay_id="blank",
@@ -2086,6 +2103,86 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 projector_size=(self.config.projection.projector_width, self.config.projection.projector_height),
             )
             self.projection_window.set_overlay(overlay)
+
+    def _projection_overlay_for_output(self, out: PipelineOutput) -> ProjectionOverlay:
+        base = out.overlay
+        if not self._projection_debug_enabled:
+            return base
+        overlay = ProjectionOverlay(
+            overlay_id=f"{base.overlay_id}_debug",
+            frame_id=base.frame_id,
+            projector_size=base.projector_size,
+            lines=list(base.lines),
+            circles=list(base.circles),
+            labels=list(base.labels),
+        )
+        self._append_projection_debug_overlay(overlay, out)
+        return overlay
+
+    def _append_projection_debug_overlay(self, overlay: ProjectionOverlay, out: PipelineOutput) -> None:
+        if self.pipeline is None or out.frame.image is None:
+            return
+        h, w = out.frame.image.shape[:2]
+        _, inline_px, pockets_px = self.pipeline.geometry.reference_scaled(w, h)
+        for points in inline_px:
+            self._append_camera_polyline_projection(overlay, points, color=(0, 255, 120), width=2, label="debug_inline")
+        for points in pockets_px:
+            self._append_camera_polyline_projection(overlay, points, color=(0, 180, 255), width=2, label="debug_pocket")
+        for track in out.tracks.tracks:
+            if int(getattr(track, "lost_frames", 0)) > 0 or str(getattr(track, "visibility", "visible")) != "visible":
+                continue
+            self._append_camera_ball_projection(overlay, track)
+
+    def _append_camera_polyline_projection(
+        self,
+        overlay: ProjectionOverlay,
+        points_px: np.ndarray,
+        *,
+        color: tuple[int, int, int],
+        width: int,
+        label: str,
+    ) -> None:
+        if self.pipeline is None:
+            return
+        pts = np.asarray(points_px, dtype=np.float32).reshape((-1, 2))
+        if pts.shape[0] < 2:
+            return
+        try:
+            proj = self.pipeline.calibration.camera_px_to_projector_px(pts).astype(np.float32)
+        except Exception as exc:
+            LOGGER.debug("Projection debug geometry mapping failed: %s", exc)
+            return
+        overlay.lines.append(
+            OverlayLine(
+                points=[(float(x), float(y)) for x, y in proj],
+                color=color,
+                width=width,
+                label=label,
+            )
+        )
+
+    def _append_camera_ball_projection(self, overlay: ProjectionOverlay, track) -> None:
+        if self.pipeline is None:
+            return
+        cx, cy = [float(v) for v in track.center_px]
+        radius = float(max(1.0, track.radius_px))
+        refs = np.asarray(
+            [
+                [cx, cy],
+                [cx + radius, cy],
+                [cx, cy + radius],
+            ],
+            dtype=np.float32,
+        )
+        try:
+            proj = self.pipeline.calibration.camera_px_to_projector_px(refs).astype(np.float32)
+        except Exception as exc:
+            LOGGER.debug("Projection debug ball mapping failed: %s", exc)
+            return
+        rx = float(np.linalg.norm(proj[1] - proj[0]))
+        ry = float(np.linalg.norm(proj[2] - proj[0]))
+        radius_proj = max(1.0, 0.5 * (rx + ry))
+        overlay.circles.append(((float(proj[0, 0]), float(proj[0, 1])), radius_proj, (255, 0, 255)))
 
     def _tick(self) -> None:
         tick_start = time.perf_counter()
