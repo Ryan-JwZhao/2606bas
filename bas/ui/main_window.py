@@ -44,6 +44,7 @@ from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_s
 from ..schemas import MatchPhase, OverlayLine, ProjectionOverlay, to_jsonable
 from ..utils import unit
 from .geometry_reference import draw_geometry_reference_lines
+from .projection_debug import append_projected_ball_overlays
 
 LOGGER = logging.getLogger(__name__)
 
@@ -2223,10 +2224,12 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self._append_camera_polyline_projection(overlay, points, color=(0, 255, 120), width=2, label="debug_inline")
         for points in pockets_px:
             self._append_camera_polyline_projection(overlay, points, color=(0, 180, 255), width=2, label="debug_pocket")
-        for track in out.tracks.tracks:
-            if int(getattr(track, "lost_frames", 0)) > 0 or str(getattr(track, "visibility", "visible")) != "visible":
-                continue
-            self._append_camera_ball_projection(overlay, track)
+        append_projected_ball_overlays(
+            overlay,
+            self.pipeline.calibration,
+            tracks=out.tracks.tracks,
+            detections=out.detections.detections,
+        )
 
     def _append_camera_polyline_projection(
         self,
@@ -2255,29 +2258,6 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 label=label,
             )
         )
-
-    def _append_camera_ball_projection(self, overlay: ProjectionOverlay, track) -> None:
-        if self.pipeline is None:
-            return
-        cx, cy = [float(v) for v in track.center_px]
-        radius = float(max(1.0, track.radius_px))
-        refs = np.asarray(
-            [
-                [cx, cy],
-                [cx + radius, cy],
-                [cx, cy + radius],
-            ],
-            dtype=np.float32,
-        )
-        try:
-            proj = self.pipeline.calibration.camera_px_to_projector_px(refs).astype(np.float32)
-        except Exception as exc:
-            LOGGER.debug("Projection debug ball mapping failed: %s", exc)
-            return
-        rx = float(np.linalg.norm(proj[1] - proj[0]))
-        ry = float(np.linalg.norm(proj[2] - proj[0]))
-        radius_proj = max(1.0, 0.5 * (rx + ry))
-        overlay.circles.append(((float(proj[0, 0]), float(proj[0, 1])), radius_proj, (255, 0, 255)))
 
     def _tick(self) -> None:
         tick_start = time.perf_counter()
