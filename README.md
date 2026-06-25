@@ -44,6 +44,7 @@
 - 对 `inline` 与 `pocket` 相接的关键区域做重点采样。
 - 自动识别 ChArUco 角点，自动求解 `camera_px -> projector_px` 的投影校正。
 - 自动保存结果，并可再次加载与可视化显示。
+- 主界面仅保留“校正投影仪”入口；“一键联动校正”保留在二级校正菜单中，避免重复入口。
 
 ### 前提
 
@@ -95,7 +96,8 @@ python -m bas
 
 ## 说明
 
-- 默认联动校正结果会保存到当前 `calibration.projection_file`。
+- 当前 `calibration.projection_file` 会作为联动校正的输出模板路径。
+- 每次联动校正成功后，程序会自动生成一个带时间戳的新文件名，例如 `projection_calibration_20260625_120102.json`，然后立即切换并加载这份最新校正结果。
 - 如果没有配置投影校正输出路径，程序会回落到 `local_settings/projection_calibration_linked.json`。
 - `local_settings/`、日志、回放、临时目录和大文件应保持在 `.gitignore` 中，避免提交运行产物。
 
