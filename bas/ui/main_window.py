@@ -1069,6 +1069,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         def px(value: float) -> int:
             return max(1, int(round(value * scale)))
 
+        checked_icon = (Path(__file__).resolve().parent / "assets" / "checkbox_checked.svg").as_posix()
+
         return f"""
         QMainWindow, QWidget {{
             background: #101010;
@@ -1135,6 +1137,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         QCheckBox::indicator:checked {{
             background: #f0f0f0;
             border-color: #ffffff;
+            image: url({checked_icon});
         }}
         QCheckBox::indicator:disabled {{
             background: #777777;

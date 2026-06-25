@@ -25,7 +25,9 @@ bas = "bas.cli:main"
 [tool.setuptools.packages.find]
 include = ["bas*"]
 
+[tool.setuptools.package-data]
+"bas.ui" = ["assets/*.svg"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-
