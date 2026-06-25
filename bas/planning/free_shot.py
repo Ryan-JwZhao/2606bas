@@ -96,7 +96,8 @@ class FreeShotPlanner:
         return balls
 
     def _inner_polygon_px(self, frame_shape: Optional[Tuple[int, ...]]) -> np.ndarray:
-        poly_mm = np.asarray(self.calibration.table.inner_polygon_mm, dtype=np.float32).reshape((-1, 2))
+        base_polygon = self.calibration.table.center_playable_polygon_mm or self.calibration.table.inner_polygon_mm
+        poly_mm = np.asarray(base_polygon, dtype=np.float32).reshape((-1, 2))
         if poly_mm.shape[0] >= 3:
             try:
                 poly_px = self.calibration.table_mm_to_camera_px(poly_mm).astype(np.float32)

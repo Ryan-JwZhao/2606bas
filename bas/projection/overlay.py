@@ -45,7 +45,8 @@ class OverlayBuilder:
         ghost = np.asarray(candidate.ghost_ball, dtype=np.float32)
         target = np.asarray(candidate.object_ball, dtype=np.float32)
         pocket = np.asarray(candidate.pocket_point, dtype=np.float32)
-        inner = np.asarray(self.calibration.table.inner_polygon_mm, dtype=np.float32).reshape((-1, 2))
+        visible_polygon = self.calibration.table.projection_visible_polygon_mm or self.calibration.table.inner_polygon_mm
+        inner = np.asarray(visible_polygon, dtype=np.float32).reshape((-1, 2))
         table = self.calibration.table
 
         guide_start = cue_alignment_start(
@@ -131,7 +132,7 @@ class OverlayBuilder:
             hit_end = estimate_route_end(
                 hit_center,
                 normal,
-                np.asarray(self.calibration.table.inner_polygon_mm, dtype=np.float32).reshape((-1, 2)),
+                np.asarray(self.calibration.table.projection_visible_polygon_mm or self.calibration.table.inner_polygon_mm, dtype=np.float32).reshape((-1, 2)),
                 fallback_length_mm=math.hypot(float(self.calibration.table.width_mm), float(self.calibration.table.height_mm)),
             )
             self._append_line_mm(

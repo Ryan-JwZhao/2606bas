@@ -43,6 +43,15 @@ calibration:
   table_width_mm: 2540.0
   table_height_mm: 1270.0
   ball_diameter_mm: 57.15
+  projection_visible_inset_top_mm: 0.0
+  projection_visible_inset_right_mm: 0.0
+  projection_visible_inset_bottom_mm: 0.0
+  projection_visible_inset_left_mm: 0.0
+  physical_rail_inset_top_mm: 0.0
+  physical_rail_inset_right_mm: 0.0
+  physical_rail_inset_bottom_mm: 0.0
+  physical_rail_inset_left_mm: 0.0
+  center_reachable_extra_margin_mm: 2.0
 
 geometry:
   outline_path: C:/CodeProject/data/0618_DrawLine/outline.json

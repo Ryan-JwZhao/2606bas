@@ -68,3 +68,25 @@ def test_missing_user_settings_does_not_clear_default_config_paths(tmp_path) -> 
     assert cfg.detector.model_path == "C:/model.pt"
     assert cfg.detector.class_file_path == "C:/classes.txt"
     assert cfg.camera.distortion_correction_file == "C:/intrinsics.yaml"
+
+
+def test_user_settings_applies_boundary_inset_configuration(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "projection_visible_inset_bottom_mm": 12.0,
+                "physical_rail_inset_top_mm": 10.0,
+                "center_reachable_extra_margin_mm": 3.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig()
+
+    UserSettings.load(path).apply_to_config(cfg)
+
+    assert cfg.calibration.projection_visible_inset_bottom_mm == 12.0
+    assert cfg.calibration.physical_rail_inset_top_mm == 10.0
+    assert cfg.calibration.center_reachable_extra_margin_mm == 3.0

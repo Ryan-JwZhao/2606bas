@@ -61,7 +61,8 @@ class GeometryPhysicsPlanner:
             return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
         candidates: List[ShotCandidate] = []
         pockets = [np.asarray(p, dtype=np.float32) for p in self.calibration.table.pockets_mm]
-        inner = np.asarray(self.calibration.table.inner_polygon_mm, dtype=np.float32)
+        center_polygon = self.calibration.table.center_playable_polygon_mm or self.calibration.table.inner_polygon_mm
+        inner = np.asarray(center_polygon, dtype=np.float32)
         for target in targets:
             for pocket_index, pocket in enumerate(pockets):
                 candidate = self._candidate(cue, target, pocket, pocket_index, balls, inner)

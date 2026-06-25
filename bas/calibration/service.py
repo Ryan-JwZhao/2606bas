@@ -105,5 +105,8 @@ def create_calibration_service(config: CalibrationConfig, frame_undistorted: boo
         ball_diameter_mm=float(config.ball_diameter_mm),
         inner_polygon_mm=default_inner_polygon(float(config.table_width_mm), float(config.table_height_mm)),
         pockets_mm=default_pockets(float(config.table_width_mm), float(config.table_height_mm)),
+        projection_visible_polygon_mm=default_inner_polygon(float(config.table_width_mm), float(config.table_height_mm)),
+        center_playable_polygon_mm=default_inner_polygon(float(config.table_width_mm), float(config.table_height_mm)),
+        projection_visible_pockets_mm=default_pockets(float(config.table_width_mm), float(config.table_height_mm)),
     )
     return CalibrationService(camera=camera, projection=projection, table=table, frame_undistorted=bool(frame_undistorted))

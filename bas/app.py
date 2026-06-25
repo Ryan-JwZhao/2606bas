@@ -21,6 +21,7 @@ from .projection.star_formula import StarFormulaConfig
 from .replay import ReplayRecorder
 from .schemas import DetectionsFrame, FramePacket, MatchStateFrame, ProjectionOverlay, ShotPlan, TracksFrame
 from .state import MatchStateMachine
+from .table_boundaries import EdgeInsets, derive_table_boundaries
 from .tracking import TemporalTracker
 
 LOGGER = logging.getLogger(__name__)
@@ -181,17 +182,41 @@ class RuntimePipeline:
             return
         h, w = frame.image.shape[:2]
         _, inner_px, pockets_px = self.geometry.scaled(w, h)
-        if inner_px.shape[0] >= 3:
-            inner_mm = self.calibration.camera_px_to_table_mm(inner_px)
-            self.calibration.table.inner_polygon_mm = [(float(x), float(y)) for x, y in inner_mm]
-        pocket_points = []
-        for pocket in pockets_px:
-            if pocket.shape[0] >= 2:
-                center = np.mean(pocket, axis=0).reshape((1, 2)).astype(np.float32)
-                center_mm = self.calibration.camera_px_to_table_mm(center)[0]
-                pocket_points.append((float(center_mm[0]), float(center_mm[1])))
-        if pocket_points:
-            self.calibration.table.pockets_mm = pocket_points
+        if inner_px.shape[0] < 3:
+            return
+        visible_mm = self.calibration.camera_px_to_table_mm(inner_px)
+        pocket_curves_mm = [
+            self.calibration.camera_px_to_table_mm(np.asarray(pocket, dtype=np.float32))
+            for pocket in pockets_px
+            if np.asarray(pocket, dtype=np.float32).reshape((-1, 2)).shape[0] >= 2
+        ]
+        boundaries = derive_table_boundaries(
+            visible_mm,
+            pocket_curves_mm,
+            table_width_mm=float(self.calibration.table.width_mm),
+            table_height_mm=float(self.calibration.table.height_mm),
+            ball_diameter_mm=float(self.calibration.table.ball_diameter_mm),
+            projection_visible_insets=EdgeInsets(
+                top_mm=float(self.config.calibration.projection_visible_inset_top_mm),
+                right_mm=float(self.config.calibration.projection_visible_inset_right_mm),
+                bottom_mm=float(self.config.calibration.projection_visible_inset_bottom_mm),
+                left_mm=float(self.config.calibration.projection_visible_inset_left_mm),
+            ),
+            physical_rail_insets=EdgeInsets(
+                top_mm=float(self.config.calibration.physical_rail_inset_top_mm),
+                right_mm=float(self.config.calibration.physical_rail_inset_right_mm),
+                bottom_mm=float(self.config.calibration.physical_rail_inset_bottom_mm),
+                left_mm=float(self.config.calibration.physical_rail_inset_left_mm),
+            ),
+            center_reachable_extra_margin_mm=float(self.config.calibration.center_reachable_extra_margin_mm),
+        )
+        self.calibration.table.projection_visible_polygon_mm = _points_to_tuples(boundaries.projection_visible_polygon_mm)
+        self.calibration.table.inner_polygon_mm = _points_to_tuples(boundaries.physical_rail_polygon_mm)
+        self.calibration.table.center_playable_polygon_mm = _points_to_tuples(boundaries.center_playable_polygon_mm)
+        if boundaries.projection_visible_pocket_points_mm:
+            self.calibration.table.projection_visible_pockets_mm = list(boundaries.projection_visible_pocket_points_mm)
+        if boundaries.physical_pocket_points_mm:
+            self.calibration.table.pockets_mm = list(boundaries.physical_pocket_points_mm)
 
     def _enrich_tracks_with_table_units(self, tracks: TracksFrame) -> TracksFrame:
         enriched = []
@@ -294,3 +319,8 @@ def run_qt(config: AppConfig) -> int:
     finally:
         timer.stop()
         pipeline.close()
+
+
+def _points_to_tuples(points: np.ndarray) -> list[tuple[float, float]]:
+    arr = np.asarray(points, dtype=np.float32).reshape((-1, 2))
+    return [(float(x), float(y)) for x, y in arr]

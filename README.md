@@ -119,3 +119,25 @@ python -m bas
 - 联动校正失败时，不会覆盖当前 `calibration.projection_file`，也不会保存半成品结果。
 - 如果失败前配置里已经指向旧的投影校正文件，后续重新初始化模块或重新启动采集时，程序仍会按这个旧路径继续加载之前的校正结果。
 - 针对“联动校正后个别角点被局部拉爆”的问题，求解器现在只会使用 `RANSAC` 内点构建 `residual_field`，不会再让错误匹配点直接污染局部插值；若采集过程中混入异常图样，误差统计也会直接暴露出来，便于现场回退到旧标定结果继续使用。
+
+## 三套边界拆解
+
+- 程序现在把原先混用的一条 `inner_polygon_mm` 拆成了三套边界：
+  `projection_visible_polygon_mm` 用于投影显示裁切；
+  `inner_polygon_mm` 现在作为物理库边边界；
+  `center_playable_polygon_mm` 作为球心可达边界，供规则规划和自由击球碰撞使用。
+- 边界由相机几何文件实时换算后再做分层内缩，不再直接把 `inline + pocket` 的拼接结果同时拿去做显示和物理判定。
+- 当前可通过以下配置调节：
+  `calibration.projection_visible_inset_top_mm`
+  `calibration.projection_visible_inset_right_mm`
+  `calibration.projection_visible_inset_bottom_mm`
+  `calibration.projection_visible_inset_left_mm`
+  `calibration.physical_rail_inset_top_mm`
+  `calibration.physical_rail_inset_right_mm`
+  `calibration.physical_rail_inset_bottom_mm`
+  `calibration.physical_rail_inset_left_mm`
+  `calibration.center_reachable_extra_margin_mm`
+- 当前这台桌子的本地默认值已经写入 `local_settings/user_settings.json`：
+  近投影长边的可见边界先内缩 `12mm`；
+  物理库边四边统一内缩 `10mm`；
+  球心可达边界会在物理库边基础上再内缩 `半个球径 + 2mm`。

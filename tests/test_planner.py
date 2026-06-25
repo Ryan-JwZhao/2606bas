@@ -72,6 +72,24 @@ def test_planner_generates_candidate() -> None:
     assert plan.best.score > -5
 
 
+def test_planner_uses_center_playable_boundary_for_edge_rejection() -> None:
+    service = _service()
+    service.table.inner_polygon_mm = [(0, 0), (1000, 0), (1000, 500), (0, 500)]
+    service.table.center_playable_polygon_mm = [(120, 120), (880, 120), (880, 380), (120, 380)]
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=3), service)
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="STABLE_IDLE",
+        layout=[_obs(1, "cue", 140, 240), _obs(2, "solid", 600, 72)],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is None
+    assert plan.candidates == []
+
+
 def test_rule_overlay_includes_dashed_object_and_cue_separation_lines() -> None:
     service = _service()
     candidate = ShotCandidate(

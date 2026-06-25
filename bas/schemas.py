@@ -100,6 +100,9 @@ class TableModel:
     ball_diameter_mm: float
     inner_polygon_mm: List[Point]
     pockets_mm: List[Point]
+    projection_visible_polygon_mm: List[Point] = field(default_factory=list)
+    center_playable_polygon_mm: List[Point] = field(default_factory=list)
+    projection_visible_pockets_mm: List[Point] = field(default_factory=list)
 
 
 @dataclass

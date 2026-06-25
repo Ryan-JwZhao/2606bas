@@ -61,6 +61,15 @@ class CalibrationConfig:
     table_width_mm: float = 2540.0
     table_height_mm: float = 1270.0
     ball_diameter_mm: float = 57.15
+    projection_visible_inset_top_mm: float = 0.0
+    projection_visible_inset_right_mm: float = 0.0
+    projection_visible_inset_bottom_mm: float = 0.0
+    projection_visible_inset_left_mm: float = 0.0
+    physical_rail_inset_top_mm: float = 0.0
+    physical_rail_inset_right_mm: float = 0.0
+    physical_rail_inset_bottom_mm: float = 0.0
+    physical_rail_inset_left_mm: float = 0.0
+    center_reachable_extra_margin_mm: float = 2.0
 
 
 @dataclass
