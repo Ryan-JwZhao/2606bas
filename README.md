@@ -96,8 +96,8 @@ python -m bas
 
 ## 说明
 
-- 当前 `calibration.projection_file` 会作为联动校正的输出模板路径。
-- 每次联动校正成功后，程序会自动生成一个带时间戳的新文件名，例如 `projection_calibration_20260625_120102.json`，然后立即切换并加载这份最新校正结果。
+- 当前 `calibration.projection_file` 仍可作为加载入口使用。
+- 每次联动校正成功后，程序会自动在 `2606BAS/local_settings/calibrations/` 下生成一个带时间戳的新文件名，例如 `projection_calibration_20260625_120102.json`，然后立即切换并加载这份最新校正结果。
 - 如果没有配置投影校正输出路径，程序会回落到 `local_settings/projection_calibration_linked.json`。
 - `local_settings/`、日志、回放、临时目录和大文件应保持在 `.gitignore` 中，避免提交运行产物。
 

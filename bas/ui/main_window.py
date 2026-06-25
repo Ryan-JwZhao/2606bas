@@ -51,6 +51,7 @@ LOGGER = logging.getLogger(__name__)
 COMMON_RESOLUTIONS = ["1920x1080", "3840x2160", "2560x1440", "1280x720", "1280x800", "640x480"]
 COMMON_FPS = ["30", "60", "120", "164"]
 TIMESTAMPED_PROJECTION_FILE_RE = re.compile(r"^(?P<base>.*?)(?:_\d{8}_\d{6})?$")
+DEFAULT_PROJECTION_OUTPUT_DIR = PROJECT_ROOT / "local_settings" / "calibrations"
 
 
 def projection_config_path_or_default(path_value: Optional[str]) -> Path:
@@ -75,7 +76,7 @@ def timestamped_projection_output_path(path_value: Optional[str]) -> Path:
     safe_stem = (base_stem or "projection_calibration_linked").strip() or "projection_calibration_linked"
     suffix = template.suffix or ".json"
     stamp = time.strftime("%Y%m%d_%H%M%S")
-    return template.with_name(f"{safe_stem}_{stamp}{suffix}")
+    return DEFAULT_PROJECTION_OUTPUT_DIR / f"{safe_stem}_{stamp}{suffix}"
 
 
 class _PipelineStartWorker(QtCore.QObject):

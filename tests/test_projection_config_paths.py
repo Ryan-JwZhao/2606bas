@@ -16,4 +16,4 @@ def test_timestamped_projection_output_path_replaces_existing_timestamp(monkeypa
     out = main_window.timestamped_projection_output_path(
         r"C:\calib\projection_calibration_20260624_173306.json"
     )
-    assert out == Path(r"C:\calib\projection_calibration_20260625_120102.json")
+    assert out == Path(r"C:\CodeProject\2606BAS\local_settings\calibrations\projection_calibration_20260625_120102.json")
