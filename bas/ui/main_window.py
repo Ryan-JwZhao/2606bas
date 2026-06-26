@@ -736,7 +736,7 @@ class ProjectorCalibrationDialog(QtWidgets.QDialog):
 
     def _browse_projection_file(self) -> None:
         current = str(projection_config_path_or_default(self.operator.config.calibration.active_projection_file()))
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
             "选择投影校正文件",
             current,
