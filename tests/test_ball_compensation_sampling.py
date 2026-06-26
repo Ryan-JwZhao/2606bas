@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from bas.calibration import BallCompensationModel
@@ -10,7 +11,14 @@ from bas.calibration.ball_compensation_sampling import (
     BallCompensationSample,
     build_ball_compensation_model,
     build_engineered_ball_sampling_grid,
+    update_calibration_table_boundaries_from_geometry_frame,
 )
+from bas.calibration.camera import CameraCalibration
+from bas.calibration.projector import ProjectionCalibration
+from bas.calibration.service import CalibrationService
+from bas.geometry import TableGeometry
+from bas.schemas import TableModel
+from bas.table_boundaries import EdgeInsets
 from bas.ui.engineered_ball_compensation_wizard import (
     ball_compensation_path_from_input,
     timestamped_ball_compensation_output_path,
@@ -27,6 +35,80 @@ def test_build_engineered_ball_sampling_grid_covers_table_interior() -> None:
     assert float(np.max(grid[:, 1])) < 1270.0
     assert len(np.unique(grid[:, 0])) == 5
     assert len(np.unique(grid[:, 1])) == 4
+
+
+def test_build_engineered_ball_sampling_grid_stays_inside_center_playable_polygon() -> None:
+    polygon = np.asarray(
+        [
+            [80.0, 60.0],
+            [920.0, 60.0],
+            [920.0, 440.0],
+            [560.0, 440.0],
+            [500.0, 400.0],
+            [440.0, 440.0],
+            [80.0, 440.0],
+        ],
+        dtype=np.float32,
+    )
+    grid = build_engineered_ball_sampling_grid(
+        1000.0,
+        500.0,
+        57.15,
+        cols=5,
+        rows=4,
+        preferred_polygon_mm=polygon,
+        extra_safe_inset_mm=28.0,
+    )
+
+    assert grid.shape[0] >= 12
+    for point in grid:
+        inside = cv2.pointPolygonTest(polygon.reshape((-1, 1, 2)), (float(point[0]), float(point[1])), False)
+        assert inside >= 0.0
+    assert float(np.min(grid[:, 0])) > 100.0
+    assert float(np.max(grid[:, 1])) < 430.0
+
+
+def test_update_calibration_table_boundaries_from_geometry_frame_refreshes_center_polygon() -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
+        np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
+        projector_size=(1000, 500),
+    )
+    projection.table_polygon_proj = np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64)
+    service = CalibrationService(
+        camera=CameraCalibration(metadata={}),
+        projection=projection,
+        table=TableModel(
+            width_mm=1000.0,
+            height_mm=500.0,
+            ball_diameter_mm=57.15,
+            inner_polygon_mm=[(0.0, 0.0), (1000.0, 0.0), (1000.0, 500.0), (0.0, 500.0)],
+            pockets_mm=[],
+        ),
+    )
+    geometry = TableGeometry(
+        inner_norm=np.asarray([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], dtype=np.float32),
+        pockets_norm=[],
+    )
+
+    changed = update_calibration_table_boundaries_from_geometry_frame(
+        service,
+        geometry,
+        (500, 1000, 3),
+        projection_visible_insets=EdgeInsets(),
+        physical_rail_insets=EdgeInsets.uniform(10.0),
+        physical_middle_pocket_relief_top_mm=0.0,
+        physical_middle_pocket_relief_bottom_mm=0.0,
+        center_reachable_extra_margin_mm=2.0,
+    )
+    center_poly = np.asarray(service.table.center_playable_polygon_mm, dtype=np.float32).reshape((-1, 2))
+
+    assert changed is True
+    assert center_poly.shape[0] >= 4
+    assert float(np.min(center_poly[:, 0])) > 35.0
+    assert float(np.min(center_poly[:, 1])) > 35.0
+    assert float(np.max(center_poly[:, 0])) < 965.0
+    assert float(np.max(center_poly[:, 1])) < 465.0
 
 
 def test_build_ball_compensation_model_reports_quality_and_roundtrips(tmp_path) -> None:

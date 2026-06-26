@@ -5,6 +5,7 @@ from .ball_compensation_sampling import (
     BallCompensationSample,
     build_ball_compensation_model,
     build_engineered_ball_sampling_grid,
+    update_calibration_table_boundaries_from_geometry_frame,
 )
 from .camera import CameraCalibration
 from .linked import (
@@ -29,6 +30,7 @@ __all__ = [
     "create_calibration_service",
     "build_ball_compensation_model",
     "build_engineered_ball_sampling_grid",
+    "update_calibration_table_boundaries_from_geometry_frame",
     "LinkedCalibrationPattern",
     "LinkedCalibrationObservation",
     "LinkedCalibrationResult",

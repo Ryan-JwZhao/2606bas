@@ -14,12 +14,14 @@ from ..calibration import (
     build_ball_compensation_model,
     build_engineered_ball_sampling_grid,
     create_calibration_service,
+    update_calibration_table_boundaries_from_geometry_frame,
 )
 from ..capture import create_capture_service
 from ..geometry import TableGeometryLoader
 from ..paths import PROJECT_ROOT
 from ..perception import create_detector
 from ..schemas import Detection
+from ..table_boundaries import EdgeInsets
 
 TIMESTAMPED_BALL_COMPENSATION_FILE_RE = re.compile(r"^(?P<base>.*?)(?:_\d{8}_\d{6})?$")
 DEFAULT_BALL_COMPENSATION_OUTPUT_DIR = PROJECT_ROOT / "local_settings" / "calibrations"
@@ -221,10 +223,45 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 self.operator.config.geometry.pocket_path,
             )
             self.operator.ensure_projection_window_for_operator()
+            prime_frame = _prime_capture_frame(capture)
+            if prime_frame is not None:
+                self._set_preview_image(prime_frame)
+            boundaries_ready = False
+            if prime_frame is not None:
+                boundaries_ready = update_calibration_table_boundaries_from_geometry_frame(
+                    calibration,
+                    geometry,
+                    prime_frame.shape,
+                    projection_visible_insets=EdgeInsets(
+                        top_mm=float(self.operator.config.calibration.projection_visible_inset_top_mm),
+                        right_mm=float(self.operator.config.calibration.projection_visible_inset_right_mm),
+                        bottom_mm=float(self.operator.config.calibration.projection_visible_inset_bottom_mm),
+                        left_mm=float(self.operator.config.calibration.projection_visible_inset_left_mm),
+                    ),
+                    physical_rail_insets=EdgeInsets(
+                        top_mm=float(self.operator.config.calibration.physical_rail_inset_top_mm),
+                        right_mm=float(self.operator.config.calibration.physical_rail_inset_right_mm),
+                        bottom_mm=float(self.operator.config.calibration.physical_rail_inset_bottom_mm),
+                        left_mm=float(self.operator.config.calibration.physical_rail_inset_left_mm),
+                    ),
+                    physical_middle_pocket_relief_top_mm=float(self.operator.config.calibration.physical_middle_pocket_relief_top_mm),
+                    physical_middle_pocket_relief_bottom_mm=float(self.operator.config.calibration.physical_middle_pocket_relief_bottom_mm),
+                    center_reachable_extra_margin_mm=float(self.operator.config.calibration.center_reachable_extra_margin_mm),
+                )
+            if boundaries_ready:
+                self._append_log("已根据 inline/pocket 几何刷新球心可达区，采样点将只落在 center playable 内圈。")
+            else:
+                self._append_log("未能从 inline/pocket 几何刷新球心可达区，将回退到矩形安全采样区。")
+            sample_polygon = np.asarray(
+                calibration.table.center_playable_polygon_mm or calibration.table.inner_polygon_mm,
+                dtype=np.float32,
+            ).reshape((-1, 2))
             sample_points = build_engineered_ball_sampling_grid(
                 calibration.table.width_mm,
                 calibration.table.height_mm,
                 calibration.table.ball_diameter_mm,
+                preferred_polygon_mm=sample_polygon,
+                extra_safe_inset_mm=0.5 * float(calibration.table.ball_diameter_mm),
             )
             self._append_log(f"已生成 {len(sample_points)} 个工程采样点，请按投影目标圈移动单颗球。")
 
@@ -458,6 +495,15 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 stability_spread_px=float(spread_px),
             )
         return None
+
+
+def _prime_capture_frame(capture, attempts: int = 12) -> Optional[np.ndarray]:
+    for _ in range(max(1, int(attempts))):
+        packet = capture.read()
+        if packet is not None and packet.image is not None and packet.image.size > 0:
+            return packet.image
+        time.sleep(0.03)
+    return None
 
 
 def _render_target_image(
