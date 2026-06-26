@@ -17,9 +17,10 @@ NORI_OK = 0x0000
 NORI_E_REPEAT = 0x8001
 NORI_USB_DEVICE = 0x0001
 NORI_MAX_PATH = 260
+PROCESSING_UNIT_WHITE_BALANCE = 7
 CAMERA_CONTROL_EXPOSURE = 4
-CAMERA_CONTROL_FLAGS_AUTO = 1
-CAMERA_CONTROL_FLAGS_MANUAL = 2
+CONTROL_FLAGS_AUTO = 1
+CONTROL_FLAGS_MANUAL = 2
 
 VIDEO_MEDIA_TYPE_MJPG = 0x47504A4D
 VIDEO_MEDIA_TYPE_MJPG_TO_BGR24 = VIDEO_MEDIA_TYPE_MJPG + 0x01
@@ -344,6 +345,47 @@ class NoriProtocolController:
         if err is not None and not ignore_errors:
             raise err
 
+    def get_processing_unit_control(self, device_id: int, property_id: int) -> Tuple[int, int, int, int, int, int, int]:
+        self.ensure_initialized()
+        assert self._dll is not None
+        val = ctypes.c_long(0)
+        flags = ctypes.c_long(0)
+        step = ctypes.c_long(0)
+        min_v = ctypes.c_long(0)
+        max_v = ctypes.c_long(0)
+        def_v = ctypes.c_long(0)
+        caps = ctypes.c_long(0)
+        ret = int(
+            self._dll.Nori_Xvision_GetProcessingUnitControl(
+                ctypes.c_uint32(int(device_id)),
+                ctypes.c_int(int(property_id)),
+                ctypes.byref(val),
+                ctypes.byref(flags),
+                ctypes.byref(step),
+                ctypes.byref(min_v),
+                ctypes.byref(max_v),
+                ctypes.byref(def_v),
+                ctypes.byref(caps),
+            )
+        )
+        if ret != NORI_OK:
+            raise RuntimeError(f"Nori_Xvision_GetProcessingUnitControl failed: 0x{ret:04X}")
+        return (int(val.value), int(flags.value), int(step.value), int(min_v.value), int(max_v.value), int(def_v.value), int(caps.value))
+
+    def set_processing_unit_control(self, device_id: int, property_id: int, value: int, flags: int) -> None:
+        self.ensure_initialized()
+        assert self._dll is not None
+        ret = int(
+            self._dll.Nori_Xvision_SetProcessingUnitControl(
+                ctypes.c_uint32(int(device_id)),
+                ctypes.c_int(int(property_id)),
+                ctypes.c_long(int(value)),
+                ctypes.c_long(int(flags)),
+            )
+        )
+        if ret != NORI_OK:
+            raise RuntimeError(f"Nori_Xvision_SetProcessingUnitControl failed: 0x{ret:04X}")
+
     def get_exposure_control(self, device_id: int) -> Tuple[int, int, int, int, int, int, int]:
         self.ensure_initialized()
         assert self._dll is not None
@@ -375,7 +417,7 @@ class NoriProtocolController:
         self.ensure_initialized()
         assert self._dll is not None
         val, *_ = self.get_exposure_control(device_id)
-        flags = CAMERA_CONTROL_FLAGS_AUTO if enable else CAMERA_CONTROL_FLAGS_MANUAL
+        flags = CONTROL_FLAGS_AUTO if enable else CONTROL_FLAGS_MANUAL
         ret = int(
             self._dll.Nori_Xvision_SetCameraTerminalControl(
                 ctypes.c_uint32(int(device_id)),
@@ -395,11 +437,34 @@ class NoriProtocolController:
                 ctypes.c_uint32(int(device_id)),
                 ctypes.c_int(CAMERA_CONTROL_EXPOSURE),
                 ctypes.c_long(max(-10, min(0, int(level)))),
-                ctypes.c_long(CAMERA_CONTROL_FLAGS_MANUAL),
+                ctypes.c_long(CONTROL_FLAGS_MANUAL),
             )
         )
         if ret != NORI_OK:
             raise RuntimeError(f"Nori_Xvision_SetCameraTerminalControl failed: 0x{ret:04X}")
+
+    def get_white_balance_control(self, device_id: int) -> Tuple[int, int, int, int, int, int, int]:
+        return self.get_processing_unit_control(device_id, PROCESSING_UNIT_WHITE_BALANCE)
+
+    def set_auto_white_balance(self, device_id: int, enable: bool) -> None:
+        value, *_ = self.get_white_balance_control(device_id)
+        flags = CONTROL_FLAGS_AUTO if enable else CONTROL_FLAGS_MANUAL
+        self.set_processing_unit_control(device_id, PROCESSING_UNIT_WHITE_BALANCE, value, flags)
+
+    def set_manual_white_balance_value(self, device_id: int, value: int) -> None:
+        _, _, step, min_v, max_v, _, _ = self.get_white_balance_control(device_id)
+        manual_value = int(value)
+        if step > 1:
+            manual_value = min_v + round((manual_value - min_v) / step) * step
+        manual_value = max(min_v, min(max_v, manual_value))
+        self.set_processing_unit_control(device_id, PROCESSING_UNIT_WHITE_BALANCE, manual_value, CONTROL_FLAGS_MANUAL)
+
+    def trigger_single_auto_white_balance(self, device_id: int) -> None:
+        self.ensure_initialized()
+        assert self._dll is not None
+        ret = int(self._dll.Nori_Xvision_SetSingleAutoWhiteBalance(ctypes.c_uint32(int(device_id))))
+        if ret != NORI_OK:
+            raise RuntimeError(f"Nori_Xvision_SetSingleAutoWhiteBalance failed: 0x{ret:04X}")
 
     def trigger_single_auto_exposure(self, device_id: int) -> None:
         self.ensure_initialized()

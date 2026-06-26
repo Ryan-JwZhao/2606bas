@@ -149,6 +149,15 @@ def create_capture_service(config: CameraConfig) -> CaptureService:
                         controller.set_manual_exposure_level(nori._device_id, int(config.exposure_level))
                 except Exception as exc:
                     LOGGER.warning("Failed to apply Nori exposure settings: %s", exc)
+            if config.white_balance_auto is not None or config.white_balance_value is not None:
+                try:
+                    controller = nori._controller  # SDK-only runtime control.
+                    if config.white_balance_auto is not None:
+                        controller.set_auto_white_balance(nori._device_id, bool(config.white_balance_auto))
+                    if config.white_balance_value is not None and not bool(config.white_balance_auto):
+                        controller.set_manual_white_balance_value(nori._device_id, int(config.white_balance_value))
+                except Exception as exc:
+                    LOGGER.warning("Failed to apply Nori white balance settings: %s", exc)
             return finish(nori)
         if backend == "nori":
             raise RuntimeError("Nori camera requested but no MJPG SDK stream could be opened.")

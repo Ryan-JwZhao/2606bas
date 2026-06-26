@@ -22,6 +22,8 @@ class CameraConfig:
     nori_device_id: Optional[int] = None
     exposure_auto: Optional[bool] = False
     exposure_level: Optional[int] = -5
+    white_balance_auto: Optional[bool] = True
+    white_balance_value: Optional[int] = 4600
     distortion_correction_enabled: bool = True
     distortion_correction_file: Optional[str] = "C:/CodeProject/2606BAS/calib/intrinsics_opencv.yaml"
 

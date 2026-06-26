@@ -35,6 +35,7 @@ from ..calibration import (
 from ..calibration.charuco import CharucoBoardSpec, render_charuco_board
 from ..calibration.verification import format_holdout_report, verify_holdout_file
 from ..capture import create_capture_service, probe_cameras
+from ..capture.nori_sdk import NoriProtocolController
 from ..geometry import TableGeometryLoader
 from ..logging_config import configure_logging
 from ..media_capture import FfmpegH264Recorder
@@ -160,6 +161,29 @@ class SettingsDialog(QtWidgets.QDialog):
         exposure_layout.addWidget(QtWidgets.QLabel("手动档位"))
         exposure_layout.addWidget(self.exposure_level)
         exposure_layout.addStretch(1)
+        wb_min, wb_max, wb_step, wb_value = self._white_balance_control_spec(config)
+        self.white_balance_auto = QtWidgets.QCheckBox("自动白平衡")
+        self.white_balance_auto.setChecked(bool(config.camera.white_balance_auto))
+        self.white_balance_value = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.white_balance_value.setRange(wb_min, wb_max)
+        self.white_balance_value.setSingleStep(wb_step)
+        self.white_balance_value.setPageStep(max(wb_step, min(1000, wb_step * 10)))
+        self.white_balance_value.setTickInterval(max(wb_step, min(1000, wb_step * 5)))
+        self.white_balance_value.setValue(wb_value)
+        self.white_balance_value.setEnabled(not self.white_balance_auto.isChecked())
+        self.white_balance_value_label = QtWidgets.QLabel()
+        self.white_balance_value_label.setMinimumWidth(90)
+        self.white_balance_value_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self._update_white_balance_value_label(self.white_balance_value.value())
+        self.white_balance_auto.toggled.connect(lambda checked: self.white_balance_value.setEnabled(not checked))
+        self.white_balance_value.valueChanged.connect(self._update_white_balance_value_label)
+        white_balance_box = QtWidgets.QWidget()
+        white_balance_layout = QtWidgets.QHBoxLayout(white_balance_box)
+        white_balance_layout.setContentsMargins(0, 0, 0, 0)
+        white_balance_layout.addWidget(self.white_balance_auto)
+        white_balance_layout.addWidget(QtWidgets.QLabel("色温"))
+        white_balance_layout.addWidget(self.white_balance_value, 1)
+        white_balance_layout.addWidget(self.white_balance_value_label)
         self.outline_path = self._path_row(config.geometry.outline_path, "JSON (*.json);;所有文件 (*.*)")
         self.inline_path = self._path_row(config.geometry.inline_path, "JSON (*.json);;所有文件 (*.*)")
         self.pocket_path = self._path_row(config.geometry.pocket_path, "JSON (*.json);;所有文件 (*.*)")
@@ -195,6 +219,7 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("Nori SDK 目录", self.nori_sdk_root)
         form.addRow("工业相机畸变矫正", distortion_box)
         form.addRow("工业相机曝光", exposure_box)
+        form.addRow("工业相机白平衡", white_balance_box)
         form.addRow("检测后端", self.detector_backend)
         form.addRow("检测间隔(帧)", self.detect_interval)
         form.addRow("检测频率上限(Hz)", self.detect_fps_limit)
@@ -358,6 +383,8 @@ class SettingsDialog(QtWidgets.QDialog):
         config.camera.distortion_correction_file = self.distortion_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.camera.exposure_auto = self.exposure_auto.isChecked()
         config.camera.exposure_level = int(self.exposure_level.value())
+        config.camera.white_balance_auto = self.white_balance_auto.isChecked()
+        config.camera.white_balance_value = int(self.white_balance_value.value())
         config.detector.backend = self.detector_backend.currentText()
         config.detector.detect_interval_frames = int(self.detect_interval.value())
         config.detector.detect_fps_limit_hz = float(self.detect_fps_limit.value())
@@ -506,6 +533,36 @@ class SettingsDialog(QtWidgets.QDialog):
         spin.setRange(lo, hi)
         spin.setValue(int(value))
         return spin
+
+    def _white_balance_control_spec(self, config: AppConfig) -> tuple[int, int, int, int]:
+        fallback_min = 1000
+        fallback_max = 15000
+        fallback_step = 100
+        fallback_value = int(config.camera.white_balance_value if config.camera.white_balance_value is not None else 4600)
+        if str(config.camera.backend or "auto").lower() not in {"auto", "nori"}:
+            return fallback_min, fallback_max, fallback_step, max(fallback_min, min(fallback_max, fallback_value))
+        controller: Optional[NoriProtocolController] = None
+        try:
+            controller = NoriProtocolController(sdk_root=config.camera.nori_sdk_root)
+            device_id = int(config.camera.nori_device_id) if config.camera.nori_device_id is not None else int(config.camera.device_index)
+            value, _, step, min_v, max_v, def_v, _ = controller.get_white_balance_control(device_id)
+            min_v = int(min_v) if int(min_v) < int(max_v) else fallback_min
+            max_v = int(max_v) if int(max_v) > int(min_v) else fallback_max
+            step = max(1, int(step))
+            desired = fallback_value if config.camera.white_balance_value is not None else int(value or def_v or fallback_value)
+            desired = max(min_v, min(max_v, desired))
+            if step > 1:
+                desired = min_v + round((desired - min_v) / step) * step
+                desired = max(min_v, min(max_v, desired))
+            return min_v, max_v, step, desired
+        except Exception:
+            return fallback_min, fallback_max, fallback_step, max(fallback_min, min(fallback_max, fallback_value))
+        finally:
+            if controller is not None:
+                controller.shutdown()
+
+    def _update_white_balance_value_label(self, value: int) -> None:
+        self.white_balance_value_label.setText(f"{int(value)} K")
 
     def _grid_pair(self, grid: QtWidgets.QGridLayout, row: int, label_a: str, widget_a: QtWidgets.QWidget, label_b: str, widget_b: QtWidgets.QWidget) -> None:
         grid.addWidget(QtWidgets.QLabel(label_a), row, 0)
@@ -1415,6 +1472,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.config.camera.nori_sdk_root,
             self.config.camera.exposure_auto,
             self.config.camera.exposure_level,
+            self.config.camera.white_balance_auto,
+            self.config.camera.white_balance_value,
             self.config.camera.distortion_correction_enabled,
             self.config.camera.distortion_correction_file,
             self.config.detector.backend,

@@ -17,6 +17,8 @@ def test_user_settings_can_clear_default_paths_and_save_false_values(tmp_path) -
                 "distortion_correction_enabled": False,
                 "distortion_correction_file": None,
                 "exposure_auto": True,
+                "white_balance_auto": False,
+                "white_balance_value": 5200,
                 "learning_ranker_model_path": None,
             }
         ),
@@ -30,6 +32,8 @@ def test_user_settings_can_clear_default_paths_and_save_false_values(tmp_path) -
     cfg.camera.distortion_correction_enabled = True
     cfg.camera.distortion_correction_file = "C:/intrinsics.yaml"
     cfg.camera.exposure_auto = False
+    cfg.camera.white_balance_auto = True
+    cfg.camera.white_balance_value = 4600
     cfg.learning.ranker_model_path = "C:/ranker.json"
 
     UserSettings.load(path).apply_to_config(cfg)
@@ -40,6 +44,8 @@ def test_user_settings_can_clear_default_paths_and_save_false_values(tmp_path) -
     assert cfg.camera.distortion_correction_enabled is False
     assert cfg.camera.distortion_correction_file is None
     assert cfg.camera.exposure_auto is True
+    assert cfg.camera.white_balance_auto is False
+    assert cfg.camera.white_balance_value == 5200
     assert cfg.learning.ranker_model_path is None
 
 
@@ -55,6 +61,28 @@ def test_user_settings_save_does_not_persist_internal_loaded_key_state(tmp_path)
     assert "_provided_keys" not in saved
     assert "_loaded_from_file" not in saved
     assert saved["exposure_auto"] is True
+
+
+def test_user_settings_applies_white_balance_value_with_clamp(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "white_balance_auto": False,
+                "white_balance_value": 999999,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig()
+    cfg.camera.white_balance_auto = True
+    cfg.camera.white_balance_value = 4600
+
+    UserSettings.load(path).apply_to_config(cfg)
+
+    assert cfg.camera.white_balance_auto is False
+    assert cfg.camera.white_balance_value == 15000
 
 
 def test_missing_user_settings_does_not_clear_default_config_paths(tmp_path) -> None:

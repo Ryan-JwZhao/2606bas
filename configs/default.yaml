@@ -10,6 +10,8 @@ camera:
   nori_device_id: 0
   exposure_auto: false
   exposure_level: -5
+  white_balance_auto: true
+  white_balance_value: 4600
   distortion_correction_enabled: true
   distortion_correction_file: C:/CodeProject/2606BAS/calib/intrinsics_opencv.yaml
 

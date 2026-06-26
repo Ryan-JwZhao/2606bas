@@ -24,6 +24,8 @@ class UserSettings:
     nori_sdk_root: Optional[str] = None
     exposure_auto: Optional[bool] = None
     exposure_level: Optional[int] = None
+    white_balance_auto: Optional[bool] = None
+    white_balance_value: Optional[int] = None
     distortion_correction_enabled: Optional[bool] = None
     distortion_correction_file: Optional[str] = None
     detector_backend: Optional[str] = None
@@ -114,6 +116,10 @@ class UserSettings:
             config.camera.exposure_auto = bool(self.exposure_auto)
         if self.exposure_level is not None:
             config.camera.exposure_level = max(-10, min(0, int(self.exposure_level)))
+        if self.white_balance_auto is not None:
+            config.camera.white_balance_auto = bool(self.white_balance_auto)
+        if self.white_balance_value is not None:
+            config.camera.white_balance_value = max(1000, min(15000, int(self.white_balance_value)))
         if self.distortion_correction_enabled is not None:
             config.camera.distortion_correction_enabled = bool(self.distortion_correction_enabled)
         if self._has("distortion_correction_file"):
@@ -221,6 +227,8 @@ class UserSettings:
             nori_sdk_root=config.camera.nori_sdk_root,
             exposure_auto=config.camera.exposure_auto,
             exposure_level=config.camera.exposure_level,
+            white_balance_auto=config.camera.white_balance_auto,
+            white_balance_value=config.camera.white_balance_value,
             distortion_correction_enabled=config.camera.distortion_correction_enabled,
             distortion_correction_file=config.camera.distortion_correction_file,
             detector_backend=config.detector.backend,
