@@ -20,6 +20,7 @@ from bas.geometry import TableGeometry
 from bas.schemas import TableModel
 from bas.table_boundaries import EdgeInsets
 from bas.ui.engineered_ball_compensation_wizard import (
+    ball_compensation_path_or_default,
     ball_compensation_path_from_input,
     timestamped_ball_compensation_output_path,
 )
@@ -191,6 +192,16 @@ def test_ball_compensation_path_from_input_resolves_relative_to_current_director
     assert out == Path(r"C:\calib\next_ball.json")
 
 
+def test_ball_compensation_path_from_input_empty_uses_default_file_template() -> None:
+    out = ball_compensation_path_from_input("", None)
+    assert out == Path(r"C:\CodeProject\2606BAS\local_settings\calibrations\engineered_ball_compensation.json")
+
+
+def test_ball_compensation_path_or_default_turns_directory_into_default_file(tmp_path) -> None:
+    out = ball_compensation_path_or_default(str(tmp_path))
+    assert out == tmp_path / "engineered_ball_compensation.json"
+
+
 def test_timestamped_ball_compensation_output_path_replaces_existing_timestamp(monkeypatch) -> None:
     from bas.ui import engineered_ball_compensation_wizard as wizard
 
@@ -198,6 +209,16 @@ def test_timestamped_ball_compensation_output_path_replaces_existing_timestamp(m
     out = timestamped_ball_compensation_output_path(
         r"C:\calib\engineered_ball_compensation_20260625_173306.json"
     )
+    assert out == Path(
+        r"C:\CodeProject\2606BAS\local_settings\calibrations\engineered_ball_compensation_20260626_154233.json"
+    )
+
+
+def test_timestamped_ball_compensation_output_path_uses_default_stem_for_directory(monkeypatch) -> None:
+    from bas.ui import engineered_ball_compensation_wizard as wizard
+
+    monkeypatch.setattr(wizard.time, "strftime", lambda _fmt: "20260626_154233")
+    out = timestamped_ball_compensation_output_path(r"C:\CodeProject\2606BAS\local_settings\calibrations")
     assert out == Path(
         r"C:\CodeProject\2606BAS\local_settings\calibrations\engineered_ball_compensation_20260626_154233.json"
     )

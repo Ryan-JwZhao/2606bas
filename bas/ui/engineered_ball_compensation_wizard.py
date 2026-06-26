@@ -34,12 +34,20 @@ class _SamplingAborted(RuntimeError):
 def ball_compensation_path_or_default(path_value: Optional[str]) -> Path:
     current = (path_value or "").strip()
     if current:
-        return Path(current)
+        candidate = Path(current)
+        if candidate.exists() and candidate.is_dir():
+            return candidate / "engineered_ball_compensation.json"
+        if not candidate.suffix and candidate.name.lower() in {"calibrations", "calibration", "local_settings"}:
+            return candidate / "engineered_ball_compensation.json"
+        return candidate
     return DEFAULT_BALL_COMPENSATION_OUTPUT_DIR / "engineered_ball_compensation.json"
 
 
 def ball_compensation_path_from_input(raw_value: str, current_value: Optional[str]) -> Path:
-    candidate = Path((raw_value or "").strip())
+    raw = (raw_value or "").strip()
+    if not raw:
+        return ball_compensation_path_or_default(current_value).resolve()
+    candidate = Path(raw)
     if candidate.is_absolute():
         return candidate
     base_dir = ball_compensation_path_or_default(current_value).parent
@@ -187,6 +195,23 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         raw = self.output_path_edit.text().strip()
         return ball_compensation_path_from_input(raw, self.operator.config.calibration.engineered_ball_compensation_file)
 
+    def _safe_ball_compensation_output_path(self, calibration) -> Path:
+        template_path = self._output_template_path()
+        plane_path = Path(calibration.projection.source_path).resolve() if calibration.projection.source_path else None
+        try:
+            template_resolved = template_path.resolve()
+        except Exception:
+            template_resolved = template_path
+        if plane_path is not None and str(template_resolved).lower() == str(plane_path).lower():
+            fallback = template_resolved.parent / "engineered_ball_compensation.json"
+            self._append_log(
+                "检测到工程球体补偿输出路径与工程平面校准文件相同，已自动改用独立补偿文件模板: "
+                f"{fallback}"
+            )
+            self.output_path_edit.setText(str(fallback))
+            return fallback
+        return template_resolved
+
     @QtCore.pyqtSlot()
     def run_sampling(self) -> None:
         if self._busy:
@@ -213,7 +238,22 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 frame_undistorted=bool(capture.frame_distortion_corrected),
             )
             if not calibration.projection.is_valid:
-                raise RuntimeError("当前工程模式的平面投影校准文件无效，无法继续进行球体补偿采样。")
+                plane_path = self.operator.config.calibration.engineered_plane_projection_file or self.operator.config.calibration.active_projection_file()
+                ball_path = self.operator.config.calibration.engineered_ball_compensation_file
+                same_path_hint = ""
+                if plane_path and ball_path:
+                    try:
+                        if str(Path(plane_path).resolve()).lower() == str(Path(ball_path).resolve()).lower():
+                            same_path_hint = (
+                                "\n检测到工程平面校准文件与工程球体补偿文件指向同一路径。"
+                                "这通常意味着平面校准 JSON 已被球体补偿 JSON 覆盖，请重新指定一份有效的工程平面校准文件。"
+                            )
+                    except Exception:
+                        pass
+                raise RuntimeError(
+                    "当前工程模式的平面投影校准文件无效，无法继续进行球体补偿采样。"
+                    f"{same_path_hint}"
+                )
             detector = create_detector(self.operator.config.detector)
             if getattr(detector, "version", "disabled") == "disabled":
                 raise RuntimeError("工程球体补偿向导需要启用球检测后端，当前 detector.backend=disabled。")
@@ -312,7 +352,8 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 self._samples,
                 ball_diameter_mm=calibration.table.ball_diameter_mm,
             )
-            save_path = timestamped_ball_compensation_output_path(str(self._output_template_path()))
+            save_template = self._safe_ball_compensation_output_path(calibration)
+            save_path = timestamped_ball_compensation_output_path(str(save_template))
             model.save_json(
                 save_path,
                 extra_data={
