@@ -72,6 +72,66 @@ def test_planner_generates_candidate() -> None:
     assert plan.best.score > -5
 
 
+def test_planner_excludes_black_on_open_table() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20), _service())
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="STABLE_IDLE",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _obs(2, "solid", 620, 250),
+            _obs(3, "stripe", 620, 380),
+            _obs(4, "black", 320, 250),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert all(candidate.target_group != "black" for candidate in plan.candidates)
+
+
+def test_planner_uses_black_only_for_cleared_solid_turn() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20), _service())
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="STABLE_IDLE",
+        turn_target_group="solid",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _obs(2, "stripe", 760, 250),
+            _obs(3, "black", 320, 250),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert all(candidate.target_group == "black" for candidate in plan.candidates)
+
+
+def test_planner_keeps_recommending_stripes_when_solids_are_cleared_on_stripe_turn() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20), _service())
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="STABLE_IDLE",
+        turn_target_group="stripe",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _obs(2, "stripe", 620, 250),
+            _obs(3, "black", 320, 100),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert all(candidate.target_group == "stripe" for candidate in plan.candidates)
+
+
 def test_planner_uses_center_playable_boundary_for_edge_rejection() -> None:
     service = _service()
     service.table.inner_polygon_mm = [(0, 0), (1000, 0), (1000, 500), (0, 500)]

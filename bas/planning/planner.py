@@ -56,7 +56,7 @@ class GeometryPhysicsPlanner:
         cue = next((b for b in balls if b.group == "cue"), None)
         if cue is None:
             return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
-        targets = [b for b in balls if b.group in {"solid", "stripe", "black"} and b.quality > 0.25]
+        targets = self._eligible_targets(balls, turn_target_group=getattr(state, "turn_target_group", None))
         if not targets:
             return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
         candidates: List[ShotCandidate] = []
@@ -114,6 +114,23 @@ class GeometryPhysicsPlanner:
                 )
             )
         return balls
+
+    def _eligible_targets(self, balls: Sequence[_Ball], turn_target_group: Optional[str] = None) -> List[_Ball]:
+        targets = [b for b in balls if b.group in {"solid", "stripe", "black"} and b.quality > 0.25]
+        if not targets:
+            return []
+        solid_count = sum(1 for b in targets if b.group == "solid")
+        stripe_count = sum(1 for b in targets if b.group == "stripe")
+        if solid_count == 0 and stripe_count == 0:
+            return [b for b in targets if b.group == "black"]
+        active_group = str(turn_target_group or "").strip().lower()
+        if active_group == "solid":
+            return [b for b in targets if b.group == "solid"] if solid_count > 0 else [b for b in targets if b.group == "black"]
+        if active_group == "stripe":
+            return [b for b in targets if b.group == "stripe"] if stripe_count > 0 else [b for b in targets if b.group == "black"]
+        if active_group == "black":
+            return [b for b in targets if b.group == "black"]
+        return [b for b in targets if b.group in {"solid", "stripe"}]
 
     def _candidate(
         self,

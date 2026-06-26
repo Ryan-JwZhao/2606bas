@@ -29,6 +29,7 @@ class MatchStateMachine:
     def __init__(self, config: StateConfig):
         self.config = config
         self.phase = MatchPhase.STABLE_IDLE
+        self._turn_target_group: Optional[str] = None
         self._stable_count = 0
         self._moving_count = 0
         self._armed_count = 0
@@ -49,6 +50,7 @@ class MatchStateMachine:
 
     def reset(self) -> None:
         self.phase = MatchPhase.STABLE_IDLE
+        self._turn_target_group = None
         self._stable_count = 0
         self._moving_count = 0
         self._armed_count = 0
@@ -137,6 +139,7 @@ class MatchStateMachine:
                 phase=self.phase.value,
                 events=events,
                 layout=layout,
+                turn_target_group=self._turn_target_group,
                 confidence=0.70,
                 state_version=f"{self.version}+operator_hold",
             )
@@ -152,6 +155,7 @@ class MatchStateMachine:
                 phase=self.phase.value,
                 events=events,
                 layout=tracks,
+                turn_target_group=self._turn_target_group,
                 confidence=0.85,
                 state_version=f"{self.version}+operator_override",
             )
@@ -223,6 +227,9 @@ class MatchStateMachine:
             if self._stable_count >= self.config.stable_frames:
                 self._transition(MatchPhase.STABLE_IDLE, tracks_frame, events, "ANOMALY_RECOVERED")
 
+        if any(event.name == "TURN_RESOLVE" for event in events):
+            self._resolve_turn_target_group(tracks_frame, events)
+
         for event in events:
             self._recent_events.append(event)
 
@@ -237,6 +244,7 @@ class MatchStateMachine:
             phase=self.phase.value,
             events=events,
             layout=tracks,
+            turn_target_group=self._turn_target_group,
             confidence=float(confidence),
             state_version=self.version,
         )
@@ -556,6 +564,68 @@ class MatchStateMachine:
             "speed": speed,
             "toward_pocket": toward,
         }
+
+    def _resolve_turn_target_group(self, tracks_frame: TracksFrame, events: List[Event]) -> None:
+        potted_groups = [
+            str(event.payload.get("group", "")).strip().lower()
+            for event in events
+            if event.name == "POT_PROBABLE"
+        ]
+        counts = self._visible_group_counts(tracks_frame.tracks)
+        solids_remaining = counts["solid"]
+        stripes_remaining = counts["stripe"]
+        black_remaining = counts["black"]
+        current = self._normalized_turn_target_group()
+        cue_potted = "cue" in potted_groups
+        solid_potted = "solid" in potted_groups
+        stripe_potted = "stripe" in potted_groups
+
+        if current == "black":
+            self._turn_target_group = "black" if black_remaining > 0 else None
+            return
+
+        if current in {"solid", "stripe"}:
+            same_potted = solid_potted if current == "solid" else stripe_potted
+            next_group = current if same_potted and not cue_potted else self._other_object_group(current)
+        else:
+            next_group = None
+            if not cue_potted:
+                if solid_potted and not stripe_potted:
+                    next_group = "solid"
+                elif stripe_potted and not solid_potted:
+                    next_group = "stripe"
+
+        if solids_remaining == 0 and stripes_remaining == 0:
+            self._turn_target_group = "black" if black_remaining > 0 else None
+            return
+
+        if next_group == "solid" and solids_remaining == 0:
+            self._turn_target_group = "black" if black_remaining > 0 else None
+            return
+
+        if next_group == "stripe" and stripes_remaining == 0:
+            self._turn_target_group = "black" if black_remaining > 0 else None
+            return
+
+        self._turn_target_group = next_group
+
+    @staticmethod
+    def _visible_group_counts(tracks: List[TrackObservation]) -> Dict[str, int]:
+        counts = {"solid": 0, "stripe": 0, "black": 0}
+        for track in tracks:
+            if track.visibility != "visible" or track.quality <= 0.25:
+                continue
+            if track.group in counts:
+                counts[track.group] += 1
+        return counts
+
+    def _normalized_turn_target_group(self) -> Optional[str]:
+        group = str(self._turn_target_group or "").strip().lower()
+        return group if group in {"solid", "stripe", "black"} else None
+
+    @staticmethod
+    def _other_object_group(group: str) -> str:
+        return "stripe" if str(group).strip().lower() == "solid" else "solid"
 
     def _position(self, track: TrackObservation) -> np.ndarray:
         point = track.center_mm if track.center_mm is not None else track.center_px

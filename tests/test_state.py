@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from bas.config import StateConfig
-from bas.schemas import MatchPhase, TrackObservation, TracksFrame
+from bas.schemas import Event, MatchPhase, TrackObservation, TracksFrame
 from bas.state import MatchStateMachine
 
 
@@ -173,3 +173,65 @@ def test_low_quality_duplicate_cue_does_not_trigger_anomaly() -> None:
     )
 
     assert out.phase != "ANOMALY_RECOVERY"
+
+
+def test_turn_target_group_becomes_black_after_last_solid_is_potted() -> None:
+    sm = MatchStateMachine(StateConfig())
+    sm._turn_target_group = "solid"
+    frame = TracksFrame(
+        frame_id=10,
+        ts_cam_ns=10,
+        tracks=[
+            _ball(1, "cue", 100, 100),
+            _ball(2, "stripe", 300, 100),
+            _ball(3, "black", 500, 100),
+        ],
+    )
+
+    sm._resolve_turn_target_group(
+        frame,
+        [Event("POT_PROBABLE", 10, 10, payload={"group": "solid"}), Event("TURN_RESOLVE", 10, 10)],
+    )
+
+    assert sm._turn_target_group == "black"
+
+
+def test_turn_target_group_stays_on_stripe_when_solids_are_already_cleared() -> None:
+    sm = MatchStateMachine(StateConfig())
+    sm._turn_target_group = "stripe"
+    frame = TracksFrame(
+        frame_id=10,
+        ts_cam_ns=10,
+        tracks=[
+            _ball(1, "cue", 100, 100),
+            _ball(2, "stripe", 300, 100),
+            _ball(3, "black", 500, 100),
+        ],
+    )
+
+    sm._resolve_turn_target_group(
+        frame,
+        [Event("POT_PROBABLE", 10, 10, payload={"group": "stripe"}), Event("TURN_RESOLVE", 10, 10)],
+    )
+
+    assert sm._turn_target_group == "stripe"
+
+
+def test_turn_target_group_stays_black_after_both_object_groups_clear() -> None:
+    sm = MatchStateMachine(StateConfig())
+    sm._turn_target_group = "stripe"
+    frame = TracksFrame(
+        frame_id=10,
+        ts_cam_ns=10,
+        tracks=[
+            _ball(1, "cue", 100, 100),
+            _ball(2, "black", 500, 100),
+        ],
+    )
+
+    sm._resolve_turn_target_group(
+        frame,
+        [Event("POT_PROBABLE", 10, 10, payload={"group": "stripe"}), Event("TURN_RESOLVE", 10, 10)],
+    )
+
+    assert sm._turn_target_group == "black"
