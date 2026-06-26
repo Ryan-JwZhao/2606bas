@@ -147,3 +147,28 @@ def test_user_settings_legacy_manual_ball_reference_disables_auto_reference(tmp_
     assert cfg.calibration.ball_center_compensation_auto_reference is False
     assert cfg.calibration.ball_center_compensation_ref_x_px == 120.0
     assert cfg.calibration.ball_center_compensation_ref_y_px == -240.0
+
+
+def test_user_settings_applies_projection_mode_and_mode_specific_paths(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "projection_mode": "engineered",
+                "legacy_projection_calibration_file": "C:/legacy_projection.json",
+                "engineered_plane_projection_file": "C:/engineered_plane.json",
+                "engineered_ball_compensation_file": "C:/engineered_ball.json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig()
+
+    UserSettings.load(path).apply_to_config(cfg)
+
+    assert cfg.calibration.projection_mode == "engineered"
+    assert cfg.calibration.legacy_projection_file == "C:/legacy_projection.json"
+    assert cfg.calibration.engineered_plane_projection_file == "C:/engineered_plane.json"
+    assert cfg.calibration.engineered_ball_compensation_file == "C:/engineered_ball.json"
+    assert cfg.calibration.projection_file == "C:/engineered_plane.json"

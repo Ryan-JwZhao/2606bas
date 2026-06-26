@@ -99,11 +99,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             "camera_image_size": service.camera.image_size,
             "camera_source": service.camera.source_path,
             "frame_undistorted": service.frame_undistorted,
+            "projection_runtime_mode": service.projection_mode,
             "projection_valid": service.projection.is_valid,
             "projection_source": service.projection.source_path,
             "projection_mode": service.projection.mode,
             "projector_size": service.projection.projector_size,
             "projection_error": service.projection.calibration_error_stats(),
+            "ball_compensation_valid": service.ball_compensation_model.is_valid,
+            "ball_compensation_source": service.ball_compensation_model.source_path,
+            "ball_compensation_mode": service.ball_compensation_model.mode,
             "table": to_jsonable(service.table),
         }
         print(json.dumps(summary, ensure_ascii=False, indent=2))

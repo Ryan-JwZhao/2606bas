@@ -60,6 +60,10 @@ class TrackerConfig:
 class CalibrationConfig:
     camera_file: Optional[str] = None
     projection_file: Optional[str] = None
+    projection_mode: str = "legacy"
+    legacy_projection_file: Optional[str] = None
+    engineered_plane_projection_file: Optional[str] = None
+    engineered_ball_compensation_file: Optional[str] = None
     table_width_mm: float = 2540.0
     table_height_mm: float = 1270.0
     ball_diameter_mm: float = 57.15
@@ -80,6 +84,32 @@ class CalibrationConfig:
     ball_center_compensation_ref_y_px: float = 0.0
     ball_center_compensation_scale_x_pct: float = 0.0
     ball_center_compensation_scale_y_pct: float = 0.0
+
+    def normalized_projection_mode(self) -> str:
+        mode = str(self.projection_mode or "legacy").strip().lower()
+        return "engineered" if mode in {"engineered", "engineering"} else "legacy"
+
+    def set_projection_mode(self, mode: str | None) -> None:
+        self.projection_mode = "engineered" if str(mode or "").strip().lower() in {"engineered", "engineering"} else "legacy"
+        self.sync_projection_file_alias()
+
+    def active_projection_file(self) -> Optional[str]:
+        if self.normalized_projection_mode() == "engineered":
+            return self.engineered_plane_projection_file or self.projection_file or self.legacy_projection_file
+        return self.legacy_projection_file or self.projection_file or self.engineered_plane_projection_file
+
+    def set_active_projection_file(self, path: Optional[str]) -> None:
+        value = str(path).strip() if path is not None else None
+        value = value or None
+        if self.normalized_projection_mode() == "engineered":
+            self.engineered_plane_projection_file = value
+        else:
+            self.legacy_projection_file = value
+        self.projection_file = value
+
+    def sync_projection_file_alias(self) -> None:
+        self.projection_mode = self.normalized_projection_mode()
+        self.projection_file = self.active_projection_file()
 
 
 @dataclass
@@ -185,7 +215,7 @@ class AppConfig:
                 data = {}
             return typ(**{k: v for k, v in dict(data).items() if k in typ.__dataclass_fields__})
 
-        return cls(
+        config = cls(
             camera=section("camera", CameraConfig),
             detector=section("detector", DetectorConfig),
             tracker=section("tracker", TrackerConfig),
@@ -198,6 +228,8 @@ class AppConfig:
             replay=section("replay", ReplayConfig),
             logging=section("logging", LoggingConfig),
         )
+        config.calibration.sync_projection_file_alias()
+        return config
 
     def resolve_paths(self) -> "AppConfig":
         base = PROJECT_ROOT
@@ -222,6 +254,15 @@ class AppConfig:
         if self.calibration.projection_file:
             p = resolve_path(self.calibration.projection_file, base=base)
             self.calibration.projection_file = str(p) if p else None
+        if self.calibration.legacy_projection_file:
+            p = resolve_path(self.calibration.legacy_projection_file, base=base)
+            self.calibration.legacy_projection_file = str(p) if p else None
+        if self.calibration.engineered_plane_projection_file:
+            p = resolve_path(self.calibration.engineered_plane_projection_file, base=base)
+            self.calibration.engineered_plane_projection_file = str(p) if p else None
+        if self.calibration.engineered_ball_compensation_file:
+            p = resolve_path(self.calibration.engineered_ball_compensation_file, base=base)
+            self.calibration.engineered_ball_compensation_file = str(p) if p else None
         if self.geometry.outline_path:
             p = resolve_path(self.geometry.outline_path, base=base)
             self.geometry.outline_path = str(p) if p else None
@@ -237,4 +278,5 @@ class AppConfig:
         self.learning.samples_directory = str(resolve_path(self.learning.samples_directory, base=base) or Path(self.learning.samples_directory))
         self.logging.directory = str(resolve_path(self.logging.directory, base=base) or Path(self.logging.directory))
         self.replay.directory = str(resolve_path(self.replay.directory, base=base) or Path(self.replay.directory))
+        self.calibration.sync_projection_file_alias()
         return self

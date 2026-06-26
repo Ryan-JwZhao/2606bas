@@ -9,6 +9,7 @@ import numpy as np
 from ..config import CalibrationConfig
 from ..schemas import Point, TableModel
 from ..utils import ensure_numpy_points
+from .ball_compensation import BallCompensationModel
 from .camera import CameraCalibration
 from .projector import ProjectionCalibration, table_bbox_from_polygon
 
@@ -44,11 +45,17 @@ class CalibrationService:
     projection: ProjectionCalibration
     table: TableModel
     frame_undistorted: bool = False
+    projection_mode: str = "legacy"
+    ball_compensation_model: BallCompensationModel = field(default_factory=BallCompensationModel)
     ball_center_compensation: BallCenterCompensation = field(default_factory=BallCenterCompensation)
 
     @property
     def calib_version(self) -> str:
-        return f"{self.camera.version}+{self.projection.version}"
+        return f"{self.camera.version}+{self.projection.version}+{self.ball_compensation_model.version}"
+
+    @property
+    def is_engineered_projection(self) -> bool:
+        return str(self.projection_mode).strip().lower() == "engineered"
 
     def undistort_frame(self, frame: np.ndarray) -> np.ndarray:
         return self.camera.undistort(frame)
@@ -73,6 +80,8 @@ class CalibrationService:
         return out
 
     def ball_camera_px_to_projector_px(self, points: np.ndarray) -> np.ndarray:
+        if self.is_engineered_projection:
+            return self.table_mm_to_projector_px(self.ball_camera_px_to_table_mm(points))
         return self.camera_px_to_projector_px(self.compensate_ball_image_points(points))
 
     def camera_px_to_table_mm(self, points: np.ndarray) -> np.ndarray:
@@ -80,8 +89,13 @@ class CalibrationService:
         return self.projector_px_to_table_mm(proj)
 
     def ball_camera_px_to_table_mm(self, points: np.ndarray) -> np.ndarray:
-        proj = self.ball_camera_px_to_projector_px(points).astype(np.float32)
-        return self.projector_px_to_table_mm(proj)
+        pts = ensure_numpy_points(points)
+        base_pts = self._ball_base_camera_points(pts)
+        proj = self.camera_px_to_projector_px(base_pts).astype(np.float32)
+        table_mm = self.projector_px_to_table_mm(proj)
+        if self.is_engineered_projection and self.ball_compensation_model.is_valid:
+            table_mm = table_mm + self.ball_compensation_model.offsets_for_camera_points(base_pts).astype(np.float32)
+        return table_mm
 
     def projector_px_to_table_mm(self, points: np.ndarray) -> np.ndarray:
         pts = ensure_numpy_points(points)
@@ -135,10 +149,35 @@ class CalibrationService:
         return float(np.linalg.norm(mm[1] - mm[0]))
 
     def ball_pixel_radius_to_mm(self, center_px: Point, radius_px: float) -> float:
+        if self.is_engineered_projection:
+            return 0.5 * float(self.table.ball_diameter_mm)
         center = np.asarray([center_px], dtype=np.float32)
         edge = np.asarray([[center_px[0] + radius_px, center_px[1]]], dtype=np.float32)
         mm = self.ball_camera_px_to_table_mm(np.vstack([center, edge]))
         return float(np.linalg.norm(mm[1] - mm[0]))
+
+    def ball_projector_radius_px(self, center_px: Point) -> float:
+        center = np.asarray([center_px], dtype=np.float32)
+        center_mm = self.ball_camera_px_to_table_mm(center)[0]
+        return self.table_radius_to_projector_px(center_mm, 0.5 * float(self.table.ball_diameter_mm))
+
+    def table_radius_to_projector_px(self, center_mm: np.ndarray | Point, radius_mm: float) -> float:
+        radius = float(max(0.0, radius_mm))
+        if radius <= 0.0:
+            return 0.0
+        point = np.asarray(center_mm, dtype=np.float32).reshape((2,))
+        refs = np.asarray(
+            [
+                point,
+                point + np.asarray([radius, 0.0], dtype=np.float32),
+                point + np.asarray([0.0, radius], dtype=np.float32),
+            ],
+            dtype=np.float32,
+        )
+        proj = self.table_mm_to_projector_px(refs).astype(np.float32)
+        rx = float(np.linalg.norm(proj[1] - proj[0]))
+        ry = float(np.linalg.norm(proj[2] - proj[0]))
+        return max(1.0, 0.5 * (rx + ry))
 
     def _table_projector_homographies(self) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         poly = ensure_numpy_points(self.projection.table_polygon_proj).astype(np.float32)
@@ -170,10 +209,21 @@ class CalibrationService:
             return float(np.mean(poly[:, 0])), float(np.mean(poly[:, 1]))
         return 960.0, 540.0
 
+    def _ball_base_camera_points(self, points: np.ndarray) -> np.ndarray:
+        pts = ensure_numpy_points(points).astype(np.float32)
+        if self.is_engineered_projection and self.ball_compensation_model.is_valid:
+            return pts
+        return self.compensate_ball_image_points(pts)
+
 
 def create_calibration_service(config: CalibrationConfig, frame_undistorted: bool = False) -> CalibrationService:
+    config.sync_projection_file_alias()
     camera = CameraCalibration.load_opencv_yaml(config.camera_file)
-    projection = ProjectionCalibration.load_json(config.projection_file)
+    projection = ProjectionCalibration.load_json(config.active_projection_file())
+    projection_mode = config.normalized_projection_mode()
+    ball_compensation_model = BallCompensationModel.load_json(
+        config.engineered_ball_compensation_file if projection_mode == "engineered" else None
+    )
     table = TableModel(
         width_mm=float(config.table_width_mm),
         height_mm=float(config.table_height_mm),
@@ -189,6 +239,8 @@ def create_calibration_service(config: CalibrationConfig, frame_undistorted: boo
         projection=projection,
         table=table,
         frame_undistorted=bool(frame_undistorted),
+        projection_mode=projection_mode,
+        ball_compensation_model=ball_compensation_model,
         ball_center_compensation=BallCenterCompensation(
             enabled=bool(config.ball_center_compensation_enabled),
             auto_reference=bool(config.ball_center_compensation_auto_reference),

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import cv2
 import pytest
@@ -7,7 +9,8 @@ import pytest
 from bas.calibration.camera import CameraCalibration
 from bas.calibration.charuco import CharucoBoardSpec, detect_charuco_corners, render_charuco_board
 from bas.calibration.projector import ProjectionCalibration
-from bas.calibration.service import BallCenterCompensation, CalibrationService
+from bas.calibration.service import BallCenterCompensation, CalibrationService, create_calibration_service
+from bas.config import CalibrationConfig
 from bas.calibration.verification import format_holdout_report, verify_holdout_samples
 from bas.schemas import TableModel
 
@@ -221,3 +224,43 @@ def test_holdout_verification_reports_mm_and_image_errors() -> None:
     assert report["table_error_mm"]["p95"] < 1e-3
     assert report["verdict"]["formal"]
     assert "正式: 通过" in format_holdout_report(report)
+
+
+def test_engineered_calibration_service_loads_plane_and_ball_compensation(tmp_path) -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
+        np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
+        projector_size=(1000, 500),
+    )
+    projection.table_polygon_proj = np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64)
+    plane_path = tmp_path / "engineered_plane.json"
+    projection.save(plane_path)
+    ball_path = tmp_path / "engineered_ball.json"
+    ball_path.write_text(
+        json.dumps(
+            {
+                "mode": "engineered_ball_comp_v1",
+                "control_camera_points": [[100.0, 200.0]],
+                "delta_table_mm": [[10.0, -5.0]],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = CalibrationConfig(
+        projection_mode="engineered",
+        engineered_plane_projection_file=str(plane_path),
+        engineered_ball_compensation_file=str(ball_path),
+        table_width_mm=1000.0,
+        table_height_mm=500.0,
+        ball_diameter_mm=57.15,
+    )
+
+    service = create_calibration_service(cfg)
+    out = service.ball_camera_px_to_table_mm(np.array([[100.0, 200.0]], dtype=np.float32))
+
+    assert service.projection_mode == "engineered"
+    assert service.projection.source_path == str(plane_path)
+    assert service.ball_compensation_model.source_path == str(ball_path)
+    assert np.allclose(out[0], [110.0, 195.0], atol=1e-3)
+    assert service.ball_pixel_radius_to_mm((100.0, 200.0), 99.0) == pytest.approx(28.575, abs=1e-6)

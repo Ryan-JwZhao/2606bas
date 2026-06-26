@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from bas.calibration.camera import CameraCalibration
 from bas.calibration.projector import ProjectionCalibration
@@ -28,6 +29,27 @@ def _service() -> CalibrationService:
             projection_visible_polygon_mm=[(20, 10), (980, 10), (980, 490), (20, 490)],
             center_playable_polygon_mm=[(30, 20), (970, 20), (970, 480), (30, 480)],
         ),
+    )
+
+
+def _engineered_service() -> CalibrationService:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
+        np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
+        projector_size=(1000, 500),
+    )
+    projection.table_polygon_proj = np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64)
+    return CalibrationService(
+        camera=CameraCalibration(metadata={}),
+        projection=projection,
+        table=TableModel(
+            width_mm=1000,
+            height_mm=500,
+            ball_diameter_mm=57.15,
+            inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
+            pockets_mm=[],
+        ),
+        projection_mode="engineered",
     )
 
 
@@ -78,3 +100,33 @@ def test_projection_debug_falls_back_to_detections_when_tracks_absent() -> None:
     assert len(overlay.circles) == 1
     assert overlay.circles[0][2] == (255, 255, 255)
     assert not overlay.labels
+
+
+def test_engineered_projection_debug_uses_physical_ball_radius() -> None:
+    service = _engineered_service()
+    overlay_small = ProjectionOverlay(overlay_id="debug_small", frame_id=1, projector_size=(1000, 500))
+    overlay_large = ProjectionOverlay(overlay_id="debug_large", frame_id=1, projector_size=(1000, 500))
+    track_small = TrackObservation(
+        track_id=1,
+        bbox=(90.0, 190.0, 110.0, 210.0),
+        center_px=(100.0, 200.0),
+        radius_px=10.0,
+        cls_name="cue",
+        group="cue",
+        confidence=0.9,
+    )
+    track_large = TrackObservation(
+        track_id=2,
+        bbox=(80.0, 180.0, 120.0, 220.0),
+        center_px=(100.0, 200.0),
+        radius_px=20.0,
+        cls_name="cue",
+        group="cue",
+        confidence=0.9,
+    )
+
+    append_projected_ball_overlays(overlay_small, service, tracks=[track_small])
+    append_projected_ball_overlays(overlay_large, service, tracks=[track_large])
+
+    assert overlay_small.circles[0][1] == pytest.approx(overlay_large.circles[0][1], abs=1e-6)
+    assert overlay_small.circles[0][1] == pytest.approx(service.ball_projector_radius_px((100.0, 200.0)), abs=1e-6)

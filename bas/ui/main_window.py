@@ -191,7 +191,28 @@ class SettingsDialog(QtWidgets.QDialog):
         self.inline_path = self._path_row(config.geometry.inline_path, "JSON (*.json);;所有文件 (*.*)")
         self.pocket_path = self._path_row(config.geometry.pocket_path, "JSON (*.json);;所有文件 (*.*)")
         self.camera_calibration_file = self._path_row(config.calibration.camera_file, "OpenCV 标定文件 (*.yaml *.yml *.xml);;所有文件 (*.*)")
-        self.projection_calibration_file = self._path_row(config.calibration.projection_file, "投影校正文件 (*.json);;所有文件 (*.*)")
+        self.projection_mode = QtWidgets.QComboBox()
+        self.projection_mode.addItem("传统模式", "legacy")
+        self.projection_mode.addItem("工程模式", "engineered")
+        selected_mode = config.calibration.normalized_projection_mode()
+        selected_index = self.projection_mode.findData(selected_mode)
+        self.projection_mode.setCurrentIndex(max(0, selected_index))
+        self._legacy_projection_file = config.calibration.legacy_projection_file
+        self._engineered_projection_file = config.calibration.engineered_plane_projection_file
+        if not self._legacy_projection_file and selected_mode == "legacy":
+            self._legacy_projection_file = config.calibration.projection_file
+        if not self._engineered_projection_file and selected_mode == "engineered":
+            self._engineered_projection_file = config.calibration.projection_file
+        self._projection_mode_for_path = selected_mode
+        self.projection_calibration_file = self._path_row(
+            self._active_projection_path_for_mode(selected_mode),
+            "投影平面校正文件 (*.json);;所有文件 (*.*)",
+        )
+        self.engineered_ball_compensation_file = self._path_row(
+            config.calibration.engineered_ball_compensation_file,
+            "球体补偿文件 (*.json);;所有文件 (*.*)",
+        )
+        self.projection_mode.currentIndexChanged.connect(self._projection_mode_changed)
         self.detector_backend = QtWidgets.QComboBox()
         self.detector_backend.addItems(["disabled", "ultralytics", "debug_color"])
         self.detector_backend.setCurrentText(config.detector.backend)
@@ -230,7 +251,9 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("inline.json", self.inline_path)
         form.addRow("pocket.json", self.pocket_path)
         form.addRow("相机标定文件", self.camera_calibration_file)
-        form.addRow("投影校正文件", self.projection_calibration_file)
+        form.addRow("投影校准模式", self.projection_mode)
+        form.addRow("平面校正文件", self.projection_calibration_file)
+        form.addRow("工程球体补偿文件", self.engineered_ball_compensation_file)
         form.addRow("默认投影设备", self.proj_screen)
         form.addRow("默认投影分辨率", proj_size)
         tabs.addTab(general, "基础")
@@ -395,7 +418,14 @@ class SettingsDialog(QtWidgets.QDialog):
         config.geometry.inline_path = self.inline_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.geometry.pocket_path = self.pocket_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.calibration.camera_file = self.camera_calibration_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
-        config.calibration.projection_file = self.projection_calibration_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        self._store_projection_path_for_current_mode()
+        config.calibration.legacy_projection_file = self._legacy_projection_file
+        config.calibration.engineered_plane_projection_file = self._engineered_projection_file
+        config.calibration.engineered_ball_compensation_file = (
+            self.engineered_ball_compensation_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        )
+        config.calibration.set_projection_mode(str(self.projection_mode.currentData() or "legacy"))
+        config.calibration.sync_projection_file_alias()
         config.projection.screen_index = int(self.proj_screen.currentData() or 0)
         config.projection.projector_width = int(self.proj_w.value())
         config.projection.projector_height = int(self.proj_h.value())
@@ -424,6 +454,25 @@ class SettingsDialog(QtWidgets.QDialog):
         manual = not self.ball_comp_auto_ref.isChecked()
         self.ball_comp_ref_x.setEnabled(manual)
         self.ball_comp_ref_y.setEnabled(manual)
+
+    def _active_projection_path_for_mode(self, mode: str) -> Optional[str]:
+        normalized = "engineered" if str(mode).strip().lower() == "engineered" else "legacy"
+        if normalized == "engineered":
+            return self._engineered_projection_file or self._legacy_projection_file
+        return self._legacy_projection_file or self._engineered_projection_file
+
+    def _store_projection_path_for_current_mode(self) -> None:
+        value = self.projection_calibration_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        if self._projection_mode_for_path == "engineered":
+            self._engineered_projection_file = value
+        else:
+            self._legacy_projection_file = value
+
+    def _projection_mode_changed(self, _index: int = 0) -> None:
+        self._store_projection_path_for_current_mode()
+        self._projection_mode_for_path = str(self.projection_mode.currentData() or "legacy")
+        next_path = self._active_projection_path_for_mode(self._projection_mode_for_path) or ""
+        self.projection_calibration_file.line_edit.setText(next_path)  # type: ignore[attr-defined]
 
     def _bind_projection_tuning_preview(self) -> None:
         widgets = [
@@ -610,7 +659,7 @@ class ProjectorCalibrationDialog(QtWidgets.QDialog):
 
         file_box = QtWidgets.QGroupBox("当前校正配置")
         file_layout = QtWidgets.QVBoxLayout(file_box)
-        self.projection_file_edit = QtWidgets.QLineEdit(self.operator.config.calibration.projection_file or "")
+        self.projection_file_edit = QtWidgets.QLineEdit(self.operator.config.calibration.active_projection_file() or "")
         self.projection_file_edit.setPlaceholderText("输入投影校正 JSON 路径或文件名")
         file_layout.addWidget(self.projection_file_edit)
         file_actions = QtWidgets.QHBoxLayout()
@@ -674,7 +723,7 @@ class ProjectorCalibrationDialog(QtWidgets.QDialog):
         return "\n".join(lines)
 
     def _browse_projection_file(self) -> None:
-        current = str(projection_config_path_or_default(self.operator.config.calibration.projection_file))
+        current = str(projection_config_path_or_default(self.operator.config.calibration.active_projection_file()))
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "选择投影校正文件",
@@ -689,8 +738,9 @@ class ProjectorCalibrationDialog(QtWidgets.QDialog):
         if not raw:
             QtWidgets.QMessageBox.warning(self, "配置无效", "投影校正文件路径不能为空。")
             return
-        path = projection_config_path_from_input(raw, self.operator.config.calibration.projection_file)
-        self.operator.config.calibration.projection_file = str(path)
+        path = projection_config_path_from_input(raw, self.operator.config.calibration.active_projection_file())
+        self.operator.config.calibration.set_active_projection_file(str(path))
+        self.operator.config.calibration.sync_projection_file_alias()
         self.operator._save_user_settings()
         self.projection_file_edit.setText(str(path))
         self.calibration = create_calibration_service(
@@ -808,7 +858,7 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
         self.preview.setPixmap(pix.scaled(self.preview.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
 
     def _projection_output_path(self) -> Path:
-        return timestamped_projection_output_path(self.operator.config.calibration.projection_file)
+        return timestamped_projection_output_path(self.operator.config.calibration.active_projection_file())
 
     @QtCore.pyqtSlot()
     def run_calibration(self) -> None:
@@ -929,7 +979,7 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
 
     @QtCore.pyqtSlot()
     def load_result(self) -> None:
-        path = projection_config_path_or_default(self.operator.config.calibration.projection_file)
+        path = projection_config_path_or_default(self.operator.config.calibration.active_projection_file())
         if not path.exists():
             QtWidgets.QMessageBox.information(self, "未找到结果", f"当前投影校正文件不存在:\n{path}")
             return
@@ -956,7 +1006,8 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
         self._append_log("已在投影窗口显示联动校正结果与残差箭头。")
 
     def _load_projection_from_path(self, path: Path):
-        self.operator.config.calibration.projection_file = str(path)
+        self.operator.config.calibration.set_active_projection_file(str(path))
+        self.operator.config.calibration.sync_projection_file_alias()
         self.operator._sync_controls_from_config()
         self.operator._save_user_settings()
         return create_calibration_service(
@@ -1643,7 +1694,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.config.detector.detect_interval_frames,
             self.config.detector.detect_fps_limit_hz,
             self.config.calibration.camera_file,
-            self.config.calibration.projection_file,
+            self.config.calibration.normalized_projection_mode(),
+            self.config.calibration.active_projection_file(),
+            self.config.calibration.engineered_ball_compensation_file,
             self.config.calibration.table_width_mm,
             self.config.calibration.table_height_mm,
             self.config.calibration.ball_diameter_mm,
@@ -2297,7 +2350,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self._set_module_status("跟踪", "待机", "TemporalTracker")
             self._set_module_status("状态机", "待机", "自动")
             self._set_module_status("规划", "待机", "GeometryPhysics")
-            self._set_module_status("标定", "未加载", self.config.calibration.projection_file or "未设置")
+            self._set_module_status("标定", "未加载", self.config.calibration.active_projection_file() or "未设置")
             self.hold_state_btn.setText("冻结状态机")
             return
         info = self.pipeline.capture.info()
@@ -2393,7 +2446,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 self.show_projector_calibration_result(calibration)
             else:
                 self.show_projector_encoded_grid()
-                self._append_log(f"投影校正文件无效或缺失: {self.config.calibration.projection_file}")
+                self._append_log(f"投影校正文件无效或缺失: {self.config.calibration.active_projection_file()}")
             dialog = ProjectorCalibrationDialog(self, calibration, self)
             dialog.exec_()
         except Exception as exc:

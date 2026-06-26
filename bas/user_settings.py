@@ -38,6 +38,10 @@ class UserSettings:
     pocket_path: Optional[str] = None
     camera_calibration_file: Optional[str] = None
     projection_calibration_file: Optional[str] = None
+    projection_mode: Optional[str] = None
+    legacy_projection_calibration_file: Optional[str] = None
+    engineered_plane_projection_file: Optional[str] = None
+    engineered_ball_compensation_file: Optional[str] = None
     projection_screen_index: Optional[int] = None
     projection_width: Optional[int] = None
     projection_height: Optional[int] = None
@@ -142,8 +146,26 @@ class UserSettings:
             config.geometry.pocket_path = _clean_optional_text(self.pocket_path)
         if self._has("camera_calibration_file"):
             config.calibration.camera_file = _clean_optional_text(self.camera_calibration_file)
+        if self._has("projection_mode") and self.projection_mode:
+            config.calibration.set_projection_mode(self.projection_mode)
+        if self._has("legacy_projection_calibration_file"):
+            config.calibration.legacy_projection_file = _clean_optional_text(self.legacy_projection_calibration_file)
+        if self._has("engineered_plane_projection_file"):
+            config.calibration.engineered_plane_projection_file = _clean_optional_text(self.engineered_plane_projection_file)
+        if self._has("engineered_ball_compensation_file"):
+            config.calibration.engineered_ball_compensation_file = _clean_optional_text(self.engineered_ball_compensation_file)
         if self._has("projection_calibration_file"):
             config.calibration.projection_file = _clean_optional_text(self.projection_calibration_file)
+            if config.calibration.projection_file:
+                if not self._has("legacy_projection_calibration_file") and config.calibration.normalized_projection_mode() == "legacy":
+                    config.calibration.legacy_projection_file = config.calibration.projection_file
+                if not self._has("engineered_plane_projection_file") and config.calibration.normalized_projection_mode() == "engineered":
+                    config.calibration.engineered_plane_projection_file = config.calibration.projection_file
+            elif not self._has("legacy_projection_calibration_file") and config.calibration.normalized_projection_mode() == "legacy":
+                config.calibration.legacy_projection_file = None
+            elif not self._has("engineered_plane_projection_file") and config.calibration.normalized_projection_mode() == "engineered":
+                config.calibration.engineered_plane_projection_file = None
+        config.calibration.sync_projection_file_alias()
         if self.projection_screen_index is not None:
             config.projection.screen_index = int(self.projection_screen_index)
         if self.projection_width is not None:
@@ -240,7 +262,11 @@ class UserSettings:
             inline_path=config.geometry.inline_path,
             pocket_path=config.geometry.pocket_path,
             camera_calibration_file=config.calibration.camera_file,
-            projection_calibration_file=config.calibration.projection_file,
+            projection_calibration_file=config.calibration.active_projection_file(),
+            projection_mode=config.calibration.normalized_projection_mode(),
+            legacy_projection_calibration_file=config.calibration.legacy_projection_file,
+            engineered_plane_projection_file=config.calibration.engineered_plane_projection_file,
+            engineered_ball_compensation_file=config.calibration.engineered_ball_compensation_file,
             projection_screen_index=config.projection.screen_index,
             projection_width=config.projection.projector_width,
             projection_height=config.projection.projector_height,
