@@ -48,6 +48,7 @@ from ..remote_control import RemoteCommand, RemoteCommandQueue
 from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
 from ..schemas import MatchPhase, OverlayLine, ProjectionOverlay, to_jsonable
 from ..utils import unit
+from .engineered_ball_compensation_wizard import EngineeredBallCompensationWizardDialog
 from .geometry_reference import draw_geometry_reference_lines
 from .projection_debug import append_projected_ball_overlays, append_projected_boundary_overlays
 
@@ -682,6 +683,7 @@ class ProjectorCalibrationDialog(QtWidgets.QDialog):
             ("显示残差箭头", self._show_current_projection_residual),
             ("验证 Holdout", self._verify_holdout),
             ("一键联动校正", self.operator.run_linked_projector_calibration),
+            ("工程球体补偿向导", self.operator.run_engineered_ball_compensation_wizard),
             ("恢复实时投影", self.operator.resume_runtime_projection),
         ]
         for idx, (text, slot) in enumerate(actions):
@@ -702,12 +704,22 @@ class ProjectorCalibrationDialog(QtWidgets.QDialog):
     def _summary_text(self) -> str:
         projection = self.calibration.projection
         stats = projection.calibration_error_stats()
+        runtime_mode = "engineered" if self.calibration.is_engineered_projection else "legacy"
         lines = [
             f"文件: {projection.source_path or '未设置'}",
             f"模式: {projection.mode} | 投影尺寸: {projection.projector_size[0]}x{projection.projector_size[1]}",
             f"对应点: {projection.cam_points.shape[0]} | 局部残差控制点: {projection.residual_field.control_points_cam.shape[0]}",
             f"桌面多边形点: {projection.table_polygon_proj.shape[0]} | 有效: {'是' if projection.is_valid else '否'}",
         ]
+        lines.append(f"runtime_mode: {runtime_mode}")
+        if self.calibration.is_engineered_projection:
+            ball_model = self.calibration.ball_compensation_model
+            lines.append(
+                "ball_compensation: "
+                f"{'valid' if ball_model.is_valid else 'missing'} | "
+                f"control_points: {ball_model.control_points_camera_px.shape[0]} | "
+                f"file: {ball_model.source_path or 'unset'}"
+            )
         if stats:
             p95 = stats.get("p95_px", stats.get("max_px", 0.0))
             verdict = "通过预检查" if p95 <= 3.0 else "需要复核/重标定"
@@ -2456,6 +2468,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot()
     def run_linked_projector_calibration(self) -> None:
         dialog = LinkedProjectorCalibrationDialog(self, self)
+        dialog.exec_()
+
+    @QtCore.pyqtSlot()
+    def run_engineered_ball_compensation_wizard(self) -> None:
+        dialog = EngineeredBallCompensationWizardDialog(self, self)
         dialog.exec_()
 
     def _projector_calibration_overlay(self, calibration) -> ProjectionOverlay:

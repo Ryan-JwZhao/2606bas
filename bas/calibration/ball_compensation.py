@@ -51,6 +51,25 @@ class BallCompensationModel:
             return Path(self.source_path).stem
         return "no_ball_compensation"
 
+    def to_dict(self, extra_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "mode": str(self.mode or "none"),
+            "control_camera_points": np.asarray(self.control_points_camera_px, dtype=np.float64).reshape((-1, 2)).tolist(),
+            "delta_table_mm": np.asarray(self.delta_table_mm, dtype=np.float64).reshape((-1, 2)).tolist(),
+            "max_neighbors": int(max(1, int(self.max_neighbors))),
+            "quality_report": dict(self.quality_report),
+        }
+        if extra_data:
+            payload.update(extra_data)
+        return payload
+
+    def save_json(self, path: str | Path, extra_data: Optional[Dict[str, Any]] = None) -> None:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("w", encoding="utf-8") as f:
+            json.dump(self.to_dict(extra_data=extra_data), f, ensure_ascii=False, indent=2)
+        self.source_path = str(p)
+
     def offsets_for_camera_points(self, points_camera_px: np.ndarray) -> np.ndarray:
         pts = np.asarray(points_camera_px, dtype=np.float64).reshape((-1, 2))
         if pts.size == 0 or not self.is_valid:
@@ -67,4 +86,3 @@ class BallCompensationModel:
             weights = 1.0 / np.maximum(d2[nn], 1.0)
             out[idx] = np.sum(self.delta_table_mm[nn] * weights[:, None], axis=0) / max(1e-9, float(np.sum(weights)))
         return out
-

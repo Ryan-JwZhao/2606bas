@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from .ball_compensation import BallCompensationModel
+from .ball_compensation_sampling import (
+    BallCompensationSample,
+    build_ball_compensation_model,
+    build_engineered_ball_sampling_grid,
+)
 from .camera import CameraCalibration
 from .linked import (
     LinkedCalibrationObservation,
@@ -17,10 +22,13 @@ from .verification import format_holdout_report, verify_holdout_file, verify_hol
 
 __all__ = [
     "BallCompensationModel",
+    "BallCompensationSample",
     "CameraCalibration",
     "ProjectionCalibration",
     "CalibrationService",
     "create_calibration_service",
+    "build_ball_compensation_model",
+    "build_engineered_ball_sampling_grid",
     "LinkedCalibrationPattern",
     "LinkedCalibrationObservation",
     "LinkedCalibrationResult",
