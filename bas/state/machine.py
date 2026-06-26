@@ -296,7 +296,11 @@ class MatchStateMachine:
         return float(self.config.still_speed_mm_s if track.velocity_mm_s is not None else self.config.still_speed_px_s)
 
     def _detect_anomaly(self, tracks: List[TrackObservation]) -> bool:
-        visible_balls = [t for t in tracks if t.group in {"cue", "solid", "stripe", "black"} and t.visibility == "visible"]
+        visible_balls = [
+            t
+            for t in tracks
+            if t.group in {"cue", "solid", "stripe", "black"} and t.visibility == "visible" and t.quality > 0.25
+        ]
         cue_count = sum(1 for t in visible_balls if t.group == "cue")
         if cue_count > 1:
             return True

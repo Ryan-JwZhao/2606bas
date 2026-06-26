@@ -38,3 +38,46 @@ def test_tracker_keeps_occluded_track_briefly() -> None:
     assert len(out.tracks) == 1
     assert out.tracks[0].visibility == "occluded"
 
+
+def test_tracker_keeps_id_for_fast_motion_with_adaptive_gate() -> None:
+    tracker = TemporalTracker(TrackerConfig(match_distance_px=20))
+    f1 = DetectionsFrame(
+        frame_id=1,
+        ts_cam_ns=1_000_000_000,
+        detections=[Detection(bbox=(10, 10, 30, 30), conf=0.9, cls_id=0, cls_name="cue")],
+    )
+    f2 = DetectionsFrame(
+        frame_id=2,
+        ts_cam_ns=1_100_000_000,
+        detections=[Detection(bbox=(30, 10, 50, 30), conf=0.9, cls_id=0, cls_name="cue")],
+    )
+    f3 = DetectionsFrame(
+        frame_id=3,
+        ts_cam_ns=1_200_000_000,
+        detections=[Detection(bbox=(80, 10, 100, 30), conf=0.9, cls_id=0, cls_name="cue")],
+    )
+
+    t1 = tracker.update(f1)
+    t2 = tracker.update(f2)
+    t3 = tracker.update(f3)
+
+    assert len(t1.tracks) == 1
+    assert len(t2.tracks) == 1
+    assert len(t3.tracks) == 1
+    assert t1.tracks[0].track_id == t2.tracks[0].track_id == t3.tracks[0].track_id
+
+
+def test_tracker_prunes_overlapping_duplicate_ball_detections() -> None:
+    tracker = TemporalTracker(TrackerConfig())
+    frame = DetectionsFrame(
+        frame_id=1,
+        ts_cam_ns=1_000_000_000,
+        detections=[
+            Detection(bbox=(10, 10, 30, 30), conf=0.92, cls_id=0, cls_name="cue"),
+            Detection(bbox=(11, 11, 31, 31), conf=0.91, cls_id=0, cls_name="cue"),
+        ],
+    )
+
+    out = tracker.update(frame)
+
+    assert len(out.tracks) == 1

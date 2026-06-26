@@ -144,3 +144,32 @@ def test_state_emits_shot_start_vote_with_two_conditions() -> None:
 
     assert any(event.name == "SHOT_START_VOTED" for event in out.events)
     assert out.phase == "SHOT_ACTIVE"
+
+
+def test_low_quality_duplicate_cue_does_not_trigger_anomaly() -> None:
+    sm = MatchStateMachine(StateConfig(anomaly_frames=1, stable_frames=2, settle_frames=2))
+    out = sm.update(
+        TracksFrame(
+            frame_id=1,
+            ts_cam_ns=1,
+            tracks=[
+                _ball(1, "cue", 100, 100),
+                TrackObservation(
+                    track_id=2,
+                    bbox=(100, 100, 110, 110),
+                    center_px=(105, 105),
+                    radius_px=5,
+                    cls_name="cue",
+                    group="cue",
+                    confidence=0.4,
+                    velocity_px_s=(0.0, 0.0),
+                    center_mm=(105, 105),
+                    velocity_mm_s=(0.0, 0.0),
+                    radius_mm=28.0,
+                    quality=0.1,
+                ),
+            ],
+        )
+    )
+
+    assert out.phase != "ANOMALY_RECOVERY"

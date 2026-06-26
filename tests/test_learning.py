@@ -114,3 +114,92 @@ def test_learning_sample_recorder_does_not_create_empty_session_file(tmp_path) -
 
     assert not recorder.path.exists()
     assert not recorder.session_dir.exists()
+
+
+def test_learning_sample_recorder_aligns_potted_target_ids_by_group_and_pocket(tmp_path) -> None:
+    recorder = LearningSampleRecorder(LearningConfig(collect_enabled=True, samples_directory=str(tmp_path)))
+    plan = ShotPlan(
+        plan_id="p1",
+        frame_id=1,
+        ts_cam_ns=1,
+        candidates=[_candidate("c1", 2, score=1.0, risk=0.1)],
+        best=_candidate("c1", 2, score=1.0, risk=0.1),
+    )
+    plan.candidates[0].target_group = "solid"
+    plan.candidates[0].pocket_index = 2
+    plan.best.target_group = "solid"
+    plan.best.pocket_index = 2
+    stable = MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="STABLE_IDLE", layout=[_track(1, "cue"), _track(2, "solid")])
+    started = MatchStateFrame(frame_id=2, ts_cam_ns=2, phase="SHOT_ACTIVE", events=[Event("SHOT_STARTED", 2, 2)], layout=stable.layout)
+    ended = MatchStateFrame(
+        frame_id=3,
+        ts_cam_ns=3,
+        phase="TURN_RESOLVE",
+        events=[Event("POT_PROBABLE", 3, 3, payload={"track_id": 99, "group": "solid", "pocket_index": 2}), Event("TURN_RESOLVE", 3, 3)],
+        layout=[_track(1, "cue")],
+    )
+
+    recorder.observe(stable, plan)
+    recorder.observe(started, plan)
+    recorder.observe(ended, plan)
+    recorder.close()
+
+    row = list(recorder.session_dir.glob("shot_samples.jsonl"))[0]
+    sample = json.loads(row.read_text(encoding="utf-8").splitlines()[0])
+
+    assert sample["labels"]["potted_track_ids"] == [99]
+    assert sample["labels"]["aligned_potted_track_ids"] == [2]
+    data = build_training_data(row)
+    assert data.pot.tolist() == [1.0]
+    assert data.rank.tolist() == [1.0]
+
+
+def test_build_training_data_can_recover_legacy_group_pocket_alignment(tmp_path) -> None:
+    sample_path = tmp_path / "legacy.jsonl"
+    sample_path.write_text(
+        json.dumps(
+            {
+                "format": "bas_shot_sample_v1",
+                "sample_id": "legacy_1",
+                "pre_state": {"layout": [{"track_id": 2, "group": "solid", "center_mm": [400.0, 100.0], "quality": 0.9}]},
+                "plan": {
+                    "candidates": [
+                        {
+                            "candidate_id": "c1",
+                            "target_track_id": 2,
+                            "target_group": "solid",
+                            "pocket_index": 2,
+                            "cue_ball": [100.0, 100.0],
+                            "object_ball": [400.0, 100.0],
+                            "ghost_ball": [342.0, 100.0],
+                            "pocket_point": [1000.0, 0.0],
+                            "aim_line": [[100.0, 100.0], [342.0, 100.0]],
+                            "object_line": [[400.0, 100.0], [1000.0, 0.0]],
+                            "cut_angle_deg": 10.0,
+                            "cue_distance_mm": 242.0,
+                            "object_distance_mm": 608.0,
+                            "score": 1.0,
+                            "risk": 0.1,
+                            "explanation": {"cue_clearance_mm": 100.0, "object_clearance_mm": 100.0},
+                        }
+                    ]
+                },
+                "end_state": {"layout": []},
+                "labels": {
+                    "potted": [{"track_id": 99, "group": "solid", "pocket_index": 2}],
+                    "potted_track_ids": [99],
+                    "potted_groups": ["solid"],
+                    "scratch": False,
+                    "foul": False,
+                },
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    data = build_training_data(sample_path)
+
+    assert data.pot.tolist() == [1.0]
+    assert data.rank.tolist() == [1.0]

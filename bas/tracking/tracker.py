@@ -88,6 +88,8 @@ class TemporalTracker:
                 last_ts_ns=detections_frame.ts_cam_ns,
             )
 
+        self._prune_duplicate_tracks()
+
         observations = [self._to_observation(tr) for tr in sorted(self._tracks.values(), key=lambda t: t.track_id)]
         latency_ms = (time.perf_counter() - start) * 1000.0
         return TracksFrame(
@@ -110,11 +112,16 @@ class TemporalTracker:
             for did, det in enumerate(detections):
                 center = np.asarray(det.center, dtype=np.float32)
                 dist = float(np.linalg.norm(center - predicted))
-                dist_score = 1.0 - clamp(dist / max(1.0, self.config.match_distance_px), 0.0, 1.0)
                 iou_score = iou_xyxy(track.bbox, det.bbox)
-                cls_bonus = 0.1 if det.cls_name == track.stable_class else 0.0
-                score = 0.58 * dist_score + 0.32 * iou_score + cls_bonus + 0.10 * float(det.conf)
-                if dist <= self.config.match_distance_px or iou_score >= self.config.match_iou:
+                radius = max(1.0, float(max(track.radius_px, det.radius_px)))
+                cls_bonus = self._compatibility_bonus(track.stable_class, det.cls_name, dist=dist, iou_score=iou_score, radius_px=radius)
+                if cls_bonus is None:
+                    continue
+                max_distance = self._max_match_distance(track, det, dt)
+                dist_score = 1.0 - clamp(dist / max(1.0, max_distance), 0.0, 1.0)
+                size_score = 1.0 - clamp(abs(float(det.radius_px) - float(track.radius_px)) / max(4.0, radius), 0.0, 1.0)
+                score = 0.50 * dist_score + 0.24 * iou_score + 0.08 * size_score + 0.08 * float(det.conf) + cls_bonus
+                if dist <= max_distance or iou_score >= self.config.match_iou:
                     candidates.append((score, tid, did))
         candidates.sort(reverse=True, key=lambda x: x[0])
         matches: List[Tuple[int, int]] = []
@@ -166,3 +173,67 @@ class TemporalTracker:
             visibility=visibility,
         )
 
+    def _max_match_distance(self, track: _Track, det: Detection, dt: float) -> float:
+        base = max(1.0, float(self.config.match_distance_px))
+        motion = float(np.linalg.norm(track.velocity)) * min(max(0.0, dt), 0.2)
+        radius = float(max(track.radius_px, det.radius_px, 1.0))
+        return max(base, radius * 2.5 + motion * 3.0)
+
+    def _compatibility_bonus(
+        self,
+        track_class: str,
+        det_class: str,
+        *,
+        dist: float,
+        iou_score: float,
+        radius_px: float,
+    ) -> float | None:
+        track_group = group_from_class(track_class)
+        det_group = group_from_class(det_class)
+        if track_group == det_group:
+            return 0.12
+        if "cue_stick" in {track_group, det_group}:
+            return None
+        if "cue" in {track_group, det_group}:
+            # Allow near-identical cue-ball classification blips, but avoid
+            # snapping a cue track onto unrelated object-ball detections.
+            if dist <= max(10.0, radius_px * 0.85) or iou_score >= 0.55:
+                return -0.04
+            return None
+        if track_group == "other" or det_group == "other":
+            return -0.06
+        if "black" in {track_group, det_group}:
+            return -0.04
+        return -0.06
+
+    def _prune_duplicate_tracks(self) -> None:
+        ordered = sorted(self._tracks.values(), key=self._track_priority, reverse=True)
+        remove: set[int] = set()
+        for index, track in enumerate(ordered):
+            if track.track_id in remove:
+                continue
+            for other in ordered[index + 1 :]:
+                if other.track_id in remove:
+                    continue
+                if self._tracks_are_duplicates(track, other):
+                    remove.add(other.track_id)
+        for tid in remove:
+            self._tracks.pop(tid, None)
+
+    def _tracks_are_duplicates(self, first: _Track, second: _Track) -> bool:
+        first_group = group_from_class(first.stable_class)
+        second_group = group_from_class(second.stable_class)
+        if "cue_stick" in {first_group, second_group}:
+            return False
+        if first_group not in {"cue", "solid", "stripe", "black"}:
+            return False
+        if second_group not in {"cue", "solid", "stripe", "black"}:
+            return False
+        dist = float(np.linalg.norm(first.center - second.center))
+        radius = float(max(first.radius_px, second.radius_px, 1.0))
+        if dist <= max(6.0, radius * 1.05):
+            return True
+        return iou_xyxy(first.bbox, second.bbox) >= 0.55
+
+    def _track_priority(self, track: _Track) -> float:
+        return float(track.confidence) + min(0.2, track.age * 0.01) - min(0.3, track.lost_frames * 0.08)

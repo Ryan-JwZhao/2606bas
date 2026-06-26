@@ -8,6 +8,7 @@ from typing import Any, Iterable, Optional, TextIO
 from ..config import LearningConfig
 from ..schemas import Event, MatchStateFrame, ShotPlan, to_jsonable
 from ..utils import wall_time_id
+from .label_alignment import build_alignment_labels, resolve_potted_target_track_ids
 
 
 @dataclass
@@ -115,12 +116,18 @@ class LearningSampleRecorder:
         potted_groups = [str(item.get("group", "")) for item in potted]
         scratch = any(group == "cue" for group in potted_groups)
         anomaly = any(name in {"ANOMALY", "ANOMALY_RECOVERED"} for name in event_names)
-        best_target = plan.best.target_track_id if plan.best is not None else None
-        best_success = bool(best_target is not None and int(best_target) in potted_ids and not scratch and not anomaly)
-        return {
+        label_payload = {
             "potted": potted,
             "potted_track_ids": sorted(potted_ids),
             "potted_groups": potted_groups,
+        }
+        alignment = build_alignment_labels(plan, label_payload)
+        resolved_potted_ids = resolve_potted_target_track_ids(plan, {**label_payload, **alignment})
+        best_target = plan.best.target_track_id if plan.best is not None else None
+        best_success = bool(best_target is not None and int(best_target) in resolved_potted_ids and not scratch and not anomaly)
+        return {
+            **label_payload,
+            **alignment,
             "scratch": scratch,
             "foul": bool(scratch or anomaly),
             "system_best_candidate_id": plan.best.candidate_id if plan.best is not None else None,

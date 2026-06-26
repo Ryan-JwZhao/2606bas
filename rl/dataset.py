@@ -7,6 +7,7 @@ from typing import Any, Iterable, Iterator, Sequence
 
 import numpy as np
 
+from bas.learning.label_alignment import resolve_potted_target_track_ids
 from bas.planning.learning import FEATURE_NAMES, LearningFeatureBuilder
 
 
@@ -81,7 +82,7 @@ def build_training_data(
         candidates = plan.get("candidates") or []
         if not isinstance(candidates, list) or not candidates:
             continue
-        potted_ids = _int_set(labels.get("potted_track_ids") or [])
+        potted_ids = resolve_potted_target_track_ids(plan, labels)
         scratch = 1.0 if bool(labels.get("scratch")) else 0.0
         foul = 1.0 if bool(labels.get("foul")) else 0.0
         leave = _estimate_leave_score(sample)
@@ -126,7 +127,7 @@ def summarize_samples(sample_paths: str | Path | Sequence[str | Path]) -> dict[s
         plan = sample.get("plan") or {}
         candidates = plan.get("candidates") or []
         candidate_count += len(candidates) if isinstance(candidates, list) else 0
-        potted_ids = _int_set(labels.get("potted_track_ids") or [])
+        potted_ids = resolve_potted_target_track_ids(plan, labels)
         scratch_count += 1 if labels.get("scratch") else 0
         foul_count += 1 if labels.get("foul") else 0
         if isinstance(candidates, list):
