@@ -37,8 +37,15 @@ class GeometryPhysicsPlanner:
         )
         self.free_planner = FreeShotPlanner(config, calibration)
 
-    def plan(self, state: MatchStateFrame, frame_bgr: Optional[np.ndarray] = None) -> ShotPlan:
-        shot_mode = self._shot_mode()
+    def plan(
+        self,
+        state: MatchStateFrame,
+        frame_bgr: Optional[np.ndarray] = None,
+        *,
+        forced_shot_mode: Optional[str] = None,
+        forced_turn_target_group: Optional[str] = None,
+    ) -> ShotPlan:
+        shot_mode = self._shot_mode(forced_shot_mode=forced_shot_mode)
         if not self.config.enabled:
             return self._empty_plan(state, shot_mode=shot_mode, free_status="disabled")
         if shot_mode == "free":
@@ -51,12 +58,15 @@ class GeometryPhysicsPlanner:
                 free_route=free_route,
                 free_status=self.free_planner.last_status,
                 planner_version=f"{self.version}+{self.free_planner.version}",
-            )
+        )
         balls = self._extract_balls(state.layout)
         cue = next((b for b in balls if b.group == "cue"), None)
         if cue is None:
             return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
-        targets = self._eligible_targets(balls, turn_target_group=getattr(state, "turn_target_group", None))
+        targets = self._eligible_targets(
+            balls,
+            turn_target_group=forced_turn_target_group if forced_turn_target_group is not None else getattr(state, "turn_target_group", None),
+        )
         if not targets:
             return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
         candidates: List[ShotCandidate] = []
@@ -81,8 +91,8 @@ class GeometryPhysicsPlanner:
             planner_version=self.version,
         )
 
-    def _shot_mode(self) -> str:
-        mode = str(getattr(self.config, "shot_mode", "rule") or "rule").strip().lower()
+    def _shot_mode(self, *, forced_shot_mode: Optional[str] = None) -> str:
+        mode = str(forced_shot_mode if forced_shot_mode is not None else getattr(self.config, "shot_mode", "rule") or "rule").strip().lower()
         return "free" if mode in {"free", "free_shot"} else "rule"
 
     def _empty_plan(self, state: MatchStateFrame, *, shot_mode: str, free_status: str = "idle") -> ShotPlan:

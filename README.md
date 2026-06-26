@@ -9,6 +9,62 @@
 - 保留原有实体校正板流程，同时新增“一键联动校正”，用多图样混合校正投影仪，其中以 ChArUco 为主、编码网格为辅。
 - 新增运行时“投影调试模式”，用于现场肉眼检查投影映射是否与台面几何和识别球位置一致。
 
+## Stream Deck 控制接口
+
+### 设计说明
+
+- 本次没有加全局热键，也没有注入其它程序。
+- 接口采用“本地命令队列”方案：Stream Deck 只负责执行一个本地命令，BAS 主界面会轮询 `local_settings/stream_deck/queue/` 并执行收到的控制指令。
+- 这样做的好处是改动小、冲突少，不会抢占系统快捷键，也不会影响其它软件。
+
+### 使用方式
+
+1. 先正常启动 BAS 主界面：
+
+```powershell
+python -m bas
+```
+
+2. 在 Stream Deck 的按键动作里，调用下面任意一种本地命令：
+
+```powershell
+python -m bas.cli remote-control start-capture
+python -m bas.cli remote-control start-projection
+python -m bas.cli remote-control toggle-target-group
+python -m bas.cli remote-control toggle-shot-mode
+python -m bas.cli remote-control free-shot-once
+python -m bas.cli remote-control black-shot-once
+python -m bas.cli remote-control toggle-star-formula
+```
+
+3. 如果你想直接调用批处理，也可以用仓库里的通用脚本：
+
+```powershell
+scripts\BAS_StreamDeck_Command.cmd start-capture
+scripts\BAS_StreamDeck_Command.cmd start-projection
+scripts\BAS_StreamDeck_Command.cmd toggle-target-group
+scripts\BAS_StreamDeck_Command.cmd toggle-shot-mode
+scripts\BAS_StreamDeck_Command.cmd free-shot-once
+scripts\BAS_StreamDeck_Command.cmd black-shot-once
+scripts\BAS_StreamDeck_Command.cmd toggle-star-formula
+```
+
+### 支持的指令
+
+- `start-capture`：开始采集；如果已经在采集，则忽略。
+- `start-projection`：开始投影；如果已经在投影，则忽略。
+- `toggle-target-group`：切换当前杆目标花色；`纯色 -> 花色`，`花色 -> 纯色`，未指定时默认切到 `纯色`。
+- `toggle-shot-mode`：规则击球模式 / 自由击球模式 全局切换。
+- `free-shot-once`：只把当前这一杆临时切为自由击球；到底层状态机完成本杆结算后自动恢复。
+- `black-shot-once`：只把当前这一杆临时指定为黑球目标，仅在规则击球模式下生效。
+- `toggle-star-formula`：颗星公式开关切换。
+
+### 说明
+
+- `free-shot-once` 和 `black-shot-once` 都是“单杆临时覆盖”，不会改掉你平时的全局模式。
+- `black-shot-once` 如果当前全局已经切到自由模式，会被忽略。
+- 命令是写入本地队列文件，不依赖焦点窗口；BAS 主界面开着即可响应。
+
 ## 几何与袋口说明
 
 - `outline.json` 表示台球桌外轮廓矩形范围。

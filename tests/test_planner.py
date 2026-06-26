@@ -199,3 +199,23 @@ def test_free_mode_predicts_two_cushion_collisions() -> None:
     assert all(line.color == (255, 255, 255) for line in overlay.lines)
     assert all(color == (255, 255, 255) for _center, _radius, color in overlay.circles)
     assert all(color == (255, 255, 255) for _pos, _text, color in overlay.labels)
+
+
+def test_planner_can_force_black_target_for_current_turn() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20), _service())
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="STABLE_IDLE",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _obs(2, "solid", 620, 250),
+            _obs(3, "stripe", 620, 380),
+            _obs(4, "black", 320, 250),
+        ],
+    )
+
+    plan = planner.plan(state, forced_turn_target_group="black")
+
+    assert plan.best is not None
+    assert all(candidate.target_group == "black" for candidate in plan.candidates)

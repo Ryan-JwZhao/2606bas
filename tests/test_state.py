@@ -235,3 +235,14 @@ def test_turn_target_group_stays_black_after_both_object_groups_clear() -> None:
     )
 
     assert sm._turn_target_group == "black"
+
+
+def test_operator_can_set_turn_target_group_directly() -> None:
+    sm = MatchStateMachine(StateConfig())
+
+    sm.set_turn_target_group("stripe", frame_id=7, ts_cam_ns=9, reason="test")
+    out = sm.update(TracksFrame(frame_id=7, ts_cam_ns=9, tracks=[_ball(1, "cue", 100, 100)]))
+
+    assert sm.turn_target_group == "stripe"
+    assert out.turn_target_group == "stripe"
+    assert any(event.name == "OPERATOR_SET_TURN_TARGET_GROUP" for event in out.events)

@@ -124,6 +124,27 @@ class MatchStateMachine:
     def operator_hold(self) -> bool:
         return self._operator_hold
 
+    @property
+    def turn_target_group(self) -> Optional[str]:
+        return self._normalized_turn_target_group()
+
+    def set_turn_target_group(
+        self,
+        group: Optional[str],
+        *,
+        frame_id: int = 0,
+        ts_cam_ns: int = 0,
+        reason: str = "operator",
+    ) -> None:
+        normalized = str(group or "").strip().lower()
+        self._turn_target_group = normalized if normalized in {"solid", "stripe", "black"} else None
+        self._queue_operator_event(
+            "OPERATOR_SET_TURN_TARGET_GROUP",
+            frame_id=frame_id,
+            ts_cam_ns=ts_cam_ns,
+            payload={"group": self._turn_target_group, "reason": reason},
+        )
+
     def update(self, tracks_frame: TracksFrame) -> MatchStateFrame:
         tracks = tracks_frame.tracks
         self._last_layout = list(tracks)

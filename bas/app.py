@@ -14,6 +14,7 @@ from .geometry import TableGeometry
 from .geometry_runtime import RuntimeGeometryReloader
 from .learning import LearningSampleRecorder
 from .logging_config import configure_logging
+from .operator_controls import RuntimeControlState
 from .perception import DetectService, create_detector
 from .planning import GeometryPhysicsPlanner
 from .projection import OverlayBuilder
@@ -38,8 +39,14 @@ class PipelineOutput:
 
 
 class RuntimePipeline:
-    def __init__(self, config: AppConfig, star_formula: StarFormulaConfig | None = None):
+    def __init__(
+        self,
+        config: AppConfig,
+        star_formula: StarFormulaConfig | None = None,
+        control_state: RuntimeControlState | None = None,
+    ):
         self.config = config
+        self.control_state = control_state or RuntimeControlState()
         self.capture: CaptureService = create_capture_service(config.camera)
         self.calibration: CalibrationService = create_calibration_service(
             config.calibration,
@@ -109,7 +116,15 @@ class RuntimePipeline:
             ball_diameter_mm=self.calibration.table.ball_diameter_mm,
         )
         state = self.state_machine.update(tracks)
-        plan = self.planner.plan(state, frame_bgr=frame.image)
+        self.control_state.advance_from_events(state.events)
+        effective_shot_mode = self.control_state.effective_shot_mode(self.config.planner.shot_mode)
+        effective_turn_target_group = self.control_state.effective_turn_target_group(state.turn_target_group, effective_shot_mode)
+        plan = self.planner.plan(
+            state,
+            frame_bgr=frame.image,
+            forced_shot_mode=effective_shot_mode,
+            forced_turn_target_group=effective_turn_target_group,
+        )
         overlay = self.overlay_builder.from_plan(plan)
         self._last_state = state
         self._last_plan = plan

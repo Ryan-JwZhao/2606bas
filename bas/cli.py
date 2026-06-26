@@ -37,6 +37,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_smoke = sub.add_parser("smoke-run", help="Run synthetic pipeline for a fixed number of frames.")
     p_smoke.add_argument("--frames", type=int, default=90)
 
+    p_remote = sub.add_parser("remote-control", help="Queue a local command for the running desktop control console.")
+    p_remote.add_argument("action", help="Remote action name, for example: start-capture, toggle-shot-mode, free-shot-once.")
+
     args = parser.parse_args(argv)
     cfg = UserSettings.load().apply_to_config(AppConfig.load(args.config)).resolve_paths()
     prepare_runtime_environment()
@@ -145,5 +148,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         cfg.replay.enabled = True
         cfg.projection.enabled = False
         return run_headless(cfg, max_frames=args.frames)
+
+    if args.command == "remote-control":
+        from .remote_control import RemoteCommandQueue
+
+        path = RemoteCommandQueue().enqueue(args.action, source="cli")
+        print(str(path))
+        return 0
 
     return 0

@@ -39,10 +39,12 @@ from ..capture.nori_sdk import NoriProtocolController
 from ..geometry import TableGeometryLoader
 from ..logging_config import configure_logging
 from ..media_capture import FfmpegH264Recorder
+from ..operator_controls import RuntimeControlState, normalize_shot_mode, toggled_object_group
 from ..perception import create_detector
 from ..paths import PROJECT_ROOT
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
+from ..remote_control import RemoteCommand, RemoteCommandQueue
 from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
 from ..schemas import MatchPhase, OverlayLine, ProjectionOverlay, to_jsonable
 from ..utils import unit
@@ -87,15 +89,16 @@ class _PipelineStartWorker(QtCore.QObject):
     finished = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
 
-    def __init__(self, config: AppConfig, star_formula: StarFormulaConfig):
+    def __init__(self, config: AppConfig, star_formula: StarFormulaConfig, control_state: RuntimeControlState):
         super().__init__()
         self.config = config
         self.star_formula = star_formula
+        self.control_state = control_state
 
     @QtCore.pyqtSlot()
     def run(self) -> None:
         try:
-            pipeline = RuntimePipeline(self.config, star_formula=self.star_formula)
+            pipeline = RuntimePipeline(self.config, star_formula=self.star_formula, control_state=self.control_state)
         except Exception as exc:
             self.failed.emit(str(exc))
         else:
@@ -993,12 +996,19 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._raw_video_path: Optional[Path] = None
         self._route_video_path: Optional[Path] = None
         self._projection_debug_enabled = False
+        self.control_state = RuntimeControlState()
+        self._pending_turn_target_group: Optional[str] = None
+        self._remote_command_queue = RemoteCommandQueue()
 
         self.timer = QtCore.QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.setTimerType(QtCore.Qt.PreciseTimer)
         self.timer.timeout.connect(self._tick)
         self._frame_busy = False
+        self._remote_timer = QtCore.QTimer(self)
+        self._remote_timer.setInterval(180)
+        self._remote_timer.timeout.connect(self._process_remote_commands)
+        self._remote_timer.start()
 
         self.setWindowTitle("BAS Control Console")
         self.resize(self.BASE_WIDTH, self.BASE_HEIGHT)
@@ -1403,16 +1413,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot(int)
     def _shot_mode_changed(self, _index: int = 0) -> None:
-        mode = str(self.shot_mode_combo.currentData() or "rule")
-        self.config.planner.shot_mode = mode
-        if self.pipeline is not None:
-            self.pipeline.config.planner.shot_mode = mode
-            self.pipeline.planner.config.shot_mode = mode
-            self.pipeline._last_plan = None
-            self.pipeline._last_overlay = None
-        self._save_user_settings()
-        self._append_log(f"画线模式已切换为 {'自由模式' if mode == 'free' else '规则模式'}")
-        self._update_module_status(self.last_output)
+        self._set_base_shot_mode(str(self.shot_mode_combo.currentData() or "rule"), source="ui")
 
     @QtCore.pyqtSlot(bool)
     def _geometry_reference_toggled(self, checked: bool) -> None:
@@ -1459,6 +1460,158 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     def _save_user_settings(self) -> None:
         UserSettings.from_config(self.config, self.star_formula.to_dict()).save()
+
+    def _current_turn_target_group(self) -> Optional[str]:
+        if self.pipeline is not None:
+            return self.pipeline.state_machine.turn_target_group
+        return self._pending_turn_target_group
+
+    def _apply_pending_turn_target_group(self) -> None:
+        if self.pipeline is None or self._pending_turn_target_group is None:
+            return
+        frame_id, ts_cam_ns = self._last_frame_marker()
+        self.pipeline.state_machine.set_turn_target_group(
+            self._pending_turn_target_group,
+            frame_id=frame_id,
+            ts_cam_ns=ts_cam_ns,
+            reason="runtime_restore",
+        )
+
+    def _set_base_shot_mode(self, mode: str, *, source: str) -> None:
+        normalized = normalize_shot_mode(mode)
+        self.config.planner.shot_mode = normalized
+        self.control_state.clear_turn_overrides()
+        idx = self.shot_mode_combo.findData(normalized)
+        self.shot_mode_combo.blockSignals(True)
+        self.shot_mode_combo.setCurrentIndex(max(0, idx))
+        self.shot_mode_combo.blockSignals(False)
+        if self.pipeline is not None:
+            self.pipeline.config.planner.shot_mode = normalized
+            self.pipeline.planner.config.shot_mode = normalized
+        self._save_user_settings()
+        label = "自由模式" if normalized == "free" else "规则模式"
+        self._append_log(f"画线模式已切换为 {label} ({source})")
+        self._refresh_current_plan()
+        self._update_module_status(self.last_output)
+
+    def _set_star_formula_enabled(self, enabled: bool, *, source: str) -> None:
+        self.star_formula.enabled = bool(enabled)
+        if self.projection_window is not None:
+            self.projection_window.set_star_formula(self.star_formula)
+        self._save_user_settings()
+        self._refresh_projection()
+        self._append_log(f"颗星公式已{'开启' if self.star_formula.enabled else '关闭'} ({source})")
+
+    def _refresh_current_plan(self) -> None:
+        if self.pipeline is None or self.last_output is None:
+            self._refresh_projection()
+            return
+        effective_shot_mode = self.control_state.effective_shot_mode(self.config.planner.shot_mode)
+        effective_turn_target_group = self.control_state.effective_turn_target_group(
+            self.last_output.state.turn_target_group,
+            effective_shot_mode,
+        )
+        plan = self.pipeline.planner.plan(
+            self.last_output.state,
+            frame_bgr=self.last_output.frame.image,
+            forced_shot_mode=effective_shot_mode,
+            forced_turn_target_group=effective_turn_target_group,
+        )
+        overlay = self.pipeline.overlay_builder.from_plan(plan)
+        self.last_output = replace(self.last_output, plan=plan, overlay=overlay)
+        self.pipeline._last_state = self.last_output.state
+        self.pipeline._last_plan = plan
+        self.pipeline._last_overlay = overlay
+        self._update_plan(self.last_output)
+        self._update_preview(self.last_output)
+        self._refresh_projection()
+
+    def _toggle_turn_target_group(self, *, source: str) -> None:
+        next_group = toggled_object_group(self._current_turn_target_group())
+        self._pending_turn_target_group = next_group
+        if self.pipeline is not None:
+            frame_id, ts_cam_ns = self._last_frame_marker()
+            self.pipeline.state_machine.set_turn_target_group(
+                next_group,
+                frame_id=frame_id,
+                ts_cam_ns=ts_cam_ns,
+                reason=source,
+            )
+            self._refresh_current_plan()
+            self._update_module_status(self.last_output)
+            self._append_log(f"当前目标花色已切换为 {next_group} ({source})")
+            return
+        self._append_log(f"当前目标花色已预设为 {next_group}，开始采集后生效 ({source})")
+
+    def _arm_free_shot_once(self, *, source: str) -> None:
+        self.control_state.arm_free_shot()
+        self._refresh_current_plan()
+        self._update_module_status(self.last_output)
+        self._append_log(f"已启用单杆自由击球 ({source})")
+
+    def _arm_black_shot_once(self, *, source: str) -> None:
+        if normalize_shot_mode(self.config.planner.shot_mode) != "rule":
+            self._append_log(f"当前为自由模式，黑球单杆指令未生效 ({source})")
+            return
+        if self.control_state.free_shot_active:
+            self._append_log(f"当前单杆已被自由击球覆盖，黑球单杆指令未生效 ({source})")
+            return
+        self.control_state.arm_black_shot()
+        self._refresh_current_plan()
+        self._update_module_status(self.last_output)
+        self._append_log(f"已启用单杆黑球击打 ({source})")
+
+    def _process_remote_commands(self) -> None:
+        try:
+            commands = self._remote_command_queue.drain(limit=24)
+        except Exception as exc:
+            self._append_log(f"远程命令读取失败: {exc}")
+            return
+        for command in commands:
+            self._execute_remote_command(command)
+
+    def _execute_remote_command(self, command: RemoteCommand) -> None:
+        action = command.action
+        try:
+            if action == "start_capture":
+                if self.pipeline is None:
+                    self.start_pipeline()
+                else:
+                    self._append_log("远程命令: 采集已在运行")
+            elif action == "stop_capture":
+                if self.pipeline is not None:
+                    self.stop_pipeline()
+                else:
+                    self._append_log("远程命令: 采集当前未运行")
+            elif action == "toggle_capture":
+                self.toggle_capture()
+            elif action == "start_projection":
+                if self.projection_window is None:
+                    self.toggle_projection_window()
+                else:
+                    self._append_log("远程命令: 投影已在运行")
+            elif action == "stop_projection":
+                if self.projection_window is not None:
+                    self.toggle_projection_window()
+                else:
+                    self._append_log("远程命令: 投影当前未运行")
+            elif action == "toggle_projection":
+                self.toggle_projection_window()
+            elif action == "toggle_shot_mode":
+                next_mode = "free" if normalize_shot_mode(self.config.planner.shot_mode) == "rule" else "rule"
+                self._set_base_shot_mode(next_mode, source="remote")
+            elif action == "toggle_target_group":
+                self._toggle_turn_target_group(source="remote")
+            elif action == "free_shot_once":
+                self._arm_free_shot_once(source="remote")
+            elif action == "black_shot_once":
+                self._arm_black_shot_once(source="remote")
+            elif action == "toggle_star_formula":
+                self._set_star_formula_enabled(not bool(self.star_formula.enabled), source="remote")
+            else:
+                self._append_log(f"远程命令未识别: {action}")
+        except Exception as exc:
+            self._append_log(f"远程命令执行失败 {action}: {exc}")
 
     def _pipeline_restart_signature(self) -> tuple:
         return (
@@ -2173,7 +2326,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         state_detail = state_hold if out is None else f"{out.state.phase} / conf {out.state.confidence:.2f}"
         self._set_module_status("状态机", state_hold, state_detail)
         ranker_version = getattr(self.pipeline.planner.learning_ranker, "version", "learning_unknown")
-        mode_name = "free" if str(self.config.planner.shot_mode).lower() == "free" else "rule"
+        mode_name = self.control_state.effective_shot_mode(self.config.planner.shot_mode)
         if out is None:
             plan_detail = f"{mode_name} / {self.pipeline.planner.version} / {ranker_version}"
         elif out.plan.shot_mode == "free":
@@ -2294,7 +2447,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._append_log("启动采集中")
         self._set_starting(True)
         thread = QtCore.QThread(self)
-        worker = _PipelineStartWorker(self.config, self.star_formula)
+        worker = _PipelineStartWorker(self.config, self.star_formula, self.control_state)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.finished.connect(self._pipeline_started)
@@ -2311,6 +2464,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot(object)
     def _pipeline_started(self, pipeline: RuntimePipeline) -> None:
         self.pipeline = pipeline
+        self._apply_pending_turn_target_group()
         self.last_output = None
         self.frame_count = 0
         self.started_at = time.perf_counter()
@@ -2341,6 +2495,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._frame_busy = False
         self._stop_all_media_recordings()
         if self.pipeline is not None:
+            self._pending_turn_target_group = self.pipeline.state_machine.turn_target_group
             try:
                 self.pipeline.close()
             finally:
@@ -2509,6 +2664,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 self.stop_pipeline()
                 return
             self.last_output = out
+            self._pending_turn_target_group = self.pipeline.state_machine.turn_target_group
             self.frame_count += 1
             now = time.perf_counter()
             self._record_media_frames(out)

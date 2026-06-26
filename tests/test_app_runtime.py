@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from bas.app import RuntimePipeline
+from bas.operator_controls import RuntimeControlState
 from bas.schemas import DetectionsFrame, FramePacket, MatchStateFrame, ProjectionOverlay, ShotPlan, TracksFrame
 
 
@@ -41,7 +42,7 @@ class _StateMachine:
 
 
 class _Planner:
-    def plan(self, state, frame_bgr=None):
+    def plan(self, state, frame_bgr=None, forced_shot_mode=None, forced_turn_target_group=None):
         return ShotPlan(plan_id=f"plan_{state.frame_id}", frame_id=state.frame_id, ts_cam_ns=state.ts_cam_ns)
 
 
@@ -52,7 +53,7 @@ class _OverlayBuilder:
 
 def test_runtime_pipeline_updates_state_on_cached_detection_frames() -> None:
     pipeline = RuntimePipeline.__new__(RuntimePipeline)
-    pipeline.config = SimpleNamespace(calibration=SimpleNamespace())
+    pipeline.config = SimpleNamespace(calibration=SimpleNamespace(), planner=SimpleNamespace(shot_mode="rule"))
     pipeline.capture = _Capture(
         [
             FramePacket(frame_id=1, ts_cam_ns=1, camera_id="cam", image=np.zeros((4, 4, 3), dtype=np.uint8)),
@@ -71,6 +72,7 @@ def test_runtime_pipeline_updates_state_on_cached_detection_frames() -> None:
     pipeline.state_machine = _StateMachine()
     pipeline.planner = _Planner()
     pipeline.overlay_builder = _OverlayBuilder()
+    pipeline.control_state = RuntimeControlState()
     pipeline.recorder = None
     pipeline.learning_recorder = None
     pipeline._last_tracks = None
