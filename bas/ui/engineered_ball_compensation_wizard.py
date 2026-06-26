@@ -25,6 +25,11 @@ from ..table_boundaries import EdgeInsets
 
 TIMESTAMPED_BALL_COMPENSATION_FILE_RE = re.compile(r"^(?P<base>.*?)(?:_\d{8}_\d{6})?$")
 DEFAULT_BALL_COMPENSATION_OUTPUT_DIR = PROJECT_ROOT / "local_settings" / "calibrations"
+ENGINEERED_SAMPLING_COLS = 6
+ENGINEERED_SAMPLING_ROWS = 5
+ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS = 3.0
+ENGINEERED_SAMPLE_TIMEOUT_SECONDS = 28.0
+ENGINEERED_CENTER_PLAYABLE_SAFE_INSET_MM = 6.0
 
 
 class _SamplingAborted(RuntimeError):
@@ -292,16 +297,30 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 self._append_log("已根据 inline/pocket 几何刷新球心可达区，采样点将只落在 center playable 内圈。")
             else:
                 self._append_log("未能从 inline/pocket 几何刷新球心可达区，将回退到矩形安全采样区。")
+            using_center_playable = bool(calibration.table.center_playable_polygon_mm)
             sample_polygon = np.asarray(
                 calibration.table.center_playable_polygon_mm or calibration.table.inner_polygon_mm,
                 dtype=np.float32,
             ).reshape((-1, 2))
+            edge_safe_inset_mm = (
+                ENGINEERED_CENTER_PLAYABLE_SAFE_INSET_MM
+                if using_center_playable
+                else 0.5 * float(calibration.table.ball_diameter_mm)
+            )
             sample_points = build_engineered_ball_sampling_grid(
                 calibration.table.width_mm,
                 calibration.table.height_mm,
                 calibration.table.ball_diameter_mm,
+                cols=ENGINEERED_SAMPLING_COLS,
+                rows=ENGINEERED_SAMPLING_ROWS,
                 preferred_polygon_mm=sample_polygon,
-                extra_safe_inset_mm=0.5 * float(calibration.table.ball_diameter_mm),
+                extra_safe_inset_mm=edge_safe_inset_mm,
+            )
+            self._append_log(
+                "sampling_region="
+                f"{'center_playable' if using_center_playable else 'inner_polygon_fallback'}, "
+                f"grid={ENGINEERED_SAMPLING_COLS}x{ENGINEERED_SAMPLING_ROWS}, "
+                f"edge_safe_inset={edge_safe_inset_mm:.1f}mm"
             )
             self._append_log(f"已生成 {len(sample_points)} 个工程采样点，请按投影目标圈移动单颗球。")
 
@@ -360,6 +379,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     "ball_diameter_mm": float(calibration.table.ball_diameter_mm),
                     "projection_mode": "engineered",
                     "projection_file": calibration.projection.source_path,
+                    "settle_delay_seconds": float(ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS),
                     "samples": [sample.to_dict() for sample in self._samples],
                     "sampling_grid_table_mm": np.asarray(sample_points, dtype=np.float64).reshape((-1, 2)).tolist(),
                 },
@@ -462,9 +482,10 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         target_proj: np.ndarray,
         expected_cam: np.ndarray,
     ) -> Optional[BallCompensationSample]:
-        deadline = time.perf_counter() + 16.0
+        deadline = time.perf_counter() + ENGINEERED_SAMPLE_TIMEOUT_SECONDS
         history: list[tuple[np.ndarray, float, float]] = []
         detection_mask = None
+        settle_started_at: float | None = None
         while time.perf_counter() < deadline:
             if self._abort_requested:
                 raise _SamplingAborted()
@@ -480,6 +501,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             candidate, candidate_count, distance_px = _pick_ball_candidate(detections, expected_cam)
             if candidate is None:
                 history.clear()
+                settle_started_at = None
                 self.summary.setText(
                     f"第 {sample_index + 1}/{total_count} 个点等待中：未检测到接近目标圈的球。"
                 )
@@ -493,6 +515,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             conf = float(candidate.conf)
             if history and np.linalg.norm(center - history[-1][0]) > max(32.0, radius * 1.6):
                 history.clear()
+                settle_started_at = None
             history.append((center, radius, conf))
             history = history[-5:]
             stable = _stable_measurement(history)
@@ -502,6 +525,19 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             self._set_preview_image(_annotate_preview(frame, expected_cam, candidate, candidate_count, distance_px))
             self._pump_ui()
             if stable is None:
+                settle_started_at = None
+                time.sleep(0.03)
+                continue
+
+            if settle_started_at is None:
+                settle_started_at = time.perf_counter()
+            remaining_s = ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS - (time.perf_counter() - settle_started_at)
+            if remaining_s > 0.0:
+                self.summary.setText(
+                    f"第 {sample_index + 1}/{total_count} 个点正在进行 3 秒稳定倒计时，"
+                    f"剩余 {remaining_s:.1f}s，当前距离 {distance_px:.1f}px。"
+                )
+                self._pump_ui()
                 time.sleep(0.03)
                 continue
 

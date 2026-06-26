@@ -69,6 +69,37 @@ def test_build_engineered_ball_sampling_grid_stays_inside_center_playable_polygo
     assert float(np.max(grid[:, 1])) < 430.0
 
 
+def test_build_engineered_ball_sampling_grid_adds_corner_and_edge_coverage() -> None:
+    polygon = np.asarray(
+        [
+            [0.0, 0.0],
+            [1000.0, 0.0],
+            [1000.0, 500.0],
+            [0.0, 500.0],
+        ],
+        dtype=np.float32,
+    )
+    grid = build_engineered_ball_sampling_grid(
+        1000.0,
+        500.0,
+        57.15,
+        cols=6,
+        rows=5,
+        preferred_polygon_mm=polygon,
+        extra_safe_inset_mm=6.0,
+    )
+
+    assert grid.shape == (30, 2)
+    assert np.sum(grid[:, 1] <= 24.0) >= 3
+    assert np.sum(grid[:, 1] >= 476.0) >= 3
+    assert np.sum(grid[:, 0] <= 24.0) >= 3
+    assert np.sum(grid[:, 0] >= 976.0) >= 3
+    assert np.any((grid[:, 0] <= 24.0) & (grid[:, 1] <= 24.0))
+    assert np.any((grid[:, 0] >= 976.0) & (grid[:, 1] <= 24.0))
+    assert np.any((grid[:, 0] <= 24.0) & (grid[:, 1] >= 476.0))
+    assert np.any((grid[:, 0] >= 976.0) & (grid[:, 1] >= 476.0))
+
+
 def test_update_calibration_table_boundaries_from_geometry_frame_refreshes_center_polygon() -> None:
     projection = ProjectionCalibration.fit_from_correspondences(
         np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),

@@ -60,6 +60,18 @@ def build_engineered_ball_sampling_grid(
         safe_polygon = inset_polygon_uniform(polygon, safe_inset, width, height) if safe_inset > 1e-6 else polygon
         polygon_grid = _sampling_grid_inside_polygon(safe_polygon, target_count=target_count, cols=cols, rows=rows)
         if polygon_grid.shape[0] >= 4:
+            edge_target_count = min(max(8, int(round(target_count * 0.4))), max(0, target_count - 4))
+            edge_points = _polygon_edge_priority_points(safe_polygon, target_count=edge_target_count)
+            if edge_points.shape[0] > 0:
+                merged = _merge_sampling_sets(
+                    edge_points,
+                    polygon_grid,
+                    target_count=target_count,
+                    min_spacing=_estimated_sampling_spacing(safe_polygon, cols=cols, rows=rows),
+                )
+                if merged.shape[0] >= 4:
+                    order = np.lexsort((merged[:, 0], merged[:, 1]))
+                    return merged[order].reshape((-1, 2))
             return polygon_grid
 
     margin_x = min(width * 0.16, max(135.0, diameter * 2.4))
@@ -222,6 +234,100 @@ def _sampling_grid_inside_polygon(
     return selected[order].reshape((-1, 2))
 
 
+def _polygon_edge_priority_points(polygon_mm: np.ndarray, *, target_count: int) -> np.ndarray:
+    poly = np.asarray(polygon_mm, dtype=np.float32).reshape((-1, 2))
+    if poly.shape[0] < 3 or target_count <= 0:
+        return np.zeros((0, 2), dtype=np.float64)
+    vertices = _unique_points(poly.astype(np.float64))
+    if vertices.shape[0] >= target_count:
+        return vertices[:target_count].reshape((-1, 2))
+    perimeter_candidates = _sample_polygon_perimeter(poly, sample_count=max(target_count * 3, poly.shape[0] * 2))
+    perimeter_points = _select_spaced_points(
+        perimeter_candidates,
+        min(max(target_count * 2, vertices.shape[0]), perimeter_candidates.shape[0]),
+    )
+    merged = _merge_sampling_sets(
+        vertices,
+        perimeter_points,
+        target_count=target_count,
+        min_spacing=max(2.0, 0.55 * _estimated_sampling_spacing(poly, cols=max(2, target_count // 2), rows=2)),
+    )
+    return merged if merged.shape[0] > 0 else vertices.reshape((-1, 2))
+
+
+def _sample_polygon_perimeter(polygon_mm: np.ndarray, *, sample_count: int) -> np.ndarray:
+    poly = np.asarray(polygon_mm, dtype=np.float64).reshape((-1, 2))
+    if poly.shape[0] < 2 or sample_count <= 0:
+        return np.zeros((0, 2), dtype=np.float64)
+    closed = np.vstack([poly, poly[0:1]])
+    segments = closed[1:] - closed[:-1]
+    lengths = np.linalg.norm(segments, axis=1)
+    perimeter = float(np.sum(lengths))
+    if perimeter <= 1e-6:
+        return poly.copy()
+    cumulative = np.concatenate([[0.0], np.cumsum(lengths)])
+    positions = np.linspace(0.0, perimeter, int(sample_count), endpoint=False, dtype=np.float64)
+    sampled: list[list[float]] = []
+    for position in positions:
+        edge_idx = int(np.searchsorted(cumulative, position, side="right") - 1)
+        edge_idx = max(0, min(edge_idx, len(lengths) - 1))
+        seg_len = float(lengths[edge_idx])
+        t = 0.0 if seg_len <= 1e-6 else float((position - cumulative[edge_idx]) / seg_len)
+        point = closed[edge_idx] + t * segments[edge_idx]
+        sampled.append([float(point[0]), float(point[1])])
+    return np.asarray(sampled, dtype=np.float64).reshape((-1, 2))
+
+
+def _estimated_sampling_spacing(polygon_mm: np.ndarray, *, cols: int, rows: int) -> float:
+    poly = np.asarray(polygon_mm, dtype=np.float64).reshape((-1, 2))
+    if poly.shape[0] < 2:
+        return 0.0
+    spans = np.ptp(poly, axis=0)
+    step_x = float(spans[0]) / max(1, int(cols) - 1)
+    step_y = float(spans[1]) / max(1, int(rows) - 1)
+    return max(8.0, 0.42 * min(step_x, step_y))
+
+
+def _merge_sampling_sets(
+    primary: np.ndarray,
+    secondary: np.ndarray,
+    *,
+    target_count: int,
+    min_spacing: float,
+) -> np.ndarray:
+    pri = np.asarray(primary, dtype=np.float64).reshape((-1, 2))
+    sec = np.asarray(secondary, dtype=np.float64).reshape((-1, 2))
+    target = max(1, int(target_count))
+    for spacing in (max(0.0, float(min_spacing)), max(0.0, float(min_spacing) * 0.55), 0.0):
+        selected: list[list[float]] = []
+        _append_points_with_spacing(selected, pri, target_count=target, min_spacing=spacing)
+        _append_points_with_spacing(selected, sec, target_count=target, min_spacing=spacing)
+        if len(selected) >= target or spacing <= 0.0:
+            return np.asarray(selected[:target], dtype=np.float64).reshape((-1, 2))
+    return np.zeros((0, 2), dtype=np.float64)
+
+
+def _append_points_with_spacing(
+    selected: list[list[float]],
+    points: np.ndarray,
+    *,
+    target_count: int,
+    min_spacing: float,
+) -> None:
+    pts = np.asarray(points, dtype=np.float64).reshape((-1, 2))
+    for point in pts:
+        if len(selected) >= target_count:
+            return
+        if not selected:
+            selected.append([float(point[0]), float(point[1])])
+            continue
+        picked = np.asarray(selected, dtype=np.float64).reshape((-1, 2))
+        distances = np.linalg.norm(picked - point.reshape((1, 2)), axis=1)
+        if float(np.min(distances)) < max(1e-6, float(min_spacing)):
+            continue
+        selected.append([float(point[0]), float(point[1])])
+
+
 def _select_spread_points(points: np.ndarray, boundary_scores: np.ndarray, target_count: int) -> np.ndarray:
     pts = np.asarray(points, dtype=np.float64).reshape((-1, 2))
     scores = np.asarray(boundary_scores, dtype=np.float64).reshape((-1,))
@@ -244,6 +350,38 @@ def _select_spread_points(points: np.ndarray, boundary_scores: np.ndarray, targe
         selected_indices.append(next_idx)
         remaining[next_idx] = False
     return pts[np.asarray(selected_indices, dtype=np.int32)].reshape((-1, 2))
+
+
+def _select_spaced_points(points: np.ndarray, target_count: int) -> np.ndarray:
+    pts = _unique_points(np.asarray(points, dtype=np.float64).reshape((-1, 2)))
+    if pts.shape[0] <= target_count:
+        return pts
+    centroid = np.mean(pts, axis=0)
+    radial = np.linalg.norm(pts - centroid.reshape((1, 2)), axis=1)
+    first_idx = int(np.argmax(radial))
+    selected_indices = [first_idx]
+    remaining = np.ones((pts.shape[0],), dtype=bool)
+    remaining[first_idx] = False
+    while len(selected_indices) < target_count and bool(np.any(remaining)):
+        remain_pts = pts[remaining]
+        remain_radial = radial[remaining]
+        picked_pts = pts[np.asarray(selected_indices, dtype=np.int32)]
+        spacing = np.min(np.linalg.norm(remain_pts[:, None, :] - picked_pts[None, :, :], axis=2), axis=1)
+        combined = spacing + 0.08 * remain_radial
+        remain_indices = np.flatnonzero(remaining)
+        next_idx = int(remain_indices[int(np.argmax(combined))])
+        selected_indices.append(next_idx)
+        remaining[next_idx] = False
+    return pts[np.asarray(selected_indices, dtype=np.int32)].reshape((-1, 2))
+
+
+def _unique_points(points: np.ndarray) -> np.ndarray:
+    pts = np.asarray(points, dtype=np.float64).reshape((-1, 2))
+    if pts.shape[0] <= 1:
+        return pts
+    rounded = np.round(pts, decimals=4)
+    _, indices = np.unique(rounded, axis=0, return_index=True)
+    return pts[np.sort(indices)].reshape((-1, 2))
 
 
 def _points_to_tuples(points: np.ndarray) -> list[tuple[float, float]]:
