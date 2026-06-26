@@ -37,7 +37,19 @@ python -m bas.cli remote-control black-shot-once
 python -m bas.cli remote-control toggle-star-formula
 ```
 
-3. 如果你想直接调用批处理，也可以用仓库里的通用脚本：
+3. 如果 Stream Deck 适合直接绑定固定 `.cmd` 文件，可以使用下面这些独立脚本：
+
+```powershell
+scripts\BAS_SD_Start_Capture.cmd
+scripts\BAS_SD_Start_Projection.cmd
+scripts\BAS_SD_Toggle_Target_Group.cmd
+scripts\BAS_SD_Toggle_Shot_Mode.cmd
+scripts\BAS_SD_Free_Shot_Once.cmd
+scripts\BAS_SD_Black_Shot_Once.cmd
+scripts\BAS_SD_Toggle_Star_Formula.cmd
+```
+
+4. 如果你之后还想扩展额外动作，仍然可以继续使用通用脚本：
 
 ```powershell
 scripts\BAS_StreamDeck_Command.cmd start-capture
