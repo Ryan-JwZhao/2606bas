@@ -102,3 +102,15 @@ def test_learning_sample_recorder_writes_training_rows(tmp_path) -> None:
     assert data.features.shape[0] == 1
     assert data.pot.tolist() == [1.0]
     assert data.rank.tolist() == [1.0]
+
+
+def test_learning_sample_recorder_does_not_create_empty_session_file(tmp_path) -> None:
+    recorder = LearningSampleRecorder(LearningConfig(collect_enabled=True, samples_directory=str(tmp_path)))
+
+    assert not recorder.path.exists()
+    assert not recorder.session_dir.exists()
+
+    recorder.close()
+
+    assert not recorder.path.exists()
+    assert not recorder.session_dir.exists()

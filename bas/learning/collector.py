@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, TextIO
 
 from ..config import LearningConfig
 from ..schemas import Event, MatchStateFrame, ShotPlan, to_jsonable
@@ -29,9 +29,8 @@ class LearningSampleRecorder:
         self.config = config
         self.session_id = f"learning_{wall_time_id()}"
         self.session_dir = Path(config.samples_directory) / self.session_id
-        self.session_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.session_dir / "shot_samples.jsonl"
-        self._jsonl = self.path.open("a", encoding="utf-8")
+        self._jsonl: Optional[TextIO] = None
         self._last_reference_state: Optional[MatchStateFrame] = None
         self._last_reference_plan: Optional[ShotPlan] = None
         self._active: Optional[_ActiveShot] = None
@@ -54,7 +53,9 @@ class LearningSampleRecorder:
             self._finalize(state)
 
     def close(self) -> None:
-        self._jsonl.close()
+        if self._jsonl is not None:
+            self._jsonl.close()
+            self._jsonl = None
 
     def _start(self, state: MatchStateFrame, plan: ShotPlan) -> None:
         pre_state = self._last_reference_state or state
@@ -89,12 +90,19 @@ class LearningSampleRecorder:
             "end_state": to_jsonable(end_state),
             "labels": labels,
         }
-        self._jsonl.write(json.dumps(sample, ensure_ascii=False) + "\n")
-        self._jsonl.flush()
+        writer = self._ensure_writer()
+        writer.write(json.dumps(sample, ensure_ascii=False) + "\n")
+        writer.flush()
         self.sample_count += 1
         self._active = None
         self._last_reference_state = end_state
         self._last_reference_plan = None
+
+    def _ensure_writer(self) -> TextIO:
+        if self._jsonl is None:
+            self.session_dir.mkdir(parents=True, exist_ok=True)
+            self._jsonl = self.path.open("a", encoding="utf-8")
+        return self._jsonl
 
     def _labels(self, plan: ShotPlan, events: Iterable[Event]) -> dict[str, Any]:
         potted: list[dict[str, Any]] = []

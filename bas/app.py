@@ -101,22 +101,19 @@ class RuntimePipeline:
             self._last_tracks = tracks
         track_ms = (time.perf_counter() - stage_start) * 1000.0
         stage_start = time.perf_counter()
-        if cached and self._last_state is not None and self._last_plan is not None and self._last_overlay is not None:
-            state = replace(self._last_state, frame_id=frame.frame_id, ts_cam_ns=frame.ts_cam_ns, events=[])
-            plan = replace(self._last_plan, frame_id=frame.frame_id, ts_cam_ns=frame.ts_cam_ns)
-            overlay = replace(self._last_overlay, frame_id=frame.frame_id)
-        else:
-            self.state_machine.set_table_context(
-                inner_polygon_mm=self.calibration.table.inner_polygon_mm,
-                pockets_mm=self.calibration.table.pockets_mm,
-                ball_diameter_mm=self.calibration.table.ball_diameter_mm,
-            )
-            state = self.state_machine.update(tracks)
-            plan = self.planner.plan(state, frame_bgr=frame.image)
-            overlay = self.overlay_builder.from_plan(plan)
-            self._last_state = state
-            self._last_plan = plan
-            self._last_overlay = overlay
+        # Cached detections still need fresh state transitions so sample collection
+        # and turn resolution are not throttled down to detector refresh cadence.
+        self.state_machine.set_table_context(
+            inner_polygon_mm=self.calibration.table.inner_polygon_mm,
+            pockets_mm=self.calibration.table.pockets_mm,
+            ball_diameter_mm=self.calibration.table.ball_diameter_mm,
+        )
+        state = self.state_machine.update(tracks)
+        plan = self.planner.plan(state, frame_bgr=frame.image)
+        overlay = self.overlay_builder.from_plan(plan)
+        self._last_state = state
+        self._last_plan = plan
+        self._last_overlay = overlay
         state_plan_overlay_ms = (time.perf_counter() - stage_start) * 1000.0
         out = PipelineOutput(frame=frame, detections=detections, tracks=tracks, state=state, plan=plan, overlay=overlay)
         stage_start = time.perf_counter()
