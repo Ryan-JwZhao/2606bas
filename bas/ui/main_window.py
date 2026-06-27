@@ -91,26 +91,6 @@ def timestamped_projection_output_path(path_value: Optional[str]) -> Path:
     return DEFAULT_PROJECTION_OUTPUT_DIR / f"{safe_stem}_{stamp}{suffix}"
 
 
-class _PipelineStartWorker(QtCore.QObject):
-    finished = QtCore.pyqtSignal(object)
-    failed = QtCore.pyqtSignal(str)
-
-    def __init__(self, config: AppConfig, star_formula: StarFormulaConfig, control_state: RuntimeControlState):
-        super().__init__()
-        self.config = config
-        self.star_formula = star_formula
-        self.control_state = control_state
-
-    @QtCore.pyqtSlot()
-    def run(self) -> None:
-        try:
-            pipeline = RuntimePipeline(self.config, star_formula=self.star_formula, control_state=self.control_state)
-        except Exception as exc:
-            self.failed.emit(str(exc))
-        else:
-            self.finished.emit(pipeline)
-
-
 class SettingsDialog(QtWidgets.QDialog):
     def __init__(self, config: AppConfig, star_formula: StarFormulaConfig, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
@@ -1096,8 +1076,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.user_settings = UserSettings.load()
         self.star_formula = StarFormulaConfig.from_mapping(self.user_settings.star_formula)
         self.pipeline: Optional[RuntimePipeline] = None
-        self._pipeline_start_thread: Optional[QtCore.QThread] = None
-        self._pipeline_start_worker: Optional[_PipelineStartWorker] = None
+        self._pipeline_start_pending = False
         self.projection_window: Optional[ProjectionWindow] = None
         self.last_output: Optional[PipelineOutput] = None
         self._last_preview_bgr: Optional[np.ndarray] = None
@@ -2842,30 +2821,26 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.stop_pipeline()
 
     def start_pipeline(self) -> None:
-        if self._pipeline_start_thread is not None:
+        if self._pipeline_start_pending:
             self._append_log("采集正在启动中")
             return
         self._sync_config_from_controls()
         self._save_user_settings()
         self._append_log("启动采集中")
         self._set_starting(True)
-        thread = QtCore.QThread(self)
-        worker = _PipelineStartWorker(self.config, self.star_formula, self.control_state)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(self._pipeline_started)
-        worker.failed.connect(self._pipeline_failed)
-        worker.finished.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(self._clear_pipeline_start_worker)
-        self._pipeline_start_thread = thread
-        self._pipeline_start_worker = worker
-        thread.start()
+        self._pipeline_start_pending = True
+        QtWidgets.QApplication.processEvents(QtCore.QEventLoop.ExcludeUserInputEvents)
+        try:
+            pipeline = RuntimePipeline(self.config, star_formula=self.star_formula, control_state=self.control_state)
+        except Exception as exc:
+            LOGGER.exception("Failed to start runtime pipeline.")
+            self._pipeline_failed(str(exc))
+        else:
+            self._pipeline_started(pipeline)
 
     @QtCore.pyqtSlot(object)
     def _pipeline_started(self, pipeline: RuntimePipeline) -> None:
+        self._pipeline_start_pending = False
         self.pipeline = pipeline
         self._refresh_recording_frame_corrector()
         self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
@@ -2887,15 +2862,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot(str)
     def _pipeline_failed(self, message: str) -> None:
+        self._pipeline_start_pending = False
         self.pipeline = None
         self._set_running(False)
         self._append_log(f"启动失败: {message}")
         QtWidgets.QMessageBox.critical(self, "启动失败", message)
-
-    @QtCore.pyqtSlot()
-    def _clear_pipeline_start_worker(self) -> None:
-        self._pipeline_start_thread = None
-        self._pipeline_start_worker = None
 
     def stop_pipeline(self) -> None:
         self.timer.stop()
@@ -2944,7 +2915,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self._append_log("运行参数已变化，正在重启采集以应用设置")
             self.stop_pipeline()
             self.start_pipeline()
-        elif self._pipeline_start_thread is not None and pipeline_changed:
+        elif self._pipeline_start_pending and pipeline_changed:
             self._append_log("运行参数已变化，将在本次启动完成后下次采集生效")
 
     @QtCore.pyqtSlot()
@@ -3096,11 +3067,28 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 self._last_heavy_ui_update_ts = now
             self._log_performance_periodically(now)
             self._refresh_projection()
+        except Exception as exc:
+            self._handle_runtime_failure(exc)
         finally:
             self._frame_busy = False
             if self.pipeline is not None:
                 elapsed_ms = (time.perf_counter() - tick_start) * 1000.0
                 self.timer.start(self._capture_timer_interval_ms(elapsed_ms=elapsed_ms))
+
+    def _handle_runtime_failure(self, exc: Exception) -> None:
+        LOGGER.exception("Runtime pipeline tick failed.")
+        message = str(exc).strip() or exc.__class__.__name__
+        self._append_log(f"运行异常: {message}")
+        try:
+            self.stop_pipeline()
+        except Exception:
+            LOGGER.exception("Failed to stop pipeline cleanly after a runtime error.")
+            self.timer.stop()
+            self.pipeline = None
+            self._frame_busy = False
+            self._set_running(False)
+            self._update_module_status()
+        QtWidgets.QMessageBox.critical(self, "运行异常", message)
 
     def _update_preview(self, out: PipelineOutput) -> None:
         frame = out.frame.image
