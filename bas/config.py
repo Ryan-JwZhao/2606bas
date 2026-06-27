@@ -148,6 +148,14 @@ class PlannerConfig:
     object_path_margin_mm: float = 4.0
     collision_padding_mm: float = 2.0
     free_max_collisions: int = 2
+    route_freeze_enabled: bool = False
+    route_freeze_enter_frames: int = 2
+    route_freeze_release_frames: int = 8
+    route_freeze_same_route_refresh_mm: float = 12.0
+    route_freeze_same_route_refresh_score_delta: float = 0.08
+    route_freeze_switch_confirm_frames: int = 3
+    route_freeze_switch_min_distance_mm: float = 28.0
+    route_freeze_switch_min_score_delta: float = 0.18
 
 
 @dataclass

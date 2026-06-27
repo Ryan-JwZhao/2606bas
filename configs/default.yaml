@@ -85,6 +85,14 @@ planner:
   object_path_margin_mm: 3.0
   collision_padding_mm: 2.0
   free_max_collisions: 2
+  route_freeze_enabled: false
+  route_freeze_enter_frames: 2
+  route_freeze_release_frames: 8
+  route_freeze_same_route_refresh_mm: 12.0
+  route_freeze_same_route_refresh_score_delta: 0.08
+  route_freeze_switch_confirm_frames: 3
+  route_freeze_switch_min_distance_mm: 28.0
+  route_freeze_switch_min_score_delta: 0.18
 
 learning:
   ranker_enabled: true

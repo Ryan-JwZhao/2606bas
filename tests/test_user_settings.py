@@ -172,3 +172,35 @@ def test_user_settings_applies_projection_mode_and_mode_specific_paths(tmp_path)
     assert cfg.calibration.engineered_plane_projection_file == "C:/engineered_plane.json"
     assert cfg.calibration.engineered_ball_compensation_file == "C:/engineered_ball.json"
     assert cfg.calibration.projection_file == "C:/engineered_plane.json"
+
+
+def test_user_settings_applies_route_freeze_parameters(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "planner_route_freeze_enabled": True,
+                "planner_route_freeze_enter_frames": 3,
+                "planner_route_freeze_release_frames": 9,
+                "planner_route_freeze_same_route_refresh_mm": 14.0,
+                "planner_route_freeze_same_route_refresh_score_delta": 0.11,
+                "planner_route_freeze_switch_confirm_frames": 4,
+                "planner_route_freeze_switch_min_distance_mm": 36.0,
+                "planner_route_freeze_switch_min_score_delta": 0.27,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig()
+
+    UserSettings.load(path).apply_to_config(cfg)
+
+    assert cfg.planner.route_freeze_enabled is True
+    assert cfg.planner.route_freeze_enter_frames == 3
+    assert cfg.planner.route_freeze_release_frames == 9
+    assert cfg.planner.route_freeze_same_route_refresh_mm == 14.0
+    assert cfg.planner.route_freeze_same_route_refresh_score_delta == 0.11
+    assert cfg.planner.route_freeze_switch_confirm_frames == 4
+    assert cfg.planner.route_freeze_switch_min_distance_mm == 36.0
+    assert cfg.planner.route_freeze_switch_min_score_delta == 0.27

@@ -46,6 +46,7 @@ from ..projection.overlay import projection_route_stroke_style
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
 from ..remote_control import RemoteCommand, RemoteCommandQueue
+from ..route_freeze import MotionRouteFreezeController
 from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
 from ..schemas import MatchPhase, OverlayCircle, OverlayLine, ProjectionOverlay, to_jsonable
 from ..utils import unit
@@ -237,6 +238,50 @@ class SettingsDialog(QtWidgets.QDialog):
         proj_size.addWidget(self.proj_w)
         proj_size.addWidget(QtWidgets.QLabel("x"))
         proj_size.addWidget(self.proj_h)
+        self.route_freeze_enabled = QtWidgets.QCheckBox("运动时冻结路线")
+        self.route_freeze_enabled.setChecked(bool(config.planner.route_freeze_enabled))
+        self.route_freeze_enter_frames = self._spin(int(config.planner.route_freeze_enter_frames), 1, 30)
+        self.route_freeze_release_frames = self._spin(int(config.planner.route_freeze_release_frames), 1, 90)
+        self.route_freeze_same_route_refresh_mm = self._dspin(float(config.planner.route_freeze_same_route_refresh_mm), 0.0, 120.0, 1.0)
+        self.route_freeze_same_route_refresh_score_delta = self._dspin(
+            float(config.planner.route_freeze_same_route_refresh_score_delta),
+            0.0,
+            2.0,
+            0.01,
+            decimals=2,
+        )
+        self.route_freeze_switch_confirm_frames = self._spin(int(config.planner.route_freeze_switch_confirm_frames), 1, 30)
+        self.route_freeze_switch_min_distance_mm = self._dspin(float(config.planner.route_freeze_switch_min_distance_mm), 0.0, 240.0, 1.0)
+        self.route_freeze_switch_min_score_delta = self._dspin(
+            float(config.planner.route_freeze_switch_min_score_delta),
+            0.0,
+            2.0,
+            0.01,
+            decimals=2,
+        )
+        route_freeze_box = QtWidgets.QGroupBox("路线防闪烁")
+        route_freeze_grid = QtWidgets.QGridLayout(route_freeze_box)
+        route_freeze_grid.addWidget(self.route_freeze_enabled, 0, 0, 1, 4)
+        self._grid_pair(route_freeze_grid, 1, "进入冻结连续帧", self.route_freeze_enter_frames, "解冻连续稳定帧", self.route_freeze_release_frames)
+        self._grid_pair(
+            route_freeze_grid,
+            2,
+            "同路线刷新位移(mm)",
+            self.route_freeze_same_route_refresh_mm,
+            "同路线刷新分差",
+            self.route_freeze_same_route_refresh_score_delta,
+        )
+        self._grid_pair(
+            route_freeze_grid,
+            3,
+            "切换确认连续帧",
+            self.route_freeze_switch_confirm_frames,
+            "切换最小位移(mm)",
+            self.route_freeze_switch_min_distance_mm,
+        )
+        route_freeze_grid.addWidget(QtWidgets.QLabel("切换最小分差"), 4, 0)
+        route_freeze_grid.addWidget(self.route_freeze_switch_min_score_delta, 4, 1)
+        route_freeze_grid.addWidget(QtWidgets.QLabel("建议先从进入冻结 2、解冻 8、同路线 12mm、切换确认 3 开始调。"), 4, 2, 1, 2)
         form.addRow("台球模型路径", self.model_path)
         form.addRow("类别文件路径", self.class_file_path)
         form.addRow("学习排序模型", learning_ranker_box)
@@ -258,6 +303,7 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("工程球体补偿文件", self.engineered_ball_compensation_file)
         form.addRow("默认投影设备", self.proj_screen)
         form.addRow("默认投影分辨率", proj_size)
+        form.addRow("路线防闪烁", route_freeze_box)
         tabs.addTab(general, "基础")
 
         tuning = QtWidgets.QWidget()
@@ -431,6 +477,14 @@ class SettingsDialog(QtWidgets.QDialog):
         config.projection.screen_index = int(self.proj_screen.currentData() or 0)
         config.projection.projector_width = int(self.proj_w.value())
         config.projection.projector_height = int(self.proj_h.value())
+        config.planner.route_freeze_enabled = self.route_freeze_enabled.isChecked()
+        config.planner.route_freeze_enter_frames = int(self.route_freeze_enter_frames.value())
+        config.planner.route_freeze_release_frames = int(self.route_freeze_release_frames.value())
+        config.planner.route_freeze_same_route_refresh_mm = float(self.route_freeze_same_route_refresh_mm.value())
+        config.planner.route_freeze_same_route_refresh_score_delta = float(self.route_freeze_same_route_refresh_score_delta.value())
+        config.planner.route_freeze_switch_confirm_frames = int(self.route_freeze_switch_confirm_frames.value())
+        config.planner.route_freeze_switch_min_distance_mm = float(self.route_freeze_switch_min_distance_mm.value())
+        config.planner.route_freeze_switch_min_score_delta = float(self.route_freeze_switch_min_score_delta.value())
         self._apply_projection_tuning_to_config(config)
 
     def _apply_projection_tuning_to_config(self, config: AppConfig) -> None:
@@ -574,11 +628,11 @@ class SettingsDialog(QtWidgets.QDialog):
         if path:
             edit.setText(path)
 
-    def _dspin(self, value: float, lo: float, hi: float, step: float) -> QtWidgets.QDoubleSpinBox:
+    def _dspin(self, value: float, lo: float, hi: float, step: float, *, decimals: int = 1) -> QtWidgets.QDoubleSpinBox:
         spin = QtWidgets.QDoubleSpinBox()
         spin.setRange(lo, hi)
         spin.setSingleStep(step)
-        spin.setDecimals(1)
+        spin.setDecimals(int(max(0, decimals)))
         spin.setValue(float(value))
         return spin
 
@@ -1061,6 +1115,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._route_video_path: Optional[Path] = None
         self._projection_debug_enabled = False
         self.control_state = RuntimeControlState()
+        self._route_freeze = MotionRouteFreezeController(self.config.planner)
         self._pending_turn_target_group: Optional[str] = None
         self._remote_command_queue = RemoteCommandQueue()
 
@@ -1510,7 +1565,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 self.pipeline._update_table_geometry_for_frame(self.last_output.frame)
                 plan = self.pipeline.planner.plan(self.last_output.state, frame_bgr=self.last_output.frame.image)
                 overlay = self.pipeline.overlay_builder.from_plan(plan)
-                self.last_output = replace(self.last_output, plan=plan, overlay=overlay)
+                self.last_output = self._apply_route_display_filters(
+                    replace(self.last_output, plan=plan, overlay=overlay),
+                    force_raw=True,
+                )
                 self.pipeline._last_state = self.last_output.state
                 self.pipeline._last_plan = plan
                 self.pipeline._last_overlay = overlay
@@ -1582,13 +1640,25 @@ class OperatorWindow(QtWidgets.QMainWindow):
             forced_turn_target_group=effective_turn_target_group,
         )
         overlay = self.pipeline.overlay_builder.from_plan(plan)
-        self.last_output = replace(self.last_output, plan=plan, overlay=overlay)
+        self.last_output = self._apply_route_display_filters(
+            replace(self.last_output, plan=plan, overlay=overlay),
+            force_raw=True,
+        )
         self.pipeline._last_state = self.last_output.state
         self.pipeline._last_plan = plan
         self.pipeline._last_overlay = overlay
         self._update_plan(self.last_output)
         self._update_preview(self.last_output)
         self._refresh_projection()
+
+    def _apply_route_display_filters(self, out: PipelineOutput, *, force_raw: bool = False) -> PipelineOutput:
+        if force_raw:
+            decision = self._route_freeze.force(out.state, out.plan, out.overlay)
+        else:
+            decision = self._route_freeze.update(out.state, out.plan, out.overlay)
+        if decision.plan is out.plan and decision.overlay is out.overlay:
+            return out
+        return replace(out, plan=decision.plan, overlay=decision.overlay)
 
     def _toggle_turn_target_group(self, *, source: str) -> None:
         next_group = toggled_object_group(self._current_turn_target_group())
@@ -2407,6 +2477,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
             plan_detail = f"free / {collision_count} collisions / {out.plan.free_status}"
         else:
             plan_detail = f"rule / {len(out.plan.candidates)} candidates / {ranker_version}"
+        if self.config.planner.route_freeze_enabled:
+            plan_detail += f" / freeze {self._route_freeze.last_status_text}"
         self._set_module_status("规划", "运行中" if self.config.planner.enabled else "关闭", plan_detail)
         if self.pipeline.recorder is not None:
             self._set_module_status("回放", "记录中", self.pipeline.recorder.session_id)
@@ -2542,6 +2614,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot(object)
     def _pipeline_started(self, pipeline: RuntimePipeline) -> None:
         self.pipeline = pipeline
+        self._route_freeze.reset()
         self._apply_pending_turn_target_group()
         self.last_output = None
         self.frame_count = 0
@@ -2572,6 +2645,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.timer.stop()
         self._frame_busy = False
         self._stop_all_media_recordings()
+        self._route_freeze.reset()
         if self.pipeline is not None:
             self._pending_turn_target_group = self.pipeline.state_machine.turn_target_group
             try:
@@ -2590,6 +2664,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
         dialog.apply_to_config(self.config)
+        self._route_freeze.reset()
         self.star_formula = dialog.star_formula_config()
         self._sync_controls_from_config()
         self._save_user_settings()
@@ -2741,6 +2816,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             if out is None:
                 self.stop_pipeline()
                 return
+            out = self._apply_route_display_filters(out)
             self.last_output = out
             self._pending_turn_target_group = self.pipeline.state_machine.turn_target_group
             self.frame_count += 1

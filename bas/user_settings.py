@@ -66,6 +66,14 @@ class UserSettings:
     ui_geometry_reference_enabled: Optional[bool] = None
     replay_enabled: Optional[bool] = None
     shot_mode: Optional[str] = None
+    planner_route_freeze_enabled: Optional[bool] = None
+    planner_route_freeze_enter_frames: Optional[int] = None
+    planner_route_freeze_release_frames: Optional[int] = None
+    planner_route_freeze_same_route_refresh_mm: Optional[float] = None
+    planner_route_freeze_same_route_refresh_score_delta: Optional[float] = None
+    planner_route_freeze_switch_confirm_frames: Optional[int] = None
+    planner_route_freeze_switch_min_distance_mm: Optional[float] = None
+    planner_route_freeze_switch_min_score_delta: Optional[float] = None
     learning_ranker_enabled: Optional[bool] = None
     learning_ranker_model_path: Optional[str] = None
     learning_score_blend: Optional[float] = None
@@ -219,6 +227,25 @@ class UserSettings:
         if self._has("shot_mode") and self.shot_mode:
             mode = str(self.shot_mode).strip().lower()
             config.planner.shot_mode = "free" if mode in {"free", "free_shot"} else "rule"
+        if self.planner_route_freeze_enabled is not None:
+            config.planner.route_freeze_enabled = bool(self.planner_route_freeze_enabled)
+        if self.planner_route_freeze_enter_frames is not None:
+            config.planner.route_freeze_enter_frames = max(1, int(self.planner_route_freeze_enter_frames))
+        if self.planner_route_freeze_release_frames is not None:
+            config.planner.route_freeze_release_frames = max(1, int(self.planner_route_freeze_release_frames))
+        if self.planner_route_freeze_same_route_refresh_mm is not None:
+            config.planner.route_freeze_same_route_refresh_mm = max(0.0, float(self.planner_route_freeze_same_route_refresh_mm))
+        if self.planner_route_freeze_same_route_refresh_score_delta is not None:
+            config.planner.route_freeze_same_route_refresh_score_delta = max(
+                0.0,
+                float(self.planner_route_freeze_same_route_refresh_score_delta),
+            )
+        if self.planner_route_freeze_switch_confirm_frames is not None:
+            config.planner.route_freeze_switch_confirm_frames = max(1, int(self.planner_route_freeze_switch_confirm_frames))
+        if self.planner_route_freeze_switch_min_distance_mm is not None:
+            config.planner.route_freeze_switch_min_distance_mm = max(0.0, float(self.planner_route_freeze_switch_min_distance_mm))
+        if self.planner_route_freeze_switch_min_score_delta is not None:
+            config.planner.route_freeze_switch_min_score_delta = max(0.0, float(self.planner_route_freeze_switch_min_score_delta))
         if self.learning_ranker_enabled is not None:
             config.learning.ranker_enabled = bool(self.learning_ranker_enabled)
         if self._has("learning_ranker_model_path"):
@@ -290,6 +317,14 @@ class UserSettings:
             ui_geometry_reference_enabled=config.projection.geometry_reference_enabled,
             replay_enabled=config.replay.enabled,
             shot_mode=config.planner.shot_mode,
+            planner_route_freeze_enabled=config.planner.route_freeze_enabled,
+            planner_route_freeze_enter_frames=config.planner.route_freeze_enter_frames,
+            planner_route_freeze_release_frames=config.planner.route_freeze_release_frames,
+            planner_route_freeze_same_route_refresh_mm=config.planner.route_freeze_same_route_refresh_mm,
+            planner_route_freeze_same_route_refresh_score_delta=config.planner.route_freeze_same_route_refresh_score_delta,
+            planner_route_freeze_switch_confirm_frames=config.planner.route_freeze_switch_confirm_frames,
+            planner_route_freeze_switch_min_distance_mm=config.planner.route_freeze_switch_min_distance_mm,
+            planner_route_freeze_switch_min_score_delta=config.planner.route_freeze_switch_min_score_delta,
             learning_ranker_enabled=config.learning.ranker_enabled,
             learning_ranker_model_path=config.learning.ranker_model_path,
             learning_score_blend=config.learning.score_blend,
