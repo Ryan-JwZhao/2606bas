@@ -47,6 +47,7 @@ class MatchStateMachine:
         self._table_inner_polygon_mm: List[tuple[float, float]] = []
         self._pockets_mm: List[tuple[float, float]] = []
         self._ball_diameter_mm = 57.15
+        self._last_debug_snapshot: Dict[str, object] = {}
 
     def reset(self) -> None:
         self.phase = MatchPhase.STABLE_IDLE
@@ -65,6 +66,7 @@ class MatchStateMachine:
         self._operator_lock_frames = 0
         self._pending_operator_events.clear()
         self._event_cooldowns.clear()
+        self._last_debug_snapshot = {}
 
     def set_table_context(
         self,
@@ -128,6 +130,16 @@ class MatchStateMachine:
     def turn_target_group(self) -> Optional[str]:
         return self._normalized_turn_target_group()
 
+    def debug_snapshot(self) -> Dict[str, object]:
+        snapshot = dict(self._last_debug_snapshot)
+        snapshot["signals"] = dict(snapshot.get("signals", {}))
+        snapshot["counters"] = dict(snapshot.get("counters", {}))
+        snapshot["cooldowns"] = dict(snapshot.get("cooldowns", {}))
+        snapshot["visible_group_counts"] = dict(snapshot.get("visible_group_counts", {}))
+        snapshot["visible_track_ids"] = list(snapshot.get("visible_track_ids", []))
+        snapshot["potted_ids"] = list(snapshot.get("potted_ids", []))
+        return snapshot
+
     def set_turn_target_group(
         self,
         group: Optional[str],
@@ -154,7 +166,7 @@ class MatchStateMachine:
             for event in events:
                 self._recent_events.append(event)
             layout = self._snapshot_layout if self._snapshot_layout else tracks
-            return MatchStateFrame(
+            state = MatchStateFrame(
                 frame_id=tracks_frame.frame_id,
                 ts_cam_ns=tracks_frame.ts_cam_ns,
                 phase=self.phase.value,
@@ -164,13 +176,28 @@ class MatchStateMachine:
                 confidence=0.70,
                 state_version=f"{self.version}+operator_hold",
             )
+            self._last_debug_snapshot = self._build_debug_snapshot(
+                tracks_frame,
+                state,
+                signals={
+                    "moving": False,
+                    "stable": False,
+                    "anomaly": False,
+                    "cue_stick_seen": False,
+                    "cue_motion": False,
+                    "shot_start_voted": False,
+                    "operator_hold_short_circuit": True,
+                    "operator_override_short_circuit": False,
+                },
+            )
+            return state
 
         if self._operator_lock_frames > 0:
             self._operator_lock_frames -= 1
             self._update_memory(tracks_frame)
             for event in events:
                 self._recent_events.append(event)
-            return MatchStateFrame(
+            state = MatchStateFrame(
                 frame_id=tracks_frame.frame_id,
                 ts_cam_ns=tracks_frame.ts_cam_ns,
                 phase=self.phase.value,
@@ -180,6 +207,21 @@ class MatchStateMachine:
                 confidence=0.85,
                 state_version=f"{self.version}+operator_override",
             )
+            self._last_debug_snapshot = self._build_debug_snapshot(
+                tracks_frame,
+                state,
+                signals={
+                    "moving": False,
+                    "stable": False,
+                    "anomaly": False,
+                    "cue_stick_seen": False,
+                    "cue_motion": False,
+                    "shot_start_voted": False,
+                    "operator_hold_short_circuit": False,
+                    "operator_override_short_circuit": True,
+                },
+            )
+            return state
 
         moving = self._is_moving(tracks)
         stable = self._is_stable(tracks)
@@ -259,7 +301,7 @@ class MatchStateMachine:
             confidence = 0.35
         elif anomaly:
             confidence = 0.65
-        return MatchStateFrame(
+        state = MatchStateFrame(
             frame_id=tracks_frame.frame_id,
             ts_cam_ns=tracks_frame.ts_cam_ns,
             phase=self.phase.value,
@@ -269,6 +311,21 @@ class MatchStateMachine:
             confidence=float(confidence),
             state_version=self.version,
         )
+        self._last_debug_snapshot = self._build_debug_snapshot(
+            tracks_frame,
+            state,
+            signals={
+                "moving": bool(moving),
+                "stable": bool(stable),
+                "anomaly": bool(anomaly),
+                "cue_stick_seen": bool(cue_stick_seen),
+                "cue_motion": bool(cue_motion),
+                "shot_start_voted": bool(shot_start_voted),
+                "operator_hold_short_circuit": False,
+                "operator_override_short_circuit": False,
+            },
+        )
+        return state
 
     def _transition(self, phase: MatchPhase, frame: TracksFrame, events: List[Event], name: str) -> None:
         if self.phase == phase and name not in {"ANOMALY"}:
@@ -688,3 +745,49 @@ class MatchStateMachine:
             self._event_cooldowns[key] -= 1
             if self._event_cooldowns[key] <= 0:
                 del self._event_cooldowns[key]
+
+    def _build_debug_snapshot(
+        self,
+        tracks_frame: TracksFrame,
+        state: MatchStateFrame,
+        *,
+        signals: Dict[str, bool],
+    ) -> Dict[str, object]:
+        visible_tracks = [
+            track
+            for track in tracks_frame.tracks
+            if track.visibility == "visible" and track.quality > 0.25
+        ]
+        return {
+            "frame_id": int(tracks_frame.frame_id),
+            "ts_cam_ns": int(tracks_frame.ts_cam_ns),
+            "phase": str(state.phase),
+            "state_version": str(state.state_version),
+            "operator_hold": bool(self._operator_hold),
+            "turn_target_group": self._normalized_turn_target_group(),
+            "signals": {key: bool(value) for key, value in signals.items()},
+            "counters": {
+                "stable_count": int(self._stable_count),
+                "moving_count": int(self._moving_count),
+                "armed_count": int(self._armed_count),
+                "settle_count": int(self._settle_count),
+                "anomaly_count": int(self._anomaly_count),
+                "operator_lock_frames": int(self._operator_lock_frames),
+                "snapshot_layout_tracks": int(len(self._snapshot_layout)),
+            },
+            "cooldowns": {str(key): int(value) for key, value in sorted(self._event_cooldowns.items())},
+            "potted_ids": sorted(int(track_id) for track_id in self._potted_ids),
+            "visible_group_counts": self._debug_visible_group_counts(visible_tracks),
+            "visible_track_ids": [int(track.track_id) for track in visible_tracks],
+        }
+
+    @staticmethod
+    def _debug_visible_group_counts(tracks: List[TrackObservation]) -> Dict[str, int]:
+        counts = {"cue": 0, "solid": 0, "stripe": 0, "black": 0, "cue_stick": 0, "other": 0}
+        for track in tracks:
+            group = str(track.group).strip().lower()
+            if group in counts:
+                counts[group] += 1
+            else:
+                counts["other"] += 1
+        return counts

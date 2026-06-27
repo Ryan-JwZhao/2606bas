@@ -51,6 +51,7 @@ from ..remote_control import RemoteCommand, RemoteCommandQueue
 from ..route_freeze import MotionRouteFreezeController
 from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
 from ..schemas import MatchPhase, OverlayCircle, OverlayLine, ProjectionOverlay, to_jsonable
+from ..state_debug import StateDebugSession, StateDebugSessionResult
 from ..utils import unit
 from .engineered_ball_compensation_wizard import EngineeredBallCompensationWizardDialog
 from .geometry_reference import draw_geometry_reference_lines
@@ -1115,6 +1116,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._route_video_recorder: Optional[FfmpegH264Recorder] = None
         self._raw_video_path: Optional[Path] = None
         self._route_video_path: Optional[Path] = None
+        self._deep_debug_session: Optional[StateDebugSession] = None
+        self._deep_debug_started_raw_video = False
+        self._deep_debug_started_route_video = False
+        self._deep_debug_last_result: Optional[StateDebugSessionResult] = None
         self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
         self._instant_replay_start_failed = False
         self._projection_debug_enabled = False
@@ -1277,15 +1282,22 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.manual_phase_combo.addItems([phase.value for phase in MatchPhase])
         self.force_phase_btn = self._button("强制状态")
         self.hold_state_btn = self._button("冻结状态机")
+        self.deep_debug_btn = self._button("开始深入调试")
         self.snapshot_state_btn = self._button("确认当前布局稳定")
         self.reset_state_btn = self._button("重置状态机")
         self.clear_review_btn = self._button("清除复核标记")
         self.force_phase_btn.clicked.connect(self.force_state_phase)
         self.hold_state_btn.clicked.connect(self.toggle_state_hold)
+        self.deep_debug_btn.clicked.connect(self.toggle_deep_debug_mode)
         self.snapshot_state_btn.clicked.connect(self.snapshot_stable_layout)
         self.reset_state_btn.clicked.connect(self.reset_state_machine)
         self.clear_review_btn.clicked.connect(self.clear_state_review_flags)
-        self.right_layout.addWidget(self._field("目标状态", self.manual_phase_combo))
+        state_target_box = QtWidgets.QWidget()
+        state_target_layout = QtWidgets.QVBoxLayout(state_target_box)
+        state_target_layout.setContentsMargins(0, 0, 0, 0)
+        state_target_layout.addWidget(self.manual_phase_combo)
+        state_target_layout.addWidget(self.deep_debug_btn)
+        self.right_layout.addWidget(self._field("目标状态", state_target_box))
         manual_grid = QtWidgets.QGridLayout()
         for idx, button in enumerate([self.force_phase_btn, self.hold_state_btn, self.snapshot_state_btn, self.reset_state_btn, self.clear_review_btn]):
             manual_grid.addWidget(button, idx // 2, idx % 2)
@@ -2015,6 +2027,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot()
     def toggle_raw_video_recording(self) -> None:
+        if self._deep_debug_session is not None:
+            self._append_log("深入调试进行中，请先停止深入调试，再单独切换无画线视频")
+            return
         if self._raw_video_recorder is None:
             self._start_video_recording(route=False)
         else:
@@ -2022,19 +2037,29 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot()
     def toggle_route_video_recording(self) -> None:
+        if self._deep_debug_session is not None:
+            self._append_log("深入调试进行中，请先停止深入调试，再单独切换进洞路线视频")
+            return
         if self._route_video_recorder is None:
             self._start_video_recording(route=True)
         else:
             self._stop_video_recording(route=True)
 
-    def _start_video_recording(self, *, route: bool) -> None:
+    @QtCore.pyqtSlot()
+    def toggle_deep_debug_mode(self) -> None:
+        if self._deep_debug_session is None:
+            self._start_deep_debug_mode()
+        else:
+            self._stop_deep_debug_mode(reason="ui")
+
+    def _start_video_recording(self, *, route: bool) -> bool:
         if self.pipeline is None:
             self._append_log("请先开始采集再录制视频")
-            return
+            return False
         frame = self._current_recording_frame()
         if frame is None:
             self._append_log(self._recording_frame_error())
-            return
+            return False
         h, w = frame.shape[:2]
         prefix = "pocket_route_video" if route else "no_line_video"
         path = self._capture_output_dir() / f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
@@ -2049,10 +2074,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
             )
         except FileNotFoundError:
             self._append_log("启动录制失败: 未找到 ffmpeg，请确认 ffmpeg 在 PATH 中")
-            return
+            return False
         except Exception as exc:
             self._append_log(f"启动录制失败: {exc}")
-            return
+            return False
         if route:
             self._route_video_recorder = recorder
             self._route_video_path = path
@@ -2066,6 +2091,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.raw_video_btn.setText("停止无画线视频")
             self._append_log(f"无画线视频开始录制: {path} ({record_fps:.1f}fps, H.264 6000kbps)")
         self._update_module_status(self.last_output)
+        self._update_deep_debug_controls(running=self.pipeline is not None)
+        return True
 
     def _stop_video_recording(self, *, route: bool) -> None:
         recorder = self._route_video_recorder if route else self._raw_video_recorder
@@ -2081,15 +2108,18 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if route:
             self._route_video_recorder = None
             self.route_video_btn.setText("开始进洞路线视频")
+            self._route_video_path = None
         else:
             self._raw_video_recorder = None
             self.raw_video_btn.setText("开始无画线视频")
+            self._raw_video_path = None
         label = "进洞路线画线视频" if route else "无画线视频"
         if code == 0:
             self._append_log(f"{label}已保存: {path} ({frames} 帧, H.264 6000kbps)")
         else:
             self._append_log(f"{label}保存可能不完整: ffmpeg code={code}, path={path}")
         self._update_module_status(self.last_output)
+        self._update_deep_debug_controls(running=self.pipeline is not None)
 
     def _stop_all_media_recordings(self) -> None:
         if self._raw_video_recorder is not None:
@@ -2101,6 +2131,100 @@ class OperatorWindow(QtWidgets.QMainWindow):
         path = Path("local_settings") / "captures"
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _deep_debug_output_dir(self) -> Path:
+        path = Path("local_settings") / "deep_debug"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _start_deep_debug_mode(self) -> None:
+        if self.pipeline is None or self.last_output is None:
+            self._append_log("请先开始采集，再开启深入调试")
+            return
+        raw_owned = False
+        route_owned = False
+        if self._raw_video_recorder is None:
+            raw_owned = self._start_video_recording(route=False)
+            if not raw_owned:
+                return
+        if self._route_video_recorder is None:
+            route_owned = self._start_video_recording(route=True)
+            if not route_owned:
+                if raw_owned and self._raw_video_recorder is not None:
+                    self._stop_video_recording(route=False)
+                return
+        self._deep_debug_session = StateDebugSession(
+            self._deep_debug_output_dir(),
+            capture_fps=self._recording_fps(),
+            raw_video_path=self._raw_video_path,
+            route_video_path=self._route_video_path,
+        )
+        self._deep_debug_started_raw_video = raw_owned
+        self._deep_debug_started_route_video = route_owned
+        self._deep_debug_last_result = None
+        self._append_log(f"深入调试已开启: {self._deep_debug_session.session_dir}")
+        if not raw_owned or not route_owned:
+            reused = []
+            if not raw_owned and self._raw_video_recorder is not None:
+                reused.append("无画线视频")
+            if not route_owned and self._route_video_recorder is not None:
+                reused.append("进洞路线视频")
+            if reused:
+                self._append_log(f"深入调试复用了已在录制的内容: {', '.join(reused)}")
+        self._update_module_status(self.last_output)
+        self._update_deep_debug_controls(running=True)
+
+    def _stop_deep_debug_mode(self, *, reason: str) -> None:
+        session = self._deep_debug_session
+        if session is None:
+            return
+        raw_video_path = self._raw_video_path
+        route_video_path = self._route_video_path
+        if self._deep_debug_started_raw_video and self._raw_video_recorder is not None:
+            self._stop_video_recording(route=False)
+        if self._deep_debug_started_route_video and self._route_video_recorder is not None:
+            self._stop_video_recording(route=True)
+        result = session.close(
+            raw_video_path=raw_video_path,
+            route_video_path=route_video_path,
+            status="completed" if reason == "ui" else reason,
+        )
+        self._deep_debug_last_result = result
+        self._deep_debug_session = None
+        self._deep_debug_started_raw_video = False
+        self._deep_debug_started_route_video = False
+        self._append_log(
+            "深入调试已停止: "
+            f"{result.session_dir} "
+            f"(jsonl={result.jsonl_path.name}, srt={result.srt_path.name}, frames={result.frame_count})"
+        )
+        self._update_module_status(self.last_output)
+        self._update_deep_debug_controls(running=self.pipeline is not None)
+
+    def _record_deep_debug_frame(self, *, raw_out: PipelineOutput, display_out: PipelineOutput) -> None:
+        if self._deep_debug_session is None or self.pipeline is None:
+            return
+        try:
+            self._deep_debug_session.record_frame(
+                frame=display_out.frame,
+                detections=raw_out.detections,
+                tracks=raw_out.tracks,
+                state=raw_out.state,
+                raw_plan=raw_out.plan,
+                display_plan=display_out.plan,
+                state_debug=self.pipeline.state_machine.debug_snapshot(),
+                route_status_text=self._route_freeze.last_status_text,
+            )
+        except Exception as exc:
+            self._append_log(f"深入调试写入失败，已自动停止: {exc}")
+            self._stop_deep_debug_mode(reason="write_error")
+
+    def _update_deep_debug_controls(self, *, running: bool) -> None:
+        active = self._deep_debug_session is not None
+        self.deep_debug_btn.setEnabled(bool(running))
+        self.deep_debug_btn.setText("停止深入调试" if active else "开始深入调试")
+        self.raw_video_btn.setEnabled(bool(running) and not active)
+        self.route_video_btn.setEnabled(bool(running) and not active)
 
     def _current_raw_frame(self) -> Optional[np.ndarray]:
         if self.last_output is None:
@@ -2425,6 +2549,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 "no_line_video": str(self._raw_video_path) if self._raw_video_recorder is not None and self._raw_video_path is not None else None,
                 "route_line_video": str(self._route_video_path) if self._route_video_recorder is not None and self._route_video_path is not None else None,
             },
+            "deep_debug": {
+                "active": bool(self._deep_debug_session is not None),
+                "session_dir": str(self._deep_debug_session.session_dir) if self._deep_debug_session is not None else None,
+                "last_session_dir": str(self._deep_debug_last_result.session_dir) if self._deep_debug_last_result is not None else None,
+            },
         }
 
     def _module_status_payload(self) -> list[dict[str, str]]:
@@ -2548,7 +2677,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self._set_module_status("采集", "离线", self.config.camera.backend)
             self._set_module_status("检测", "待机", self.config.detector.backend)
             self._set_module_status("跟踪", "待机", "TemporalTracker")
-            self._set_module_status("状态机", "待机", "自动")
+            idle_state_detail = "自动"
+            if self._deep_debug_last_result is not None:
+                idle_state_detail += f" / debug {self._deep_debug_last_result.session_dir.name}"
+            self._set_module_status("状态机", "待机", idle_state_detail)
             self._set_module_status("规划", "待机", "GeometryPhysics")
             self._set_module_status("标定", "未加载", self.config.calibration.active_projection_file() or "未设置")
             self.hold_state_btn.setText("冻结状态机")
@@ -2577,6 +2709,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._set_module_status("跟踪", "运行中", track_detail)
         state_hold = "冻结" if self.pipeline.state_machine.operator_hold else "自动"
         state_detail = state_hold if out is None else f"{out.state.phase} / conf {out.state.confidence:.2f}"
+        if self._deep_debug_session is not None:
+            state_detail += f" / debug {self._deep_debug_session.session_dir.name}"
+        elif self._deep_debug_last_result is not None:
+            state_detail += f" / last {self._deep_debug_last_result.session_dir.name}"
         self._set_module_status("状态机", state_hold, state_detail)
         ranker_version = getattr(self.pipeline.planner.learning_ranker, "version", "learning_unknown")
         mode_name = self.control_state.effective_shot_mode(self.config.planner.shot_mode)
@@ -2600,6 +2736,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
             parts.append(f"无画线 {self._raw_video_recorder.frames_written}帧")
         if self._route_video_recorder is not None:
             parts.append(f"路线 {self._route_video_recorder.frames_written}帧")
+        if self._deep_debug_session is not None:
+            parts.append(f"深调 {self._deep_debug_session.session_dir.name}")
         if self.config.instant_replay.enabled:
             detail = self._instant_replay.status_detail()
             if self._instant_replay_start_failed:
@@ -2762,6 +2900,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def stop_pipeline(self) -> None:
         self.timer.stop()
         self._frame_busy = False
+        self._stop_deep_debug_mode(reason="pipeline_stop")
         self._stop_instant_replay()
         self._instant_replay_start_failed = False
         self._stop_all_media_recordings()
@@ -2933,16 +3072,17 @@ class OperatorWindow(QtWidgets.QMainWindow):
             return
         self._frame_busy = True
         try:
-            out = self.pipeline.step()
-            if out is None:
+            raw_out = self.pipeline.step()
+            if raw_out is None:
                 self.stop_pipeline()
                 return
-            out = self._apply_route_display_filters(out)
+            out = self._apply_route_display_filters(raw_out)
             self.last_output = out
             self._pending_turn_target_group = self.pipeline.state_machine.turn_target_group
             self.frame_count += 1
             now = time.perf_counter()
             self._record_media_frames(out)
+            self._record_deep_debug_frame(raw_out=raw_out, display_out=out)
             if now - self._last_preview_update_ts >= 1.0 / max(1.0, self._preview_fps_limit):
                 self._update_preview(out)
                 self._last_preview_update_ts = now
@@ -3065,12 +3205,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.replay_check.setEnabled(not running)
         self.raw_photo_btn.setEnabled(running)
         self.instant_replay_export_btn.setEnabled(running and bool(self.config.instant_replay.enabled))
-        self.raw_video_btn.setEnabled(running)
-        self.route_video_btn.setEnabled(running)
         if not running:
             self.raw_video_btn.setText("开始无画线视频")
             self.route_video_btn.setText("开始进洞路线视频")
         self.status_label.setText("运行中" if running else "离线")
+        self._update_deep_debug_controls(running=running)
 
     def _set_starting(self, starting: bool) -> None:
         if not starting:
@@ -3089,6 +3228,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.instant_replay_export_btn.setEnabled(False)
         self.raw_video_btn.setEnabled(False)
         self.route_video_btn.setEnabled(False)
+        self.deep_debug_btn.setEnabled(False)
         self.status_label.setText("启动中")
 
     def _capture_timer_interval_ms(self, *, elapsed_ms: float = 0.0) -> int:

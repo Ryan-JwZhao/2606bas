@@ -1,5 +1,31 @@
 
 # BAS 本地说明
+## 2026-06-27 深入调试模式
+- 右侧“状态机人工介入 -> 目标状态（STABLE_IDLE 所在框）”里新增“开始深入调试”按钮。
+- 开启后会自动联动三件事：
+  - 开始无画线视频；
+  - 开始进洞路线视频；
+  - 开始逐帧抓取状态机排查信息。
+- 逐帧抓取内容包含：
+  - 当前 phase、状态机 confidence；
+  - 每帧事件列表与关键 payload；
+  - 候选路线、best candidate、显示中的路线信息；
+  - 状态机内部计数与判定信号（`stable/moving/armed/settle/anomaly`、`cue_stick_seen`、`cue_motion`、`shot_start_voted` 等）。
+- 停止深入调试后，会在 `local_settings/deep_debug/state_debug_时间戳/` 下导出：
+  - `state_machine_frames.jsonl`：完整逐帧原始数据；
+  - `state_machine_timeline.srt`：可直接和视频画面对时的字幕时间轴；
+  - `session_summary.json`：本次调试摘要、事件计数、产物路径。
+
+### 使用方式
+1. 正常开始采集。
+2. 在右侧 `STABLE_IDLE` 所在的“目标状态”区域点击“开始深入调试”。
+3. 打一杆或复现场景。
+4. 再次点击“停止深入调试”。
+5. 到 `local_settings/deep_debug/` 查看本次会话目录，并将 `state_machine_timeline.srt` 与同批次视频一起对照。
+
+### 说明
+- 深入调试模式开启时，会锁住单独的“无画线视频 / 进洞路线视频”按钮，避免录制状态被手工打断。
+- 新产物全部落在 `local_settings/` 下，默认不会进入 Git。
 
 ## 2026-06-27 前 60 秒纯净视频回放
 - 新增“1 秒分段的 H.264 环形缓存 + 一键导出前 60 秒纯净视频”能力，缓存默认持续保留最近 `120` 秒原始相机画面，超过窗口后自动淘汰旧分段。
