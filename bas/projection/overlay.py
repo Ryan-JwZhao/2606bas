@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import cv2
@@ -9,12 +10,25 @@ import numpy as np
 from ..calibration.service import CalibrationService
 from ..config import ProjectionConfig
 from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
-from ..schemas import FreeRouteSuggestion, OverlayLine, ProjectionOverlay, ShotCandidate, ShotPlan
+from ..schemas import FreeRouteSuggestion, OverlayCircle, OverlayLine, ProjectionOverlay, ShotCandidate, ShotPlan
 from ..utils import unit, wall_time_id
-from .star_formula import StarFormulaConfig, draw_star_formula
+from .star_formula import StarFormulaConfig, draw_star_formula, star_formula_stroke_metrics
 
 ROUTE_COLOR = (255, 255, 255)
 CUE_STICK_COLOR = ROUTE_COLOR
+
+
+@dataclass(frozen=True)
+class RouteStrokeStyle:
+    line_width: int
+    circle_width: int
+
+
+def projection_route_stroke_style(projector_size: Tuple[int, int], star_formula: StarFormulaConfig | None = None) -> RouteStrokeStyle:
+    width, height = [max(1, int(v)) for v in projector_size]
+    metrics = star_formula_stroke_metrics(width, height, star_formula or StarFormulaConfig())
+    stroke_width = max(1, int(metrics.line_thickness))
+    return RouteStrokeStyle(line_width=stroke_width, circle_width=stroke_width)
 
 
 class OverlayBuilder:
@@ -40,6 +54,7 @@ class OverlayBuilder:
         return overlay
 
     def _add_rule_route(self, overlay: ProjectionOverlay, candidate: ShotCandidate) -> None:
+        style = projection_route_stroke_style(overlay.projector_size, self.star_formula)
         ball_radius = 0.5 * float(self.calibration.table.ball_diameter_mm)
         cue = np.asarray(candidate.cue_ball, dtype=np.float32)
         ghost = np.asarray(candidate.ghost_ball, dtype=np.float32)
@@ -57,12 +72,12 @@ class OverlayBuilder:
             table_height_mm=float(table.height_mm),
         )
         if float(np.linalg.norm(guide_start - cue)) >= 1.0:
-            self._append_line_mm(overlay, [guide_start, cue], width=3, trim_end_mm=ball_radius, label="cue_guide")
-        self._append_line_mm(overlay, [cue, ghost], width=4, trim_start_mm=ball_radius, trim_end_mm=ball_radius, label="aim")
+            self._append_line_mm(overlay, [guide_start, cue], width=style.line_width, trim_end_mm=ball_radius, label="cue_guide")
+        self._append_line_mm(overlay, [cue, ghost], width=style.line_width, trim_start_mm=ball_radius, trim_end_mm=ball_radius, label="aim")
         self._append_line_mm(
             overlay,
             [target, pocket],
-            width=3,
+            width=style.line_width,
             style="dashed",
             trim_start_mm=ball_radius,
             label="object",
@@ -78,7 +93,7 @@ class OverlayBuilder:
             self._append_line_mm(
                 overlay,
                 [ghost, cue_sep_end],
-                width=3,
+                width=style.line_width,
                 style="dashed",
                 trim_start_mm=ball_radius,
                 label="cue_separation",
@@ -87,27 +102,42 @@ class OverlayBuilder:
             np.asarray([candidate.ghost_ball, candidate.object_ball, candidate.pocket_point], dtype=np.float32)
         )
         radius_px = self._projector_radius_px(candidate.ghost_ball, ball_radius)
-        overlay.circles.append(((float(circles[0, 0]), float(circles[0, 1])), radius_px, ROUTE_COLOR))
-        overlay.circles.append(((float(circles[1, 0]), float(circles[1, 1])), radius_px, ROUTE_COLOR))
-        overlay.circles.append(((float(circles[2, 0]), float(circles[2, 1])), max(8.0, radius_px * 0.45), ROUTE_COLOR))
+        overlay.circles.append(OverlayCircle(center=(float(circles[0, 0]), float(circles[0, 1])), radius=radius_px, color=ROUTE_COLOR, width=style.circle_width))
+        overlay.circles.append(OverlayCircle(center=(float(circles[1, 0]), float(circles[1, 1])), radius=radius_px, color=ROUTE_COLOR, width=style.circle_width))
+        overlay.circles.append(
+            OverlayCircle(
+                center=(float(circles[2, 0]), float(circles[2, 1])),
+                radius=max(8.0, radius_px * 0.45),
+                color=ROUTE_COLOR,
+                width=style.circle_width,
+            )
+        )
         label_pos = (float(circles[0, 0] + 14), float(circles[0, 1] - 14))
         overlay.labels.append((label_pos, f"{candidate.score:.2f}", ROUTE_COLOR))
 
     def _add_free_route(self, overlay: ProjectionOverlay, route: FreeRouteSuggestion) -> None:
+        style = projection_route_stroke_style(overlay.projector_size, self.star_formula)
         cue = np.asarray(route.cue_ball, dtype=np.float32)
         radius = float(max(1.0, route.cue_radius))
         tip = np.asarray(route.cue_stick_tip, dtype=np.float32)
         tail = np.asarray(route.cue_stick_tail, dtype=np.float32)
         aim_dir = unit(np.asarray(route.aim_direction, dtype=np.float32))
 
-        self._append_line_mm(overlay, [tail, tip], color=CUE_STICK_COLOR, width=2, label="cue_stick")
+        self._append_line_mm(overlay, [tail, tip], color=CUE_STICK_COLOR, width=style.line_width, label="cue_stick")
         guide_back = cue - aim_dir * max(26.0, 2.2 * radius)
-        self._append_line_mm(overlay, [guide_back, cue], width=3, trim_end_mm=radius, label="cue_guide")
+        self._append_line_mm(overlay, [guide_back, cue], width=style.line_width, trim_end_mm=radius, label="cue_guide")
 
         nodes = [np.asarray(p, dtype=np.float32) for p in route.path_points]
         collision_count = len(route.collision_points or [])
         for idx, node in enumerate(nodes[1 : 1 + collision_count]):
-            overlay.circles.append((self._projector_point(node), self._projector_radius_px(node, radius), ROUTE_COLOR))
+            overlay.circles.append(
+                OverlayCircle(
+                    center=self._projector_point(node),
+                    radius=self._projector_radius_px(node, radius),
+                    color=ROUTE_COLOR,
+                    width=style.circle_width,
+                )
+            )
 
         for i in range(max(0, len(nodes) - 1)):
             start_radius = radius if i <= collision_count else 0.0
@@ -115,7 +145,7 @@ class OverlayBuilder:
             self._append_line_mm(
                 overlay,
                 [nodes[i], nodes[i + 1]],
-                width=4,
+                width=style.line_width,
                 trim_start_mm=start_radius,
                 trim_end_mm=end_radius,
                 label="free_path",
@@ -138,7 +168,7 @@ class OverlayBuilder:
             self._append_line_mm(
                 overlay,
                 [hit_center, hit_end],
-                width=3,
+                width=style.line_width,
                 style="dashed",
                 trim_start_mm=radius,
                 label="free_hit_ball",
@@ -146,7 +176,14 @@ class OverlayBuilder:
 
         if route.pocket_point is not None:
             pocket = np.asarray(route.pocket_point, dtype=np.float32)
-            overlay.circles.append((self._projector_point(pocket), max(8.0, self._projector_radius_px(pocket, radius) * 0.45), ROUTE_COLOR))
+            overlay.circles.append(
+                OverlayCircle(
+                    center=self._projector_point(pocket),
+                    radius=max(8.0, self._projector_radius_px(pocket, radius) * 0.45),
+                    color=ROUTE_COLOR,
+                    width=style.circle_width,
+                )
+            )
 
     def _append_line_mm(
         self,
@@ -229,13 +266,13 @@ def render_overlay_image(overlay: ProjectionOverlay, background: Optional[np.nda
                 )
             if line.arrow:
                 _draw_arrow_head(img, pts[-2], pts[-1], color, width)
-    for center, radius, color in overlay.circles:
+    for circle in overlay.circles:
         cv2.circle(
             img,
-            (int(round(center[0])), int(round(center[1]))),
-            max(1, int(round(radius))),
-            tuple(int(c) for c in color),
-            2,
+            (int(round(circle.center[0])), int(round(circle.center[1]))),
+            max(1, int(round(circle.radius))),
+            tuple(int(c) for c in circle.color),
+            max(1, int(circle.width)),
             cv2.LINE_AA,
         )
     for pos, text, color in overlay.labels:

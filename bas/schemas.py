@@ -187,12 +187,20 @@ class OverlayLine:
 
 
 @dataclass
+class OverlayCircle:
+    center: Point
+    radius: float
+    color: Tuple[int, int, int] = (255, 255, 255)
+    width: int = 2
+
+
+@dataclass
 class ProjectionOverlay:
     overlay_id: str
     frame_id: int
     projector_size: Tuple[int, int]
     lines: List[OverlayLine] = field(default_factory=list)
-    circles: List[Tuple[Point, float, Tuple[int, int, int]]] = field(default_factory=list)
+    circles: List[OverlayCircle] = field(default_factory=list)
     labels: List[Tuple[Point, str, Tuple[int, int, int]]] = field(default_factory=list)
 
 

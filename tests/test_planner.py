@@ -6,8 +6,9 @@ from bas.calibration.camera import CameraCalibration
 from bas.calibration.projector import ProjectionCalibration
 from bas.calibration.service import CalibrationService
 from bas.config import PlannerConfig
+from bas.projection.star_formula import StarFormulaConfig
 from bas.planning import GeometryPhysicsPlanner
-from bas.projection.overlay import OverlayBuilder
+from bas.projection.overlay import OverlayBuilder, projection_route_stroke_style
 from bas.config import ProjectionConfig
 from bas.schemas import MatchStateFrame, ShotCandidate, ShotPlan, TableModel, TrackObservation
 
@@ -152,6 +153,7 @@ def test_planner_uses_center_playable_boundary_for_edge_rejection() -> None:
 
 def test_rule_overlay_includes_dashed_object_and_cue_separation_lines() -> None:
     service = _service()
+    config = ProjectionConfig(projector_width=1000, projector_height=500)
     candidate = ShotCandidate(
         candidate_id="rule",
         cue_track_id=1,
@@ -171,14 +173,20 @@ def test_rule_overlay_includes_dashed_object_and_cue_separation_lines() -> None:
         risk=0.2,
     )
     plan = ShotPlan(plan_id="p", frame_id=1, ts_cam_ns=1, best=candidate, candidates=[candidate], shot_mode="rule")
-    overlay = OverlayBuilder(ProjectionConfig(projector_width=1000, projector_height=500), service).from_plan(plan)
+    overlay = OverlayBuilder(config, service).from_plan(plan)
     dashed_labels = {line.label for line in overlay.lines if line.style == "dashed"}
+    style = projection_route_stroke_style((config.projector_width, config.projector_height), StarFormulaConfig())
     assert "object" in dashed_labels
     assert "cue_separation" in dashed_labels
+    assert overlay.lines
+    assert all(line.width == style.line_width for line in overlay.lines)
+    assert overlay.circles
+    assert all(circle.width == style.circle_width for circle in overlay.circles)
 
 
 def test_free_mode_predicts_two_cushion_collisions() -> None:
     service = _service()
+    config = ProjectionConfig(projector_width=1000, projector_height=500)
     planner = GeometryPhysicsPlanner(PlannerConfig(shot_mode="free", free_max_collisions=2), service)
     state = MatchStateFrame(
         frame_id=1,
@@ -194,10 +202,13 @@ def test_free_mode_predicts_two_cushion_collisions() -> None:
     assert plan.free_route is not None
     assert len(plan.free_route.collision_points) == 2
     assert plan.free_route.collision_types == ["edge", "edge"]
-    overlay = OverlayBuilder(ProjectionConfig(projector_width=1000, projector_height=500), service).from_plan(plan)
+    overlay = OverlayBuilder(config, service).from_plan(plan)
+    style = projection_route_stroke_style((config.projector_width, config.projector_height), StarFormulaConfig())
     assert overlay.lines
     assert all(line.color == (255, 255, 255) for line in overlay.lines)
-    assert all(color == (255, 255, 255) for _center, _radius, color in overlay.circles)
+    assert all(line.width == style.line_width for line in overlay.lines)
+    assert all(circle.color == (255, 255, 255) for circle in overlay.circles)
+    assert all(circle.width == style.circle_width for circle in overlay.circles)
     assert all(color == (255, 255, 255) for _pos, _text, color in overlay.labels)
 
 

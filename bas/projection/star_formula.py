@@ -77,6 +77,30 @@ class StarFormulaConfig:
         }
 
 
+@dataclass(frozen=True)
+class StarFormulaStrokeMetrics:
+    font_scale: float
+    font_thickness: int
+    line_thickness: int
+
+
+def star_formula_stroke_metrics(proj_w: int, proj_h: int, config: StarFormulaConfig) -> StarFormulaStrokeMetrics:
+    cfg = config.clamp_for_projection(proj_w, proj_h)
+    quad = _default_table_quad(proj_w, proj_h)
+    avg_w = 0.5 * (float(np.linalg.norm(quad[1] - quad[0])) + float(np.linalg.norm(quad[2] - quad[3])))
+    avg_h = 0.5 * (float(np.linalg.norm(quad[3] - quad[0])) + float(np.linalg.norm(quad[2] - quad[1])))
+    cell_size = max(12.0, min(avg_w / 8.0, avg_h / 4.0))
+    mean_scale = math.sqrt(max(0.1, (cfg.scale_x_pct * cfg.scale_y_pct) / 10000.0))
+    font_thickness = max(1, int(round(cell_size * mean_scale / 56.0)))
+    line_thickness = max(1, int(round(float(font_thickness) / 3.0)))
+    font_scale = float(np.clip(cell_size * mean_scale / 80.0, 0.225, 1.1))
+    return StarFormulaStrokeMetrics(
+        font_scale=font_scale,
+        font_thickness=font_thickness,
+        line_thickness=line_thickness,
+    )
+
+
 def draw_star_formula(canvas: np.ndarray, config: StarFormulaConfig) -> None:
     cfg = config.clamp_for_projection(canvas.shape[1], canvas.shape[0])
     if not cfg.enabled:
@@ -97,13 +121,10 @@ def draw_star_formula(canvas: np.ndarray, config: StarFormulaConfig) -> None:
         quad.astype(np.float32),
     )
     base_center = np.mean(quad.astype(np.float64), axis=0)
-    avg_w = 0.5 * (float(np.linalg.norm(quad[1] - quad[0])) + float(np.linalg.norm(quad[2] - quad[3])))
-    avg_h = 0.5 * (float(np.linalg.norm(quad[3] - quad[0])) + float(np.linalg.norm(quad[2] - quad[1])))
-    cell_size = max(12.0, min(avg_w / 8.0, avg_h / 4.0))
-    mean_scale = math.sqrt(max(0.1, (cfg.scale_x_pct * cfg.scale_y_pct) / 10000.0))
-    font_thickness = max(1, int(round(cell_size * mean_scale / 56.0)))
-    line_thickness = max(1, int(round(float(font_thickness) / 3.0)))
-    font_scale = float(np.clip(cell_size * mean_scale / 80.0, 0.225, 1.1))
+    metrics = star_formula_stroke_metrics(proj_w, proj_h, cfg)
+    font_thickness = metrics.font_thickness
+    line_thickness = metrics.line_thickness
+    font_scale = metrics.font_scale
     label_v = float((bottom - top) * cfg.label_offset_tb_pct / 200.0)
     label_u = float((bottom - top) * cfg.label_offset_lr_pct / 200.0)
     color = (255, 255, 255)

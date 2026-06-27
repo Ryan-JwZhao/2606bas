@@ -42,11 +42,12 @@ from ..media_capture import FfmpegH264Recorder
 from ..operator_controls import RuntimeControlState, normalize_shot_mode, toggled_object_group
 from ..perception import create_detector
 from ..paths import PROJECT_ROOT
+from ..projection.overlay import projection_route_stroke_style
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
 from ..remote_control import RemoteCommand, RemoteCommandQueue
 from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
-from ..schemas import MatchPhase, OverlayLine, ProjectionOverlay, to_jsonable
+from ..schemas import MatchPhase, OverlayCircle, OverlayLine, ProjectionOverlay, to_jsonable
 from ..utils import unit
 from .engineered_ball_compensation_wizard import EngineeredBallCompensationWizardDialog
 from .geometry_reference import draw_geometry_reference_lines
@@ -2044,6 +2045,13 @@ class OperatorWindow(QtWidgets.QMainWindow):
             enabled=bool(self.config.projection.geometry_reference_enabled),
         )
 
+    def _route_preview_stroke_width(self) -> int:
+        style = projection_route_stroke_style(
+            (int(self.config.projection.projector_width), int(self.config.projection.projector_height)),
+            self.star_formula,
+        )
+        return style.line_width
+
     def _draw_rule_plan_preview(self, image: np.ndarray, candidate) -> None:
         route_color = (255, 255, 255)
         radius_mm = 0.5 * float(self.pipeline.calibration.table.ball_diameter_mm) if self.pipeline is not None else 28.0
@@ -2051,7 +2059,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         ghost = np.asarray(candidate.ghost_ball, dtype=np.float32)
         target = np.asarray(candidate.object_ball, dtype=np.float32)
         pocket = np.asarray(candidate.pocket_point, dtype=np.float32)
-        thickness = max(2, int(round(3 * self._ui_scale)))
+        thickness = self._route_preview_stroke_width()
         radius_px = max(6, int(round(self._camera_radius_px(ghost, radius_mm))))
         table = self.pipeline.calibration.table if self.pipeline is not None else None
         inner = self._inner_polygon_table()
@@ -2064,7 +2072,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             table_height_mm=float(table.height_mm) if table is not None else 0.0,
         )
         self._draw_segment_trimmed(image, guide_start, cue, route_color, thickness, 0.0, radius_mm)
-        self._draw_segment_trimmed(image, cue, ghost, route_color, thickness + 1, radius_mm, radius_mm)
+        self._draw_segment_trimmed(image, cue, ghost, route_color, thickness, radius_mm, radius_mm)
         self._draw_dashed_segment_trimmed(image, target, pocket, route_color, thickness, radius_mm, 0.0)
         cue_sep_end = rule_cue_separation_end(
             cue,
@@ -2079,10 +2087,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
         for point in (ghost, target):
             cam = self._table_mm_to_camera_px([point])
             if cam.shape[0] >= 1:
-                cv2.circle(image, _point_int(cam[0]), radius_px, route_color, 2, cv2.LINE_AA)
+                cv2.circle(image, _point_int(cam[0]), radius_px, route_color, thickness, cv2.LINE_AA)
         pocket_px = self._table_mm_to_camera_px([pocket])
         if pocket_px.shape[0] >= 1:
-            cv2.circle(image, _point_int(pocket_px[0]), max(6, radius_px // 2), route_color, 2, cv2.LINE_AA)
+            cv2.circle(image, _point_int(pocket_px[0]), max(6, radius_px // 2), route_color, thickness, cv2.LINE_AA)
 
     def _draw_free_plan_preview(self, image: np.ndarray, route) -> None:
         route_color = (255, 255, 255)
@@ -2092,12 +2100,12 @@ class OperatorWindow(QtWidgets.QMainWindow):
         tip = np.asarray(route.cue_stick_tip, dtype=np.float32)
         tail = np.asarray(route.cue_stick_tail, dtype=np.float32)
         aim_dir = unit(np.asarray(route.aim_direction, dtype=np.float32))
-        thickness = max(2, int(round(3 * self._ui_scale)))
+        thickness = self._route_preview_stroke_width()
         radius_px = max(6, int(round(self._camera_radius_px(cue, radius_mm))))
 
         stick_px = self._table_mm_to_camera_px([tail, tip])
         if stick_px.shape[0] >= 2:
-            cv2.line(image, _point_int(stick_px[0]), _point_int(stick_px[1]), cue_stick_color, 2, cv2.LINE_AA)
+            cv2.line(image, _point_int(stick_px[0]), _point_int(stick_px[1]), cue_stick_color, thickness, cv2.LINE_AA)
 
         guide_back = cue - aim_dir * max(26.0, 2.2 * radius_mm)
         self._draw_segment_trimmed(image, guide_back, cue, route_color, thickness, 0.0, radius_mm)
@@ -2107,7 +2115,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         for i in range(max(0, len(nodes) - 1)):
             start_radius = radius_mm if i <= collision_count else 0.0
             end_radius = radius_mm if (i + 1) <= collision_count else 0.0
-            self._draw_segment_trimmed(image, nodes[i], nodes[i + 1], route_color, thickness + 1, start_radius, end_radius)
+            self._draw_segment_trimmed(image, nodes[i], nodes[i + 1], route_color, thickness, start_radius, end_radius)
 
         collisions = [np.asarray(p, dtype=np.float32) for p in route.collision_points or []]
         normals = [np.asarray(n, dtype=np.float32) for n in route.collision_normals or []]
@@ -2115,7 +2123,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         for idx, collision in enumerate(collisions):
             cam = self._table_mm_to_camera_px([collision])
             if cam.shape[0] >= 1:
-                cv2.circle(image, _point_int(cam[0]), radius_px, route_color, 2, cv2.LINE_AA)
+                cv2.circle(image, _point_int(cam[0]), radius_px, route_color, thickness, cv2.LINE_AA)
             if idx >= len(collision_types) or str(collision_types[idx]) != "ball":
                 continue
             normal = unit(normals[idx] if idx < len(normals) else aim_dir)
@@ -2323,7 +2331,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 start = (float(a[0]), float(a[1]))
                 end = (float(b[0]), float(b[1]))
                 overlay.lines.append(OverlayLine(points=[start, end], color=(255, 255, 255), width=2, label=f"r{idx}"))
-                overlay.circles.append((end, 5.0, (255, 255, 255)))
+                overlay.circles.append(OverlayCircle(center=end, radius=5.0, color=(255, 255, 255)))
             self._append_log(f"已显示 {min(80, controls.shape[0])} 个局部残差箭头")
         else:
             self._append_log("当前校正文件没有局部残差控制点，已显示基础校正结果")
@@ -2487,7 +2495,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             points = poly
         for idx, point in enumerate(points[:60]):
             x, y = float(point[0]), float(point[1])
-            overlay.circles.append(((x, y), 7.0, (255, 255, 255)))
+            overlay.circles.append(OverlayCircle(center=(x, y), radius=7.0, color=(255, 255, 255)))
             overlay.labels.append(((x + 10.0, y - 10.0), f"P{idx}", (255, 255, 255)))
         if poly.shape[0] < 3 and points.shape[0] == 0:
             w, h = size

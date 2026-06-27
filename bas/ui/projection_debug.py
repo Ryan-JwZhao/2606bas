@@ -6,7 +6,7 @@ import numpy as np
 
 from ..projection.overlay import ROUTE_COLOR
 from ..calibration.service import CalibrationService
-from ..schemas import Detection, OverlayLine, ProjectionOverlay, TrackObservation
+from ..schemas import Detection, OverlayCircle, OverlayLine, ProjectionOverlay, TrackObservation
 from ..utils import group_from_class
 
 
@@ -109,7 +109,7 @@ def _append_projected_ball_marker(
         ry = float(np.linalg.norm(proj_refs[2] - proj_refs[0]))
         radius_proj = max(4.0, 0.5 * (rx + ry))
     center = (float(proj[0, 0]), float(proj[0, 1]))
-    overlay.circles.append((center, radius_proj, ROUTE_COLOR))
+    overlay.circles.append(OverlayCircle(center=center, radius=radius_proj, color=ROUTE_COLOR))
     return True
 
 

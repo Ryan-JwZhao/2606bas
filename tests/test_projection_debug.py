@@ -86,7 +86,7 @@ def test_projection_debug_appends_visible_track_markers() -> None:
 
     assert count == 1
     assert len(overlay.circles) == 1
-    assert overlay.circles[0][2] == (255, 255, 255)
+    assert overlay.circles[0].color == (255, 255, 255)
     assert not overlay.labels
 
 
@@ -98,7 +98,7 @@ def test_projection_debug_falls_back_to_detections_when_tracks_absent() -> None:
 
     assert count == 1
     assert len(overlay.circles) == 1
-    assert overlay.circles[0][2] == (255, 255, 255)
+    assert overlay.circles[0].color == (255, 255, 255)
     assert not overlay.labels
 
 
@@ -128,5 +128,5 @@ def test_engineered_projection_debug_uses_physical_ball_radius() -> None:
     append_projected_ball_overlays(overlay_small, service, tracks=[track_small])
     append_projected_ball_overlays(overlay_large, service, tracks=[track_large])
 
-    assert overlay_small.circles[0][1] == pytest.approx(overlay_large.circles[0][1], abs=1e-6)
-    assert overlay_small.circles[0][1] == pytest.approx(service.ball_projector_radius_px((100.0, 200.0)), abs=1e-6)
+    assert overlay_small.circles[0].radius == pytest.approx(overlay_large.circles[0].radius, abs=1e-6)
+    assert overlay_small.circles[0].radius == pytest.approx(service.ball_projector_radius_px((100.0, 200.0)), abs=1e-6)
