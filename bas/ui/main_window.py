@@ -2363,7 +2363,15 @@ class OperatorWindow(QtWidgets.QMainWindow):
             fallback_length_mm=float(np.hypot(table.width_mm, table.height_mm)) if table is not None else 600.0,
         )
         if cue_sep_end is not None:
-            self._draw_dashed_segment_trimmed(image, ghost, cue_sep_end, route_color, thickness, radius_mm, 0.0)
+            self._draw_dashed_segment_trimmed(
+                image,
+                ghost,
+                cue_sep_end,
+                route_color,
+                style.dashed_line_width,
+                radius_mm,
+                0.0,
+            )
 
         for point in (ghost, target):
             cam = self._table_mm_to_camera_px([point])

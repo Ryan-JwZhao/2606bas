@@ -5,12 +5,15 @@ import threading
 import time
 from types import SimpleNamespace
 
+import numpy as np
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5 import QtWidgets
 
 from bas.config import AppConfig
 from bas import runtime_env
+from bas.schemas import ShotCandidate
 
 runtime_env.preload_torch_for_backend = lambda backend: None
 
@@ -115,3 +118,48 @@ def test_tick_runtime_exception_stops_pipeline_instead_of_crashing(monkeypatch) 
     assert pipeline.closed is True
     assert window.pipeline is None
     assert window._frame_busy is False
+
+
+def test_draw_rule_plan_preview_uses_computed_stroke_style() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    window.star_formula = None
+    window.config = SimpleNamespace(projection=SimpleNamespace(projector_width=1280, projector_height=800))
+    window.pipeline = SimpleNamespace(
+        calibration=SimpleNamespace(
+            table=SimpleNamespace(width_mm=2540.0, height_mm=1270.0, ball_diameter_mm=57.15),
+        )
+    )
+    window._route_preview_stroke_style = lambda: SimpleNamespace(solid_line_width=6, dashed_line_width=4, circle_width=2)
+    window._camera_radius_px = lambda point, radius_mm: 8.0
+    window._inner_polygon_table = lambda: np.array(
+        [[0.0, 0.0], [2540.0, 0.0], [2540.0, 1270.0], [0.0, 1270.0]],
+        dtype=np.float32,
+    )
+    window._draw_segment_trimmed = lambda *args, **kwargs: None
+    called = []
+    window._draw_dashed_segment_trimmed = lambda *args, **kwargs: called.append((args, kwargs))
+    window._table_mm_to_camera_px = lambda points: np.asarray(points, dtype=np.float32)
+
+    candidate = ShotCandidate(
+        candidate_id="c1",
+        cue_track_id=1,
+        target_track_id=2,
+        target_group="solid",
+        pocket_index=0,
+        cue_ball=(100.0, 100.0),
+        object_ball=(200.0, 130.0),
+        ghost_ball=(180.0, 100.0),
+        pocket_point=(300.0, 60.0),
+        aim_line=[(100.0, 100.0), (180.0, 100.0)],
+        object_line=[(200.0, 130.0), (300.0, 60.0)],
+        cut_angle_deg=20.0,
+        cue_distance_mm=80.0,
+        object_distance_mm=120.0,
+        score=1.0,
+        risk=0.2,
+    )
+
+    main_window.OperatorWindow._draw_rule_plan_preview(window, np.zeros((32, 32, 3), dtype=np.uint8), candidate)
+
+    assert len(called) >= 2
+    assert called[1][0][4] == 4
