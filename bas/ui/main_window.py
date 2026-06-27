@@ -2224,12 +2224,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
             enabled=bool(self.config.projection.geometry_reference_enabled),
         )
 
-    def _route_preview_stroke_width(self) -> int:
-        style = projection_route_stroke_style(
+    def _route_preview_stroke_style(self):
+        return projection_route_stroke_style(
             (int(self.config.projection.projector_width), int(self.config.projection.projector_height)),
             self.star_formula,
         )
-        return style.line_width
 
     def _draw_rule_plan_preview(self, image: np.ndarray, candidate) -> None:
         route_color = (255, 255, 255)
@@ -2238,7 +2237,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         ghost = np.asarray(candidate.ghost_ball, dtype=np.float32)
         target = np.asarray(candidate.object_ball, dtype=np.float32)
         pocket = np.asarray(candidate.pocket_point, dtype=np.float32)
-        thickness = self._route_preview_stroke_width()
+        style = self._route_preview_stroke_style()
         radius_px = max(6, int(round(self._camera_radius_px(ghost, radius_mm))))
         table = self.pipeline.calibration.table if self.pipeline is not None else None
         inner = self._inner_polygon_table()
@@ -2250,9 +2249,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
             table_width_mm=float(table.width_mm) if table is not None else 0.0,
             table_height_mm=float(table.height_mm) if table is not None else 0.0,
         )
-        self._draw_segment_trimmed(image, guide_start, cue, route_color, thickness, 0.0, radius_mm)
-        self._draw_segment_trimmed(image, cue, ghost, route_color, thickness, radius_mm, radius_mm)
-        self._draw_dashed_segment_trimmed(image, target, pocket, route_color, thickness, radius_mm, 0.0)
+        self._draw_segment_trimmed(image, guide_start, cue, route_color, style.solid_line_width, 0.0, radius_mm)
+        self._draw_segment_trimmed(image, cue, ghost, route_color, style.solid_line_width, radius_mm, radius_mm)
+        self._draw_dashed_segment_trimmed(image, target, pocket, route_color, style.dashed_line_width, radius_mm, 0.0)
         cue_sep_end = rule_cue_separation_end(
             cue,
             ghost,
@@ -2266,10 +2265,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
         for point in (ghost, target):
             cam = self._table_mm_to_camera_px([point])
             if cam.shape[0] >= 1:
-                cv2.circle(image, _point_int(cam[0]), radius_px, route_color, thickness, cv2.LINE_AA)
+                cv2.circle(image, _point_int(cam[0]), radius_px, route_color, style.circle_width, cv2.LINE_AA)
         pocket_px = self._table_mm_to_camera_px([pocket])
         if pocket_px.shape[0] >= 1:
-            cv2.circle(image, _point_int(pocket_px[0]), max(6, radius_px // 2), route_color, thickness, cv2.LINE_AA)
+            cv2.circle(image, _point_int(pocket_px[0]), max(6, radius_px // 2), route_color, style.circle_width, cv2.LINE_AA)
 
     def _draw_free_plan_preview(self, image: np.ndarray, route) -> None:
         route_color = (255, 255, 255)
@@ -2279,22 +2278,22 @@ class OperatorWindow(QtWidgets.QMainWindow):
         tip = np.asarray(route.cue_stick_tip, dtype=np.float32)
         tail = np.asarray(route.cue_stick_tail, dtype=np.float32)
         aim_dir = unit(np.asarray(route.aim_direction, dtype=np.float32))
-        thickness = self._route_preview_stroke_width()
+        style = self._route_preview_stroke_style()
         radius_px = max(6, int(round(self._camera_radius_px(cue, radius_mm))))
 
         stick_px = self._table_mm_to_camera_px([tail, tip])
         if stick_px.shape[0] >= 2:
-            cv2.line(image, _point_int(stick_px[0]), _point_int(stick_px[1]), cue_stick_color, thickness, cv2.LINE_AA)
+            cv2.line(image, _point_int(stick_px[0]), _point_int(stick_px[1]), cue_stick_color, style.solid_line_width, cv2.LINE_AA)
 
         guide_back = cue - aim_dir * max(26.0, 2.2 * radius_mm)
-        self._draw_segment_trimmed(image, guide_back, cue, route_color, thickness, 0.0, radius_mm)
+        self._draw_segment_trimmed(image, guide_back, cue, route_color, style.solid_line_width, 0.0, radius_mm)
 
         nodes = [np.asarray(p, dtype=np.float32) for p in route.path_points or []]
         collision_count = len(route.collision_points or [])
         for i in range(max(0, len(nodes) - 1)):
             start_radius = radius_mm if i <= collision_count else 0.0
             end_radius = radius_mm if (i + 1) <= collision_count else 0.0
-            self._draw_segment_trimmed(image, nodes[i], nodes[i + 1], route_color, thickness, start_radius, end_radius)
+            self._draw_segment_trimmed(image, nodes[i], nodes[i + 1], route_color, style.solid_line_width, start_radius, end_radius)
 
         collisions = [np.asarray(p, dtype=np.float32) for p in route.collision_points or []]
         normals = [np.asarray(n, dtype=np.float32) for n in route.collision_normals or []]
@@ -2302,7 +2301,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         for idx, collision in enumerate(collisions):
             cam = self._table_mm_to_camera_px([collision])
             if cam.shape[0] >= 1:
-                cv2.circle(image, _point_int(cam[0]), radius_px, route_color, thickness, cv2.LINE_AA)
+                cv2.circle(image, _point_int(cam[0]), radius_px, route_color, style.circle_width, cv2.LINE_AA)
             if idx >= len(collision_types) or str(collision_types[idx]) != "ball":
                 continue
             normal = unit(normals[idx] if idx < len(normals) else aim_dir)
@@ -2314,7 +2313,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 self._inner_polygon_table(),
                 fallback_length_mm=float(np.hypot(table.width_mm, table.height_mm)) if table is not None else 600.0,
             )
-            self._draw_dashed_segment_trimmed(image, hit_center, hit_end, route_color, thickness, radius_mm, 0.0)
+            self._draw_dashed_segment_trimmed(image, hit_center, hit_end, route_color, style.dashed_line_width, radius_mm, 0.0)
 
     def _camera_radius_px(self, point_mm, radius_mm: float) -> float:
         point = np.asarray(point_mm, dtype=np.float32).reshape((2,))
@@ -2367,7 +2366,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             p1 = start + d * drawn
             p2 = start + d * seg_e
             if int(round(float(p1[0]))) != int(round(float(p2[0]))) or int(round(float(p1[1]))) != int(round(float(p2[1]))):
-                cv2.line(image, _point_int(p1), _point_int(p2), color, max(1, int(thickness) - 1), cv2.LINE_AA)
+                cv2.line(image, _point_int(p1), _point_int(p2), color, max(1, int(thickness)), cv2.LINE_AA)
             drawn += step
 
     def _trimmed_camera_segment(

@@ -20,15 +20,22 @@ CUE_STICK_COLOR = ROUTE_COLOR
 
 @dataclass(frozen=True)
 class RouteStrokeStyle:
-    line_width: int
+    base_line_width: int
+    solid_line_width: int
+    dashed_line_width: int
     circle_width: int
 
 
 def projection_route_stroke_style(projector_size: Tuple[int, int], star_formula: StarFormulaConfig | None = None) -> RouteStrokeStyle:
     width, height = [max(1, int(v)) for v in projector_size]
     metrics = star_formula_stroke_metrics(width, height, star_formula or StarFormulaConfig())
-    stroke_width = max(1, int(metrics.line_thickness))
-    return RouteStrokeStyle(line_width=stroke_width, circle_width=stroke_width)
+    base_width = max(1, int(metrics.line_thickness))
+    return RouteStrokeStyle(
+        base_line_width=base_width,
+        solid_line_width=max(1, int(round(base_width * 2.0))),
+        dashed_line_width=max(1, int(round(base_width * 1.5))),
+        circle_width=base_width,
+    )
 
 
 class OverlayBuilder:
@@ -72,12 +79,12 @@ class OverlayBuilder:
             table_height_mm=float(table.height_mm),
         )
         if float(np.linalg.norm(guide_start - cue)) >= 1.0:
-            self._append_line_mm(overlay, [guide_start, cue], width=style.line_width, trim_end_mm=ball_radius, label="cue_guide")
-        self._append_line_mm(overlay, [cue, ghost], width=style.line_width, trim_start_mm=ball_radius, trim_end_mm=ball_radius, label="aim")
+            self._append_line_mm(overlay, [guide_start, cue], width=style.solid_line_width, trim_end_mm=ball_radius, label="cue_guide")
+        self._append_line_mm(overlay, [cue, ghost], width=style.solid_line_width, trim_start_mm=ball_radius, trim_end_mm=ball_radius, label="aim")
         self._append_line_mm(
             overlay,
             [target, pocket],
-            width=style.line_width,
+            width=style.dashed_line_width,
             style="dashed",
             trim_start_mm=ball_radius,
             label="object",
@@ -93,7 +100,7 @@ class OverlayBuilder:
             self._append_line_mm(
                 overlay,
                 [ghost, cue_sep_end],
-                width=style.line_width,
+                width=style.dashed_line_width,
                 style="dashed",
                 trim_start_mm=ball_radius,
                 label="cue_separation",
@@ -123,9 +130,9 @@ class OverlayBuilder:
         tail = np.asarray(route.cue_stick_tail, dtype=np.float32)
         aim_dir = unit(np.asarray(route.aim_direction, dtype=np.float32))
 
-        self._append_line_mm(overlay, [tail, tip], color=CUE_STICK_COLOR, width=style.line_width, label="cue_stick")
+        self._append_line_mm(overlay, [tail, tip], color=CUE_STICK_COLOR, width=style.solid_line_width, label="cue_stick")
         guide_back = cue - aim_dir * max(26.0, 2.2 * radius)
-        self._append_line_mm(overlay, [guide_back, cue], width=style.line_width, trim_end_mm=radius, label="cue_guide")
+        self._append_line_mm(overlay, [guide_back, cue], width=style.solid_line_width, trim_end_mm=radius, label="cue_guide")
 
         nodes = [np.asarray(p, dtype=np.float32) for p in route.path_points]
         collision_count = len(route.collision_points or [])
@@ -145,7 +152,7 @@ class OverlayBuilder:
             self._append_line_mm(
                 overlay,
                 [nodes[i], nodes[i + 1]],
-                width=style.line_width,
+                width=style.solid_line_width,
                 trim_start_mm=start_radius,
                 trim_end_mm=end_radius,
                 label="free_path",
@@ -168,7 +175,7 @@ class OverlayBuilder:
             self._append_line_mm(
                 overlay,
                 [hit_center, hit_end],
-                width=style.line_width,
+                width=style.dashed_line_width,
                 style="dashed",
                 trim_start_mm=radius,
                 label="free_hit_ball",
@@ -345,5 +352,5 @@ def _draw_dashed_segment(
         i1 = (int(round(float(p1[0]))), int(round(float(p1[1]))))
         i2 = (int(round(float(p2[0]))), int(round(float(p2[1]))))
         if i1 != i2:
-            cv2.line(img, i1, i2, color, max(1, width - 1), cv2.LINE_AA)
+            cv2.line(img, i1, i2, color, max(1, width), cv2.LINE_AA)
         drawn += step

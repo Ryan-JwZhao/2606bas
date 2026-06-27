@@ -179,7 +179,8 @@ def test_rule_overlay_includes_dashed_object_and_cue_separation_lines() -> None:
     assert "object" in dashed_labels
     assert "cue_separation" in dashed_labels
     assert overlay.lines
-    assert all(line.width == style.line_width for line in overlay.lines)
+    assert all(line.width == style.solid_line_width for line in overlay.lines if line.style != "dashed")
+    assert all(line.width == style.dashed_line_width for line in overlay.lines if line.style == "dashed")
     assert overlay.circles
     assert all(circle.width == style.circle_width for circle in overlay.circles)
 
@@ -206,7 +207,8 @@ def test_free_mode_predicts_two_cushion_collisions() -> None:
     style = projection_route_stroke_style((config.projector_width, config.projector_height), StarFormulaConfig())
     assert overlay.lines
     assert all(line.color == (255, 255, 255) for line in overlay.lines)
-    assert all(line.width == style.line_width for line in overlay.lines)
+    assert all(line.width == style.solid_line_width for line in overlay.lines if line.style != "dashed")
+    assert all(line.width == style.dashed_line_width for line in overlay.lines if line.style == "dashed")
     assert all(circle.color == (255, 255, 255) for circle in overlay.circles)
     assert all(circle.width == style.circle_width for circle in overlay.circles)
     assert all(color == (255, 255, 255) for _pos, _text, color in overlay.labels)
