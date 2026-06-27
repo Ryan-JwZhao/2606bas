@@ -46,6 +46,7 @@ from ..paths import PROJECT_ROOT
 from ..projection.overlay import projection_route_stroke_style
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
+from ..recording_frame import RecordingFrameCorrector
 from ..remote_control import RemoteCommand, RemoteCommandQueue
 from ..route_freeze import MotionRouteFreezeController
 from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
@@ -1119,6 +1120,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._projection_debug_enabled = False
         self.control_state = RuntimeControlState()
         self._route_freeze = MotionRouteFreezeController(self.config.planner)
+        self._recording_frame_corrector = RecordingFrameCorrector(self._recording_calibration_paths())
         self._pending_turn_target_group: Optional[str] = None
         self._remote_command_queue = RemoteCommandQueue()
 
@@ -1918,9 +1920,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot()
     def capture_raw_photo(self) -> None:
-        frame = self._current_raw_frame()
+        frame = self._current_recording_frame()
         if frame is None:
-            self._append_log("当前没有可抓取的原始画面")
+            self._append_log(self._recording_frame_error())
             return
         out_dir = self._capture_output_dir()
         frame_id = self.last_output.frame.frame_id if self.last_output is not None else 0
@@ -1945,9 +1947,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if self._instant_replay_start_failed:
             self._append_log(f"前60秒纯净视频缓存未正常启动，当前导出请求忽略 ({source})")
             return
-        frame = self._current_raw_frame()
+        frame = self._current_recording_frame()
         if frame is None:
-            self._append_log(f"当前没有可用于导出的原始画面 ({source})")
+            self._append_log(f"{self._recording_frame_error()} ({source})")
             return
         self._ensure_instant_replay_started(frame)
         if self._instant_replay_start_failed:
@@ -1984,6 +1986,33 @@ class OperatorWindow(QtWidgets.QMainWindow):
         for message in self._instant_replay.drain_events():
             self._append_log(message)
 
+    def _recording_calibration_paths(self) -> tuple[str, ...]:
+        paths: list[str] = []
+        for raw in (self.config.camera.distortion_correction_file, self.config.calibration.camera_file):
+            value = str(raw or "").strip()
+            if value and value not in paths:
+                paths.append(value)
+        return tuple(paths)
+
+    def _refresh_recording_frame_corrector(self) -> None:
+        self._recording_frame_corrector.update_calibration_paths(self._recording_calibration_paths())
+        self._recording_frame_corrector.invalidate()
+
+    def _recording_base_frame(self, out: PipelineOutput) -> Optional[np.ndarray]:
+        frame = out.frame.image
+        if frame is None:
+            return None
+        already_corrected = bool(self.pipeline is not None and getattr(self.pipeline.capture, "frame_distortion_corrected", False))
+        return self._recording_frame_corrector.corrected_frame(frame, already_corrected=already_corrected)
+
+    def _recording_frame_error(self) -> str:
+        if self.last_output is None or self.last_output.frame.image is None:
+            return "当前没有可用于录制的画面"
+        already_corrected = bool(self.pipeline is not None and getattr(self.pipeline.capture, "frame_distortion_corrected", False))
+        if already_corrected or self._recording_frame_corrector.has_usable_calibration():
+            return "当前没有可用于录制的 OpenCV 校正画面"
+        return "录制需要 OpenCV 畸变校正画面，但当前未加载有效的标定文件"
+
     @QtCore.pyqtSlot()
     def toggle_raw_video_recording(self) -> None:
         if self._raw_video_recorder is None:
@@ -2002,9 +2031,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if self.pipeline is None:
             self._append_log("请先开始采集再录制视频")
             return
-        frame = self._current_raw_frame()
+        frame = self._current_recording_frame()
         if frame is None:
-            self._append_log("请等待第一帧画面后再录制视频")
+            self._append_log(self._recording_frame_error())
             return
         h, w = frame.shape[:2]
         prefix = "pocket_route_video" if route else "no_line_video"
@@ -2079,6 +2108,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
         frame = self.last_output.frame.image
         return frame if frame is not None else None
 
+    def _current_recording_frame(self) -> Optional[np.ndarray]:
+        if self.last_output is None:
+            return None
+        return self._recording_base_frame(self.last_output)
+
     def _recording_fps(self) -> float:
         fps = 0.0
         if self.pipeline is not None:
@@ -2098,18 +2132,24 @@ class OperatorWindow(QtWidgets.QMainWindow):
         return max(1.0, min(240.0, fps))
 
     def _record_media_frames(self, out: PipelineOutput) -> None:
-        if out.frame.image is not None and self.config.instant_replay.enabled:
-            self._ensure_instant_replay_started(out.frame.image)
+        recording_frame = self._recording_base_frame(out)
+        if recording_frame is None:
+            if out.frame.image is not None and self.config.instant_replay.enabled and not self._instant_replay_start_failed:
+                self._instant_replay_start_failed = True
+                self._append_log(f"前60秒纯净视频缓存未启动: {self._recording_frame_error()}")
+            return
+        if recording_frame is not None and self.config.instant_replay.enabled:
+            self._ensure_instant_replay_started(recording_frame)
             if not self._instant_replay_start_failed:
                 try:
-                    self._instant_replay.write(out.frame.image, ts_ns=out.frame.ts_cam_ns)
+                    self._instant_replay.write(recording_frame, ts_ns=out.frame.ts_cam_ns)
                 except Exception as exc:
                     self._instant_replay_start_failed = True
                     self._append_log(f"前60秒纯净视频缓存写入失败，已停止自动缓存: {exc}")
-        if self._raw_video_recorder is not None and out.frame.image is not None:
-            self._write_video_frame(route=False, frame=out.frame.image)
-        if self._route_video_recorder is not None and out.frame.image is not None:
-            self._write_video_frame(route=True, frame=self._route_capture_frame(out))
+        if self._raw_video_recorder is not None and recording_frame is not None:
+            self._write_video_frame(route=False, frame=recording_frame)
+        if self._route_video_recorder is not None and recording_frame is not None:
+            self._write_video_frame(route=True, frame=self._route_capture_frame(out, base_frame=recording_frame))
         self._flush_instant_replay_events()
 
     def _write_video_frame(self, *, route: bool, frame: np.ndarray) -> None:
@@ -2133,8 +2173,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 self.raw_video_btn.setText("开始无画线视频")
             self._update_module_status(self.last_output)
 
-    def _route_capture_frame(self, out: PipelineOutput) -> np.ndarray:
-        frame = out.frame.image
+    def _route_capture_frame(self, out: PipelineOutput, *, base_frame: Optional[np.ndarray] = None) -> np.ndarray:
+        frame = base_frame if base_frame is not None else self._recording_base_frame(out)
         if frame is None:
             return np.zeros((1, 1, 3), dtype=np.uint8)
         img = frame.copy()
@@ -2690,6 +2730,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot(object)
     def _pipeline_started(self, pipeline: RuntimePipeline) -> None:
         self.pipeline = pipeline
+        self._refresh_recording_frame_corrector()
         self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
         self._instant_replay_start_failed = False
         self._route_freeze.reset()
@@ -2746,6 +2787,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         dialog.apply_to_config(self.config)
         self._route_freeze.reset()
         self.star_formula = dialog.star_formula_config()
+        self._refresh_recording_frame_corrector()
         self._sync_controls_from_config()
         self._save_user_settings()
         pipeline_changed = pipeline_signature_before != self._pipeline_restart_signature()
