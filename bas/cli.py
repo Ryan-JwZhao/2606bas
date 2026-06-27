@@ -39,7 +39,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_smoke.add_argument("--frames", type=int, default=90)
 
     p_remote = sub.add_parser("remote-control", help="Queue a local command for the running desktop control console.")
-    p_remote.add_argument("action", help="Remote action name, for example: start-capture, toggle-shot-mode, free-shot-once.")
+    p_remote.add_argument(
+        "action",
+        help="Remote action name, for example: start-capture, toggle-shot-mode, free-shot-once, save-retro-clip.",
+    )
 
     args = parser.parse_args(argv)
     instance_handle = None

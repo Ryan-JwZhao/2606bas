@@ -37,6 +37,10 @@ REMOTE_ACTION_ALIASES = {
     "black-shot-once": "black_shot_once",
     "toggle_star_formula": "toggle_star_formula",
     "toggle-star-formula": "toggle_star_formula",
+    "save_retro_clip": "save_retro_clip",
+    "save-retro-clip": "save_retro_clip",
+    "export_retro_clip": "save_retro_clip",
+    "export-retro-clip": "save_retro_clip",
 }
 
 

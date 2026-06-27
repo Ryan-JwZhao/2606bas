@@ -187,6 +187,17 @@ class ReplayConfig:
 
 
 @dataclass
+class InstantReplayConfig:
+    enabled: bool = True
+    directory: str = "local_settings/instant_replay"
+    segment_seconds: int = 1
+    buffer_seconds: int = 120
+    export_seconds: int = 60
+    cooldown_seconds: int = 30
+    bitrate_kbps: int = 6000
+
+
+@dataclass
 class LoggingConfig:
     directory: str = "logs"
     level: str = "INFO"
@@ -204,6 +215,7 @@ class AppConfig:
     learning: LearningConfig = field(default_factory=LearningConfig)
     projection: ProjectionConfig = field(default_factory=ProjectionConfig)
     replay: ReplayConfig = field(default_factory=ReplayConfig)
+    instant_replay: InstantReplayConfig = field(default_factory=InstantReplayConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     @classmethod
@@ -234,6 +246,7 @@ class AppConfig:
             learning=section("learning", LearningConfig),
             projection=section("projection", ProjectionConfig),
             replay=section("replay", ReplayConfig),
+            instant_replay=section("instant_replay", InstantReplayConfig),
             logging=section("logging", LoggingConfig),
         )
         config.calibration.sync_projection_file_alias()
@@ -286,5 +299,8 @@ class AppConfig:
         self.learning.samples_directory = str(resolve_path(self.learning.samples_directory, base=base) or Path(self.learning.samples_directory))
         self.logging.directory = str(resolve_path(self.logging.directory, base=base) or Path(self.logging.directory))
         self.replay.directory = str(resolve_path(self.replay.directory, base=base) or Path(self.replay.directory))
+        self.instant_replay.directory = str(
+            resolve_path(self.instant_replay.directory, base=base) or Path(self.instant_replay.directory)
+        )
         self.calibration.sync_projection_file_alias()
         return self

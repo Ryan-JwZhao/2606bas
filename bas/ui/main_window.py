@@ -38,6 +38,7 @@ from ..capture import create_capture_service, probe_cameras
 from ..capture.nori_sdk import NoriProtocolController
 from ..geometry import TableGeometryLoader
 from ..logging_config import configure_logging
+from ..instant_replay import InstantReplayBuffer
 from ..media_capture import FfmpegH264Recorder
 from ..operator_controls import RuntimeControlState, normalize_shot_mode, toggled_object_group
 from ..perception import create_detector
@@ -1113,6 +1114,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._route_video_recorder: Optional[FfmpegH264Recorder] = None
         self._raw_video_path: Optional[Path] = None
         self._route_video_path: Optional[Path] = None
+        self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
+        self._instant_replay_start_failed = False
         self._projection_debug_enabled = False
         self.control_state = RuntimeControlState()
         self._route_freeze = MotionRouteFreezeController(self.config.planner)
@@ -1219,12 +1222,14 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.side_layout.addWidget(self._field("画线模式", self.shot_mode_combo))
         self.side_layout.addWidget(self._section_label("现场抓取"))
         self.raw_photo_btn = self._button("抓取无画线照片")
+        self.instant_replay_export_btn = self._button("导出前60秒纯净视频")
         self.raw_video_btn = self._button("开始无画线视频")
         self.route_video_btn = self._button("开始进洞路线视频")
         self.raw_photo_btn.clicked.connect(self.capture_raw_photo)
+        self.instant_replay_export_btn.clicked.connect(self.trigger_instant_replay_export)
         self.raw_video_btn.clicked.connect(self.toggle_raw_video_recording)
         self.route_video_btn.clicked.connect(self.toggle_route_video_recording)
-        for btn in [self.raw_photo_btn, self.raw_video_btn, self.route_video_btn]:
+        for btn in [self.raw_photo_btn, self.instant_replay_export_btn, self.raw_video_btn, self.route_video_btn]:
             self.side_layout.addWidget(btn)
         self.side_layout.addStretch(1)
         self.config_label = QtWidgets.QLabel("设置保存在 local_settings/user_settings.json")
@@ -1742,6 +1747,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 self._arm_black_shot_once(source="remote")
             elif action == "toggle_star_formula":
                 self._set_star_formula_enabled(not bool(self.star_formula.enabled), source="remote")
+            elif action == "save_retro_clip":
+                self._trigger_instant_replay_export(source="remote")
             else:
                 self._append_log(f"远程命令未识别: {action}")
         except Exception as exc:
@@ -1925,6 +1932,59 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._append_log(f"无画线照片已保存: {path}")
 
     @QtCore.pyqtSlot()
+    def trigger_instant_replay_export(self) -> None:
+        self._trigger_instant_replay_export(source="ui")
+
+    def _trigger_instant_replay_export(self, *, source: str) -> None:
+        if self.pipeline is None or self.last_output is None:
+            self._append_log(f"前60秒纯净视频导出失败：请先开始采集 ({source})")
+            return
+        if not self.config.instant_replay.enabled:
+            self._append_log(f"前60秒纯净视频缓存已关闭，当前导出请求忽略 ({source})")
+            return
+        if self._instant_replay_start_failed:
+            self._append_log(f"前60秒纯净视频缓存未正常启动，当前导出请求忽略 ({source})")
+            return
+        frame = self._current_raw_frame()
+        if frame is None:
+            self._append_log(f"当前没有可用于导出的原始画面 ({source})")
+            return
+        self._ensure_instant_replay_started(frame)
+        if self._instant_replay_start_failed:
+            self._append_log(f"前60秒纯净视频缓存启动失败，无法导出 ({source})")
+            return
+        result = self._instant_replay.request_export(trigger_ts_ns=self.last_output.frame.ts_cam_ns)
+        self._append_log(f"{result.message} ({source})")
+        self._flush_instant_replay_events()
+        self._update_module_status(self.last_output)
+
+    def _ensure_instant_replay_started(self, frame: np.ndarray) -> None:
+        if not self.config.instant_replay.enabled or self._instant_replay_start_failed:
+            return
+        if self._instant_replay.is_running:
+            return
+        h, w = frame.shape[:2]
+        try:
+            self._instant_replay.start(width=w, height=h, fps=self._recording_fps())
+        except FileNotFoundError:
+            self._instant_replay_start_failed = True
+            self._append_log("前60秒纯净视频缓存启动失败：未找到 ffmpeg。")
+        except Exception as exc:
+            self._instant_replay_start_failed = True
+            self._append_log(f"前60秒纯净视频缓存启动失败: {exc}")
+
+    def _stop_instant_replay(self) -> None:
+        try:
+            self._instant_replay.stop()
+        except Exception as exc:
+            self._append_log(f"前60秒纯净视频缓存停止异常: {exc}")
+        self._flush_instant_replay_events()
+
+    def _flush_instant_replay_events(self) -> None:
+        for message in self._instant_replay.drain_events():
+            self._append_log(message)
+
+    @QtCore.pyqtSlot()
     def toggle_raw_video_recording(self) -> None:
         if self._raw_video_recorder is None:
             self._start_video_recording(route=False)
@@ -2038,10 +2098,19 @@ class OperatorWindow(QtWidgets.QMainWindow):
         return max(1.0, min(240.0, fps))
 
     def _record_media_frames(self, out: PipelineOutput) -> None:
+        if out.frame.image is not None and self.config.instant_replay.enabled:
+            self._ensure_instant_replay_started(out.frame.image)
+            if not self._instant_replay_start_failed:
+                try:
+                    self._instant_replay.write(out.frame.image, ts_ns=out.frame.ts_cam_ns)
+                except Exception as exc:
+                    self._instant_replay_start_failed = True
+                    self._append_log(f"前60秒纯净视频缓存写入失败，已停止自动缓存: {exc}")
         if self._raw_video_recorder is not None and out.frame.image is not None:
             self._write_video_frame(route=False, frame=out.frame.image)
         if self._route_video_recorder is not None and out.frame.image is not None:
             self._write_video_frame(route=True, frame=self._route_capture_frame(out))
+        self._flush_instant_replay_events()
 
     def _write_video_frame(self, *, route: bool, frame: np.ndarray) -> None:
         recorder = self._route_video_recorder if route else self._raw_video_recorder
@@ -2433,7 +2502,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._set_module_status("投影", projection_state, f"{self.config.projection.projector_width}x{self.config.projection.projector_height}")
         self._set_module_status("回放", "启用" if self.config.replay.enabled else "关闭", self.config.replay.directory)
         capture_recording = self._raw_video_recorder is not None or self._route_video_recorder is not None
-        self._set_module_status("抓取", "录制中" if capture_recording else "待机", self._media_capture_status_detail())
+        instant_replay_active = self.config.instant_replay.enabled and not self._instant_replay_start_failed
+        capture_state = "录制中" if capture_recording else ("缓存中" if instant_replay_active else "待机")
+        self._set_module_status("抓取", capture_state, self._media_capture_status_detail())
         if self.pipeline is None:
             self._set_module_status("采集", "离线", self.config.camera.backend)
             self._set_module_status("检测", "待机", self.config.detector.backend)
@@ -2490,6 +2561,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
             parts.append(f"无画线 {self._raw_video_recorder.frames_written}帧")
         if self._route_video_recorder is not None:
             parts.append(f"路线 {self._route_video_recorder.frames_written}帧")
+        if self.config.instant_replay.enabled:
+            detail = self._instant_replay.status_detail()
+            if self._instant_replay_start_failed:
+                detail = "回看启动失败"
+            parts.append(detail)
         return "; ".join(parts) if parts else "local_settings/captures"
 
     @QtCore.pyqtSlot()
@@ -2614,6 +2690,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot(object)
     def _pipeline_started(self, pipeline: RuntimePipeline) -> None:
         self.pipeline = pipeline
+        self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
+        self._instant_replay_start_failed = False
         self._route_freeze.reset()
         self._apply_pending_turn_target_group()
         self.last_output = None
@@ -2644,6 +2722,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def stop_pipeline(self) -> None:
         self.timer.stop()
         self._frame_busy = False
+        self._stop_instant_replay()
+        self._instant_replay_start_failed = False
         self._stop_all_media_recordings()
         self._route_freeze.reset()
         if self.pipeline is not None:
@@ -2943,6 +3023,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.init_module_btn.setEnabled(not running)
         self.replay_check.setEnabled(not running)
         self.raw_photo_btn.setEnabled(running)
+        self.instant_replay_export_btn.setEnabled(running and bool(self.config.instant_replay.enabled))
         self.raw_video_btn.setEnabled(running)
         self.route_video_btn.setEnabled(running)
         if not running:
@@ -2964,6 +3045,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.init_module_btn.setEnabled(False)
         self.replay_check.setEnabled(False)
         self.raw_photo_btn.setEnabled(False)
+        self.instant_replay_export_btn.setEnabled(False)
         self.raw_video_btn.setEnabled(False)
         self.route_video_btn.setEnabled(False)
         self.status_label.setText("启动中")

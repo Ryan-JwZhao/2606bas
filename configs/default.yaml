@@ -115,6 +115,15 @@ replay:
   write_video: false
   write_debug_frames: false
 
+instant_replay:
+  enabled: true
+  directory: local_settings/instant_replay
+  segment_seconds: 1
+  buffer_seconds: 120
+  export_seconds: 60
+  cooldown_seconds: 30
+  bitrate_kbps: 6000
+
 logging:
   directory: logs
   level: INFO

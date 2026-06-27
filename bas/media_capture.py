@@ -4,8 +4,9 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 import cv2
 import numpy as np
@@ -89,7 +90,7 @@ class FfmpegH264Recorder:
         fps_text = f"{self.fps:.3f}".rstrip("0").rstrip(".")
         bitrate = f"{self.bitrate_kbps}k"
         return [
-            _ffmpeg_executable(),
+            ffmpeg_executable(),
             "-hide_banner",
             "-loglevel",
             "error",
@@ -123,7 +124,7 @@ class FfmpegH264Recorder:
         ]
 
 
-def _ffmpeg_executable() -> str:
+def ffmpeg_executable() -> str:
     for env_name in ("BAS_FFMPEG", "FFMPEG_BINARY"):
         value = os.environ.get(env_name)
         if value and Path(value).exists():
@@ -141,3 +142,82 @@ def _ffmpeg_executable() -> str:
         if path.exists():
             return str(path)
     return "ffmpeg"
+
+
+def concat_mp4_segments(
+    paths: Iterable[str | Path],
+    output_path: str | Path,
+    *,
+    reencode: bool = False,
+    bitrate_kbps: int = 6000,
+) -> int:
+    segment_paths = [Path(path) for path in paths if Path(path).exists()]
+    if not segment_paths:
+        raise ValueError("No existing MP4 segments were provided for concat.")
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    list_file = _write_concat_list(segment_paths, output.parent)
+    try:
+        command = [
+            ffmpeg_executable(),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            str(list_file),
+            "-an",
+        ]
+        if reencode:
+            bitrate = f"{int(bitrate_kbps)}k"
+            command.extend(
+                [
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-b:v",
+                    bitrate,
+                    "-maxrate",
+                    bitrate,
+                    "-bufsize",
+                    f"{int(bitrate_kbps) * 2}k",
+                    "-pix_fmt",
+                    "yuv420p",
+                ]
+            )
+        else:
+            command.extend(["-c", "copy"])
+        command.extend(["-movflags", "+faststart", str(output)])
+        completed = subprocess.run(
+            command,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        return int(completed.returncode)
+    finally:
+        try:
+            list_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _write_concat_list(paths: list[Path], parent: Path) -> Path:
+    fd, raw_path = tempfile.mkstemp(prefix="bas_concat_", suffix=".txt", dir=str(parent))
+    os.close(fd)
+    path = Path(raw_path)
+    with path.open("w", encoding="utf-8") as f:
+        for item in paths:
+            escaped = item.resolve().as_posix().replace("'", r"'\''")
+            f.write(f"file '{escaped}'\n")
+    return path
+
+
+def _ffmpeg_executable() -> str:
+    return ffmpeg_executable()

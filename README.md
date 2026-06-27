@@ -1,6 +1,21 @@
 
 # BAS 本地说明
 
+## 2026-06-27 前 60 秒纯净视频回放
+- 新增“1 秒分段的 H.264 环形缓存 + 一键导出前 60 秒纯净视频”能力，缓存默认持续保留最近 `120` 秒原始相机画面，超过窗口后自动淘汰旧分段。
+- 缓存录制与导出都基于 `out.frame.image` 原始画面，不会把进洞路线、调试线或其它画线内容写进视频，导出结果为纯净视频。
+- 主界面“现场抓取”区新增“导出前60秒纯净视频”按钮；运行中点击后会把最近 `60` 秒缓存片段导出为独立 MP4 文件，不参与后续覆盖。
+- 为避免误触和重复导出，新增 `30` 秒冷却限制：30 秒内连续多次触发只响应第一次，后续请求会被拒绝，直到冷却结束。
+- 新增 Stream Deck / 外部按键控制命令：
+  - `python -m bas.cli remote-control save-retro-clip`
+  - `scripts\BAS_SD_Save_Retro_Clip.cmd`
+- 默认参数位于 `configs/default.yaml` 的 `instant_replay` 段：
+  - `segment_seconds: 1`
+  - `buffer_seconds: 120`
+  - `export_seconds: 60`
+  - `cooldown_seconds: 30`
+  - `bitrate_kbps: 6000`
+
 ## 2026-06-27 运动时冻结路线
 - 新增“运动时冻结路线”功能：当状态机判断球局进入运动阶段后，前端预览和投影会优先保持上一份稳定路线，避免进洞线在击球后持续闪烁。
 - 该功能可在“设置 -> 基础 -> 路线防闪烁”中手动开启或关闭，修改后会保存到 `local_settings/user_settings.json`。
@@ -53,6 +68,7 @@ python -m bas.cli remote-control toggle-shot-mode
 python -m bas.cli remote-control free-shot-once
 python -m bas.cli remote-control black-shot-once
 python -m bas.cli remote-control toggle-star-formula
+python -m bas.cli remote-control save-retro-clip
 ```
 
 3. 如果 Stream Deck 适合直接绑定固定 `.cmd` 文件，可以使用下面这些独立脚本：
@@ -65,6 +81,7 @@ scripts\BAS_SD_Toggle_Shot_Mode.cmd
 scripts\BAS_SD_Free_Shot_Once.cmd
 scripts\BAS_SD_Black_Shot_Once.cmd
 scripts\BAS_SD_Toggle_Star_Formula.cmd
+scripts\BAS_SD_Save_Retro_Clip.cmd
 ```
 
 4. 如果你之后还想扩展额外动作，仍然可以继续使用通用脚本：
@@ -77,6 +94,7 @@ scripts\BAS_StreamDeck_Command.cmd toggle-shot-mode
 scripts\BAS_StreamDeck_Command.cmd free-shot-once
 scripts\BAS_StreamDeck_Command.cmd black-shot-once
 scripts\BAS_StreamDeck_Command.cmd toggle-star-formula
+scripts\BAS_StreamDeck_Command.cmd save-retro-clip
 ```
 
 ### 支持的指令
@@ -88,6 +106,7 @@ scripts\BAS_StreamDeck_Command.cmd toggle-star-formula
 - `free-shot-once`：只把当前这一杆临时切为自由击球；到底层状态机完成本杆结算后自动恢复。
 - `black-shot-once`：只把当前这一杆临时指定为黑球目标，仅在规则击球模式下生效。
 - `toggle-star-formula`：颗星公式开关切换。
+- `save-retro-clip`：导出最近 60 秒无画线纯净视频，并受 30 秒冷却保护。
 
 ### 说明
 

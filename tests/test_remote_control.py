@@ -22,3 +22,7 @@ def test_remote_command_queue_roundtrip(tmp_path: Path) -> None:
 def test_remote_action_normalization_rejects_unknown_command() -> None:
     with pytest.raises(ValueError):
         normalize_remote_action("not-a-real-command")
+
+
+def test_remote_action_normalization_accepts_retro_clip_alias() -> None:
+    assert normalize_remote_action("save-retro-clip") == "save_retro_clip"
