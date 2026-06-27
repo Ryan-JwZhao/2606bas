@@ -19,7 +19,7 @@ from ..calibration import (
 from ..capture import create_capture_service
 from ..geometry import TableGeometryLoader
 from ..paths import PROJECT_ROOT
-from ..perception import create_detector
+from ..perception import build_detection_region_policy, create_detector, filter_detections_by_region
 from ..schemas import Detection
 from ..table_boundaries import EdgeInsets
 
@@ -484,7 +484,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
     ) -> Optional[BallCompensationSample]:
         deadline = time.perf_counter() + ENGINEERED_SAMPLE_TIMEOUT_SECONDS
         history: list[tuple[np.ndarray, float, float]] = []
-        detection_mask = None
+        detection_regions = None
         settle_started_at: float | None = None
         while time.perf_counter() < deadline:
             if self._abort_requested:
@@ -495,9 +495,11 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 time.sleep(0.03)
                 continue
             frame = packet.image
-            if detection_mask is None:
-                detection_mask = _table_mask_for_frame(frame, geometry, calibration)
-            detections = detector.detect(frame, mask_polygon=detection_mask)
+            if detection_regions is None:
+                detection_regions = _detection_regions_for_frame(frame, geometry, calibration)
+            mask_polygon = detection_regions.global_polygon if detection_regions is not None else None
+            detections = detector.detect(frame, mask_polygon=mask_polygon)
+            detections = filter_detections_by_region(detections, detection_regions)
             candidate, candidate_count, distance_px = _pick_ball_candidate(detections, expected_cam)
             if candidate is None:
                 history.clear()
@@ -622,18 +624,19 @@ def _render_target_image(
     return image
 
 
-def _table_mask_for_frame(frame_bgr: np.ndarray, geometry, calibration) -> Optional[np.ndarray]:
+def _detection_regions_for_frame(frame_bgr: np.ndarray, geometry, calibration):
     if frame_bgr is None or frame_bgr.size == 0:
         return None
-    height, width = frame_bgr.shape[:2]
-    if geometry is not None and not geometry.is_empty:
-        outer, _, _ = geometry.scaled(width, height)
-        if outer.shape[0] >= 3:
-            return outer.astype(np.float32)
-    poly = np.asarray(calibration.projection.table_polygon_cam, dtype=np.float32).reshape((-1, 2))
-    if poly.shape[0] >= 3:
-        return poly.astype(np.float32)
-    return None
+    fallback_polygon = None
+    poly = getattr(getattr(calibration, "projection", None), "table_polygon_cam", None)
+    if poly is not None:
+        poly_np = np.asarray(poly, dtype=np.float32).reshape((-1, 2))
+        if poly_np.shape[0] >= 3:
+            fallback_polygon = poly_np.astype(np.float32)
+    policy = build_detection_region_policy(frame_bgr.shape, geometry, fallback_polygon=fallback_polygon)
+    if policy.global_polygon is None and policy.ball_polygon is None and policy.cue_stick_polygon is None:
+        return None
+    return policy
 
 
 def _pick_ball_candidate(detections: list[Detection], expected_cam: np.ndarray) -> tuple[Optional[Detection], int, float]:

@@ -46,3 +46,16 @@ def test_detect_service_reuses_detections_between_intervals() -> None:
     assert outputs[2].detections[0].cls_name == "call_1"
     assert outputs[3].detections[0].cls_name == "call_2"
     assert outputs[1].detector_version == "counting:cached"
+
+
+def test_detect_service_resets_cached_result() -> None:
+    detector = CountingDetector()
+    service = DetectService(detector, detect_interval_frames=5, detect_fps_limit_hz=0.0)
+
+    first = service.process(_frame(0))
+    service.reset_cache()
+    second = service.process(_frame(1))
+
+    assert detector.calls == 2
+    assert first.detections[0].cls_name == "call_1"
+    assert second.detections[0].cls_name == "call_2"

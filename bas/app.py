@@ -15,7 +15,7 @@ from .geometry_runtime import RuntimeGeometryReloader
 from .learning import LearningSampleRecorder
 from .logging_config import configure_logging
 from .operator_controls import RuntimeControlState
-from .perception import DetectService, create_detector
+from .perception import DetectService, DetectionRegionPolicy, build_detection_region_policy, create_detector
 from .planning import GeometryPhysicsPlanner
 from .projection import OverlayBuilder
 from .projection.star_formula import StarFormulaConfig
@@ -94,10 +94,11 @@ class RuntimePipeline:
         frame.calib_version = self.calibration.calib_version
         stage_start = time.perf_counter()
         self._update_table_geometry_for_frame(frame)
-        mask = self._camera_table_mask(frame)
+        detection_regions = self._camera_detection_regions(frame)
+        mask = detection_regions.global_polygon if detection_regions is not None else None
         geometry_ms = (time.perf_counter() - stage_start) * 1000.0
         stage_start = time.perf_counter()
-        detections = self.detector.process(frame, mask_polygon=mask)
+        detections = self.detector.process(frame, mask_polygon=mask, detection_regions=detection_regions)
         detect_ms = (time.perf_counter() - stage_start) * 1000.0
         cached = detections.detector_version.endswith(":cached")
         stage_start = time.perf_counter()
@@ -170,6 +171,9 @@ class RuntimePipeline:
         self._last_state = None
         self._last_plan = None
         self._last_overlay = None
+        reset_cache = getattr(self.detector, "reset_cache", None)
+        if callable(reset_cache):
+            reset_cache()
         LOGGER.info(
             "Geometry hot-reloaded: outline=%s inline=%s pocket=%s empty=%s",
             self.config.geometry.outline_path,
@@ -178,15 +182,34 @@ class RuntimePipeline:
             self.geometry.is_empty,
         )
 
+    def _camera_detection_regions(
+        self,
+        frame: FramePacket,
+    ) -> DetectionRegionPolicy | None:
+        if frame.image is None or frame.image.size == 0:
+            return None
+        fallback_polygon = self._camera_table_mask(frame)
+        policy = build_detection_region_policy(
+            frame.image.shape,
+            self.geometry,
+            fallback_polygon=fallback_polygon,
+        )
+        if policy.global_polygon is None and policy.ball_polygon is None and policy.cue_stick_polygon is None:
+            return None
+        return policy
+
     def _camera_table_mask(self, frame: FramePacket) -> Optional[np.ndarray]:
         if frame.image is not None and not self.geometry.is_empty:
             h, w = frame.image.shape[:2]
             outer, _, _ = self.geometry.scaled(w, h)
             if outer.shape[0] >= 3:
                 return outer.astype(np.float32)
-        poly = self.calibration.projection.table_polygon_cam
-        if poly is not None and poly.shape[0] >= 3:
-            return poly.astype(np.float32)
+        poly = getattr(getattr(self.calibration, "projection", None), "table_polygon_cam", None)
+        if poly is None:
+            return None
+        poly_np = np.asarray(poly, dtype=np.float32).reshape((-1, 2))
+        if poly_np.shape[0] >= 3:
+            return poly_np.astype(np.float32)
         return None
 
     def _update_table_geometry_for_frame(self, frame: FramePacket) -> None:

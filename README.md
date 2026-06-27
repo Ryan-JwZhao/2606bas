@@ -300,3 +300,4 @@ python -m bas
 - BAS 现在带有运行期单实例保护：`Start_BAS.cmd`、`python -m bas`、`python -m bas ui`、`python -m bas run` 在已有系统运行时都会直接静默返回，不再重复拉起第二套系统。
 - 重复触发启动时不弹窗、不显示“已运行”提示，也不会再创建额外的 BAS 主窗口，方便后续做 Stream Deck 或其他自动化控制。
 - 远程控制命令 `python -m bas remote-control <action>` 不受单实例限制，仍然可以在系统运行期间继续向正在运行的主界面投递控制指令。
+> 2026-06-27 更新：YOLO 台球类别现在只在 `inline + pocket` 拼出的最大投影可见边界内生效，`cue_stick` 只在 `outline` 内生效。正常使用不需要额外开关；更新几何文件后重新启动程序或等待几何热重载即可应用。

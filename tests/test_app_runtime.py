@@ -23,7 +23,7 @@ class _Detector:
     def __init__(self):
         self._calls = 0
 
-    def process(self, frame, mask_polygon=None):
+    def process(self, frame, mask_polygon=None, detection_regions=None):
         self._calls += 1
         version = "fake_detector" if self._calls == 1 else "fake_detector:cached"
         return DetectionsFrame(frame_id=frame.frame_id, ts_cam_ns=frame.ts_cam_ns, detections=[], detector_version=version)

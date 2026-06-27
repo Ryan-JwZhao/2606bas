@@ -7,6 +7,7 @@ import numpy as np
 
 from ..schemas import DetectionsFrame, FramePacket
 from .detector import Detector
+from .regions import DetectionRegionPolicy, filter_detections_by_region
 
 
 class DetectService:
@@ -18,7 +19,16 @@ class DetectService:
         self._last_detect_ts = 0.0
         self._last_result: Optional[DetectionsFrame] = None
 
-    def process(self, frame: FramePacket, mask_polygon: Optional[np.ndarray] = None) -> DetectionsFrame:
+    def reset_cache(self) -> None:
+        self._last_detect_ts = 0.0
+        self._last_result = None
+
+    def process(
+        self,
+        frame: FramePacket,
+        mask_polygon: Optional[np.ndarray] = None,
+        detection_regions: DetectionRegionPolicy | None = None,
+    ) -> DetectionsFrame:
         start = time.perf_counter()
         frame_index = self._frame_index
         self._frame_index += 1
@@ -31,6 +41,7 @@ class DetectService:
                 latency_ms=0.0,
             )
         detections = self.detector.detect(frame.image, mask_polygon=mask_polygon) if frame.image is not None else []
+        detections = filter_detections_by_region(detections, detection_regions)
         latency_ms = (time.perf_counter() - start) * 1000.0
         self._last_detect_ts = time.perf_counter()
         result = DetectionsFrame(
