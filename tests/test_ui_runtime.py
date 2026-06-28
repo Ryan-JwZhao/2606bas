@@ -120,6 +120,26 @@ def test_tick_runtime_exception_stops_pipeline_instead_of_crashing(monkeypatch) 
     assert window._frame_busy is False
 
 
+def test_settings_dialog_groups_controls_into_clear_tabs() -> None:
+    app = _app()
+    dialog = main_window.SettingsDialog(AppConfig(), main_window.StarFormulaConfig())
+
+    assert [dialog.tabs.tabText(i) for i in range(dialog.tabs.count())] == [
+        "相机采集",
+        "检测状态",
+        "标定几何",
+        "投影输出",
+        "路线策略",
+        "学习数据",
+        "投影修正",
+        "颗星公式",
+    ]
+    assert dialog.tabs.usesScrollButtons() is True
+
+    dialog.close()
+    app.processEvents()
+
+
 def test_draw_rule_plan_preview_uses_computed_stroke_style() -> None:
     window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
     window.star_formula = None

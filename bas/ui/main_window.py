@@ -110,11 +110,10 @@ class SettingsDialog(QtWidgets.QDialog):
         self.resize(820, 760)
         layout = QtWidgets.QVBoxLayout(self)
         tabs = QtWidgets.QTabWidget()
+        tabs.setUsesScrollButtons(True)
+        tabs.setElideMode(QtCore.Qt.ElideRight)
+        self.tabs = tabs
         layout.addWidget(tabs, 1)
-
-        general = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout(general)
-        form.setLabelAlignment(QtCore.Qt.AlignRight)
         self.model_path = self._path_row(config.detector.model_path, "模型文件 (*.pt *.onnx *.engine);;所有文件 (*.*)")
         self.class_file_path = self._path_row(config.detector.class_file_path, "类别文件 (*.txt *.json);;所有文件 (*.*)")
         self.learning_ranker_enabled = QtWidgets.QCheckBox("启用学习排序")
@@ -309,31 +308,59 @@ class SettingsDialog(QtWidgets.QDialog):
             1,
             4,
         )
-        form.addRow("台球模型路径", self.model_path)
-        form.addRow("类别文件路径", self.class_file_path)
-        form.addRow("学习排序模型", learning_ranker_box)
-        form.addRow("学习样本目录", learning_collect_box)
-        form.addRow("视频文件路径", self.video_path)
-        form.addRow("Nori SDK 目录", self.nori_sdk_root)
-        form.addRow("工业相机畸变矫正", distortion_box)
-        form.addRow("工业相机曝光", exposure_box)
-        form.addRow("工业相机白平衡", white_balance_box)
-        form.addRow("检测后端", self.detector_backend)
-        form.addRow("台球状态机", self.state_machine_engine)
-        form.addRow("检测间隔(帧)", self.detect_interval)
-        form.addRow("检测频率上限(Hz)", self.detect_fps_limit)
-        form.addRow("outline.json", self.outline_path)
-        form.addRow("inline.json", self.inline_path)
-        form.addRow("pocket.json", self.pocket_path)
-        form.addRow("相机标定文件", self.camera_calibration_file)
-        form.addRow("投影校准模式", self.projection_mode)
-        form.addRow("平面校正文件", self.projection_calibration_file)
-        form.addRow("工程球体补偿文件", self.engineered_ball_compensation_file)
-        form.addRow("默认投影设备", self.proj_screen)
-        form.addRow("默认投影分辨率", proj_size)
-        form.addRow("路线防闪烁", route_freeze_box)
-        form.addRow("二次纠正", cue_sector_box)
-        tabs.addTab(general, "基础")
+        self._add_form_tab(
+            tabs,
+            "相机采集",
+            [
+                ("视频文件路径", self.video_path),
+                ("Nori SDK 目录", self.nori_sdk_root),
+                ("工业相机畸变矫正", distortion_box),
+                ("工业相机曝光", exposure_box),
+                ("工业相机白平衡", white_balance_box),
+            ],
+        )
+        self._add_form_tab(
+            tabs,
+            "检测状态",
+            [
+                ("检测后端", self.detector_backend),
+                ("台球模型路径", self.model_path),
+                ("类别文件路径", self.class_file_path),
+                ("检测间隔(帧)", self.detect_interval),
+                ("检测频率上限(Hz)", self.detect_fps_limit),
+                ("台球状态机", self.state_machine_engine),
+            ],
+        )
+        self._add_form_tab(
+            tabs,
+            "标定几何",
+            [
+                ("outline.json", self.outline_path),
+                ("inline.json", self.inline_path),
+                ("pocket.json", self.pocket_path),
+                ("相机标定文件", self.camera_calibration_file),
+                ("投影校准模式", self.projection_mode),
+                ("平面校正文件", self.projection_calibration_file),
+                ("工程球体补偿文件", self.engineered_ball_compensation_file),
+            ],
+        )
+        self._add_form_tab(
+            tabs,
+            "投影输出",
+            [
+                ("默认投影设备", self.proj_screen),
+                ("默认投影分辨率", proj_size),
+            ],
+        )
+        self._add_widget_tab(tabs, "路线策略", [route_freeze_box, cue_sector_box])
+        self._add_form_tab(
+            tabs,
+            "学习数据",
+            [
+                ("学习排序模型", learning_ranker_box),
+                ("学习样本目录", learning_collect_box),
+            ],
+        )
 
         tuning = QtWidgets.QWidget()
         tuning_layout = QtWidgets.QVBoxLayout(tuning)
@@ -471,6 +498,30 @@ class SettingsDialog(QtWidgets.QDialog):
         if cancel_button is not None:
             cancel_button.setText("取消")
         layout.addWidget(buttons)
+
+    def _add_form_tab(self, tabs: QtWidgets.QTabWidget, title: str, rows: list[tuple[str, object]]) -> None:
+        page = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(page)
+        form.setLabelAlignment(QtCore.Qt.AlignRight)
+        form.setFieldGrowthPolicy(QtWidgets.QFormLayout.ExpandingFieldsGrow)
+        for label, field in rows:
+            form.addRow(label, field)
+        tabs.addTab(self._scroll_page(page), title)
+
+    def _add_widget_tab(self, tabs: QtWidgets.QTabWidget, title: str, widgets: list[QtWidgets.QWidget]) -> None:
+        page = QtWidgets.QWidget()
+        page_layout = QtWidgets.QVBoxLayout(page)
+        for widget in widgets:
+            page_layout.addWidget(widget)
+        page_layout.addStretch(1)
+        tabs.addTab(self._scroll_page(page), title)
+
+    def _scroll_page(self, page: QtWidgets.QWidget) -> QtWidgets.QScrollArea:
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setWidget(page)
+        return scroll
 
     def apply_to_config(self, config: AppConfig) -> None:
         config.detector.model_path = self.model_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
