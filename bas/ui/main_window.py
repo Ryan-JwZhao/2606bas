@@ -52,6 +52,7 @@ from ..remote_control import RemoteCommand, RemoteCommandQueue
 from ..route_freeze import MotionRouteFreezeController
 from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
 from ..schemas import MatchPhase, OverlayCircle, OverlayLine, ProjectionOverlay, to_jsonable
+from ..state import normalize_state_machine_engine
 from ..state_debug import StateDebugSession, StateDebugSessionResult
 from ..utils import unit
 from .engineered_ball_compensation_wizard import EngineeredBallCompensationWizardDialog
@@ -203,6 +204,11 @@ class SettingsDialog(QtWidgets.QDialog):
         self.detector_backend = QtWidgets.QComboBox()
         self.detector_backend.addItems(["disabled", "ultralytics", "debug_color"])
         self.detector_backend.setCurrentText(config.detector.backend)
+        self.state_machine_engine = QtWidgets.QComboBox()
+        self.state_machine_engine.addItem("状态机（旧）", "legacy")
+        self.state_machine_engine.addItem("状态机（新）", "modern")
+        state_engine_index = self.state_machine_engine.findData(normalize_state_machine_engine(getattr(config.state, "engine", "legacy")))
+        self.state_machine_engine.setCurrentIndex(max(0, state_engine_index))
         self.detect_interval = self._spin(int(config.detector.detect_interval_frames), 1, 12)
         self.detect_fps_limit = self._dspin(float(config.detector.detect_fps_limit_hz), 0.0, 30.0, 0.5)
         self.proj_screen = QtWidgets.QComboBox()
@@ -276,6 +282,7 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("工业相机曝光", exposure_box)
         form.addRow("工业相机白平衡", white_balance_box)
         form.addRow("检测后端", self.detector_backend)
+        form.addRow("台球状态机", self.state_machine_engine)
         form.addRow("检测间隔(帧)", self.detect_interval)
         form.addRow("检测频率上限(Hz)", self.detect_fps_limit)
         form.addRow("outline.json", self.outline_path)
@@ -444,6 +451,7 @@ class SettingsDialog(QtWidgets.QDialog):
         config.camera.white_balance_auto = self.white_balance_auto.isChecked()
         config.camera.white_balance_value = int(self.white_balance_value.value())
         config.detector.backend = self.detector_backend.currentText()
+        config.state.engine = normalize_state_machine_engine(self.state_machine_engine.currentData())
         config.detector.detect_interval_frames = int(self.detect_interval.value())
         config.detector.detect_fps_limit_hz = float(self.detect_fps_limit.value())
         config.geometry.outline_path = self.outline_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
@@ -1208,6 +1216,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.shot_mode_combo.addItem("自由模式", "free")
         self.shot_mode_combo.currentIndexChanged.connect(self._shot_mode_changed)
         self.side_layout.addWidget(self._field("画线模式", self.shot_mode_combo))
+        self.state_machine_combo = QtWidgets.QComboBox()
+        self.state_machine_combo.addItem("状态机（旧）", "legacy")
+        self.state_machine_combo.addItem("状态机（新）", "modern")
+        self.state_machine_combo.currentIndexChanged.connect(self._state_machine_changed)
+        self.side_layout.addWidget(self._field("状态机", self.state_machine_combo))
         self.side_layout.addWidget(self._section_label("现场抓取"))
         self.raw_photo_btn = self._button("抓取无画线照片")
         self.instant_replay_export_btn = self._button("导出前60秒纯净视频")
@@ -1504,6 +1517,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.shot_mode_combo.blockSignals(True)
         self.shot_mode_combo.setCurrentIndex(max(0, idx))
         self.shot_mode_combo.blockSignals(False)
+        engine = normalize_state_machine_engine(getattr(self.config.state, "engine", "legacy"))
+        engine_idx = self.state_machine_combo.findData(engine)
+        self.state_machine_combo.blockSignals(True)
+        self.state_machine_combo.setCurrentIndex(max(0, engine_idx))
+        self.state_machine_combo.blockSignals(False)
         self.geometry_reference_check.blockSignals(True)
         self.geometry_reference_check.setChecked(bool(self.config.projection.geometry_reference_enabled))
         self.geometry_reference_check.blockSignals(False)
@@ -1529,10 +1547,15 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.config.replay.enabled = self.replay_check.isChecked()
         self.config.projection.geometry_reference_enabled = self.geometry_reference_check.isChecked()
         self.config.planner.shot_mode = str(self.shot_mode_combo.currentData() or "rule")
+        self.config.state.engine = normalize_state_machine_engine(self.state_machine_combo.currentData())
 
     @QtCore.pyqtSlot(int)
     def _shot_mode_changed(self, _index: int = 0) -> None:
         self._set_base_shot_mode(str(self.shot_mode_combo.currentData() or "rule"), source="ui")
+
+    @QtCore.pyqtSlot(int)
+    def _state_machine_changed(self, _index: int = 0) -> None:
+        self._set_state_machine_engine(str(self.state_machine_combo.currentData() or "legacy"), source="ui")
 
     @QtCore.pyqtSlot(bool)
     def _geometry_reference_toggled(self, checked: bool) -> None:
@@ -1615,6 +1638,26 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._append_log(f"画线模式已切换为 {label} ({source})")
         self._refresh_current_plan()
         self._update_module_status(self.last_output)
+
+    def _set_state_machine_engine(self, engine: str, *, source: str) -> None:
+        normalized = normalize_state_machine_engine(engine)
+        current = normalize_state_machine_engine(getattr(self.config.state, "engine", "legacy"))
+        idx = self.state_machine_combo.findData(normalized)
+        self.state_machine_combo.blockSignals(True)
+        self.state_machine_combo.setCurrentIndex(max(0, idx))
+        self.state_machine_combo.blockSignals(False)
+        if normalized == current:
+            return
+        self.config.state.engine = normalized
+        self._save_user_settings()
+        label = "状态机（新）" if normalized == "modern" else "状态机（旧）"
+        self._append_log(f"台球状态机已切换为 {label} ({source})")
+        if self.pipeline is not None:
+            self._append_log("状态机实现已变更，正在重启采集以应用设置")
+            self.stop_pipeline()
+            self.start_pipeline()
+        elif self._pipeline_start_pending:
+            self._append_log("状态机实现已变更，将在本次启动完成后下次采集生效")
 
     def _set_star_formula_enabled(self, enabled: bool, *, source: str) -> None:
         self.star_formula.enabled = bool(enabled)
@@ -1788,6 +1831,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.config.geometry.outline_path,
             self.config.geometry.inline_path,
             self.config.geometry.pocket_path,
+            tuple(sorted(vars(self.config.state).items())),
             self.config.planner.enabled,
             self.config.planner.shot_mode,
             self.config.planner.max_cut_angle_deg,

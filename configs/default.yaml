@@ -69,12 +69,24 @@ geometry:
   pocket_path: C:/CodeProject/data/0618_DrawLine/pocket.json
 
 state:
+  engine: legacy
   still_speed_px_s: 25.0
   moving_speed_px_s: 65.0
+  still_speed_mm_s: 8.0
+  moving_speed_mm_s: 22.0
   stable_frames: 12
   armed_frames: 4
   settle_frames: 18
   anomaly_frames: 8
+  collision_epsilon_mm: 10.0
+  rail_epsilon_mm: 14.0
+  pocket_funnel_radius_mm: 95.0
+  pocket_mouth_radius_mm: 125.0
+  pocket_throat_radius_mm: 75.0
+  pocket_interior_radius_mm: 44.0
+  pocket_confirm_missing_ms: 350
+  pocket_reappear_window_ms: 800
+  pocket_mouth_settle_ms: 3000
 
 planner:
   enabled: true

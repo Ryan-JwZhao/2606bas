@@ -21,7 +21,7 @@ from .projection import OverlayBuilder
 from .projection.star_formula import StarFormulaConfig
 from .replay import ReplayRecorder
 from .schemas import DetectionsFrame, FramePacket, MatchStateFrame, ProjectionOverlay, ShotPlan, TracksFrame
-from .state import MatchStateMachine
+from .state import create_match_state_machine
 from .table_boundaries import EdgeInsets, derive_table_boundaries
 from .tracking import TemporalTracker
 
@@ -64,7 +64,7 @@ class RuntimePipeline:
             detect_fps_limit_hz=config.detector.detect_fps_limit_hz,
         )
         self.tracker = TemporalTracker(config.tracker)
-        self.state_machine = MatchStateMachine(config.state)
+        self.state_machine = create_match_state_machine(config.state)
         self.planner = GeometryPhysicsPlanner(config.planner, self.calibration, learning_config=config.learning)
         self.overlay_builder = OverlayBuilder(config.projection, self.calibration, star_formula=star_formula)
         self.recorder: Optional[ReplayRecorder] = ReplayRecorder(config.replay) if config.replay.enabled else None

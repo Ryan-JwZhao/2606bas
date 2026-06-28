@@ -121,6 +121,7 @@ class GeometryConfig:
 
 @dataclass
 class StateConfig:
+    engine: str = "legacy"  # legacy | modern
     still_speed_px_s: float = 25.0
     moving_speed_px_s: float = 65.0
     still_speed_mm_s: float = 8.0
@@ -132,6 +133,12 @@ class StateConfig:
     collision_epsilon_mm: float = 10.0
     rail_epsilon_mm: float = 14.0
     pocket_funnel_radius_mm: float = 95.0
+    pocket_mouth_radius_mm: float = 125.0
+    pocket_throat_radius_mm: float = 75.0
+    pocket_interior_radius_mm: float = 44.0
+    pocket_confirm_missing_ms: int = 350
+    pocket_reappear_window_ms: int = 800
+    pocket_mouth_settle_ms: int = 3000
     event_cooldown_frames: int = 5
     shot_tip_radius_multiplier: float = 3.0
     shot_speed_jump_mm_s: float = 18.0

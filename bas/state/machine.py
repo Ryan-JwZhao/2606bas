@@ -75,9 +75,9 @@ class MatchStateMachine:
         pockets_mm: Optional[List[tuple[float, float]]] = None,
         ball_diameter_mm: Optional[float] = None,
     ) -> None:
-        if inner_polygon_mm:
+        if inner_polygon_mm is not None:
             self._table_inner_polygon_mm = [(float(x), float(y)) for x, y in inner_polygon_mm]
-        if pockets_mm:
+        if pockets_mm is not None:
             self._pockets_mm = [(float(x), float(y)) for x, y in pockets_mm]
         if ball_diameter_mm is not None:
             self._ball_diameter_mm = float(ball_diameter_mm)
@@ -247,7 +247,7 @@ class MatchStateMachine:
             self._stable_count = max(0, self._stable_count - 1)
 
         cue_stick_seen = any(t.group == "cue_stick" and t.visibility == "visible" and t.quality > 0.35 for t in tracks)
-        cue_motion = any(t.group == "cue" and self._speed(t) > self.config.moving_speed_px_s for t in tracks)
+        cue_motion = any(t.group == "cue" and self._speed(t) > self._moving_threshold(t) for t in tracks)
         if cue_stick_seen and self.phase == MatchPhase.STABLE_IDLE:
             self._armed_count += 1
         else:

@@ -65,6 +65,7 @@ class UserSettings:
     projection_geometry_reference_enabled: Optional[bool] = None
     ui_geometry_reference_enabled: Optional[bool] = None
     replay_enabled: Optional[bool] = None
+    state_machine_engine: Optional[str] = None
     shot_mode: Optional[str] = None
     planner_route_freeze_enabled: Optional[bool] = None
     planner_route_freeze_enter_frames: Optional[int] = None
@@ -224,6 +225,9 @@ class UserSettings:
             config.projection.geometry_reference_enabled = bool(self.projection_geometry_reference_enabled)
         if self.replay_enabled is not None:
             config.replay.enabled = bool(self.replay_enabled)
+        if self._has("state_machine_engine") and self.state_machine_engine:
+            engine = str(self.state_machine_engine).strip().lower()
+            config.state.engine = "modern" if engine in {"modern", "new", "v2", "state_machine_new"} else "legacy"
         if self._has("shot_mode") and self.shot_mode:
             mode = str(self.shot_mode).strip().lower()
             config.planner.shot_mode = "free" if mode in {"free", "free_shot"} else "rule"
@@ -316,6 +320,7 @@ class UserSettings:
             ball_center_compensation_scale_y_pct=config.calibration.ball_center_compensation_scale_y_pct,
             ui_geometry_reference_enabled=config.projection.geometry_reference_enabled,
             replay_enabled=config.replay.enabled,
+            state_machine_engine=config.state.engine,
             shot_mode=config.planner.shot_mode,
             planner_route_freeze_enabled=config.planner.route_freeze_enabled,
             planner_route_freeze_enter_frames=config.planner.route_freeze_enter_frames,
