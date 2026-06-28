@@ -35,6 +35,9 @@ tmp/
 temp/
 *.tmp
 
+# Local analysis notes
+状态机.md
+
 # Learning samples and training outputs
 rl/data/*
 !rl/data/.gitkeep
