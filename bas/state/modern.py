@@ -10,6 +10,7 @@ from ..schemas import Event, MatchPhase, MatchStateFrame, TrackObservation, Trac
 from .models import InventoryLedger, MatchRuleState, normalize_object_group, other_object_group
 from .phase import PhaseSignals, ShotPhaseMachine
 from .pocket import PerBallPocketFSM
+from .reconcile import ObservationReconciler
 from .referee import RefereeAdapter, ShotContextAggregator, shot_context_payload
 
 
@@ -24,6 +25,7 @@ class ModernMatchStateMachine:
         self.ledger = InventoryLedger()
         self.rule_state = MatchRuleState()
         self.referee = RefereeAdapter()
+        self.reconciler = ObservationReconciler(config)
         self._turn_target_group: Optional[str] = None
         self._snapshot_layout: List[TrackObservation] = []
         self._last_layout: List[TrackObservation] = []
@@ -35,6 +37,7 @@ class ModernMatchStateMachine:
         self._last_debug_snapshot: Dict[str, object] = {}
         self._last_referee_payload: dict[str, object] = {}
         self._last_shot_payload: dict[str, object] = {}
+        self._pending_turn_resolve: Optional[dict[str, int]] = None
         self._table_inner_polygon_mm: list[tuple[float, float]] = []
         self._pockets_mm: list[tuple[float, float]] = []
         self._ball_diameter_mm = 57.15
@@ -62,6 +65,7 @@ class ModernMatchStateMachine:
         self.aggregator.reset()
         self.ledger.reset()
         self.rule_state.reset()
+        self.reconciler.reset()
         self._turn_target_group = None
         self._snapshot_layout = []
         self._last_layout = []
@@ -73,6 +77,7 @@ class ModernMatchStateMachine:
         self._last_debug_snapshot = {}
         self._last_referee_payload = {}
         self._last_shot_payload = {}
+        self._pending_turn_resolve = None
 
     def set_table_context(
         self,
@@ -170,6 +175,8 @@ class ModernMatchStateMachine:
         snapshot["referee_intent"] = dict(self._last_referee_payload)
         snapshot["last_shot_context"] = dict(self._last_shot_payload)
         snapshot["pocket_fsm"] = self.pocket_fsm.debug_snapshot()
+        snapshot["observation_reconcile"] = self.reconciler.event_payload(self.reconciler.last_result)
+        snapshot["pending_turn_resolve"] = dict(self._pending_turn_resolve or {})
         return snapshot
 
     def update(self, tracks_frame: TracksFrame) -> MatchStateFrame:
@@ -177,6 +184,7 @@ class ModernMatchStateMachine:
         self._last_layout = list(tracks)
         events: List[Event] = self._drain_operator_events(tracks_frame)
         if self._operator_hold:
+            self.reconciler.update_observation(tracks_frame)
             for event in events:
                 self._recent_events.append(event)
             layout = self._snapshot_layout if self._snapshot_layout else tracks
@@ -192,6 +200,7 @@ class ModernMatchStateMachine:
         if self._operator_lock_frames > 0:
             self._operator_lock_frames -= 1
             self._tick_event_cooldowns()
+            self.reconciler.update_observation(tracks_frame)
             self._process_turn_resolve_if_needed(tracks_frame, events)
             for event in events:
                 self._recent_events.append(event)
@@ -209,9 +218,14 @@ class ModernMatchStateMachine:
         events.extend(sensed_events)
         phase_before = self.phase_machine.phase
         phase = self.phase_machine.update(tracks_frame, signals, events)
+        if self._pending_turn_resolve is not None and phase != MatchPhase.ANOMALY_RECOVERY:
+            self.phase_machine.force(MatchPhase.TURN_RESOLVE)
+            phase = MatchPhase.TURN_RESOLVE
         if any(event.name == "SHOT_STARTED" for event in events):
             self._snapshot_layout = list(tracks)
-        pocket_events = self.pocket_fsm.update(tracks_frame, phase)
+        self.reconciler.update_observation(tracks_frame)
+        pocket_phase = MatchPhase.TURN_RESOLVE if self._pending_turn_resolve is not None else phase
+        pocket_events = self.pocket_fsm.update(tracks_frame, pocket_phase)
         events.extend(pocket_events)
         ts_ms = self._ts_ms(tracks_frame.ts_cam_ns)
         self.aggregator.ingest(events, ts_ms=ts_ms, rule_state=self.rule_state)
@@ -230,12 +244,31 @@ class ModernMatchStateMachine:
         return state
 
     def _process_turn_resolve_if_needed(self, tracks_frame: TracksFrame, events: List[Event]) -> None:
-        if not any(event.name == "TURN_RESOLVE" for event in events):
+        resolve_events = [event for event in events if event.name == "TURN_RESOLVE"]
+        if resolve_events and self._should_defer_turn_resolve(tracks_frame, resolve_events):
+            self._start_pending_turn_resolve(tracks_frame, events)
             return
+        if not resolve_events and self._pending_turn_resolve is None:
+            return
+        if self._pending_turn_resolve is not None and self._should_keep_waiting_for_pockets(tracks_frame):
+            return
+        pending = self._pending_turn_resolve
+        self._pending_turn_resolve = None
         ts_ms = self._ts_ms(tracks_frame.ts_cam_ns)
         shot_ctx = self.aggregator.finalize(ts_ms=ts_ms, rule_state=self.rule_state)
         self.ledger.apply(shot_ctx)
-        intent = self.referee.evaluate(shot_ctx, self.ledger, self.rule_state)
+        reconcile_result = self.reconciler.reconcile(
+            self.ledger,
+            supporting_events=[*self._recent_events, *events],
+        )
+        review_reasons = [str(item.get("mode", "")) for item in reconcile_result.mismatches if item.get("mode")]
+        intent = self.referee.evaluate(
+            shot_ctx,
+            self.ledger,
+            self.rule_state,
+            effective_remaining=reconcile_result.effective_remaining,
+            review_reasons=review_reasons,
+        )
         self.rule_state.table_state = intent.table_state_after
         self.rule_state.actor_group = intent.actor_group_after
         self.rule_state.opponent_group = intent.opponent_group_after
@@ -244,6 +277,29 @@ class ModernMatchStateMachine:
         self._turn_target_group = intent.next_group_hint
         self._last_shot_payload = shot_context_payload(shot_ctx)
         self._last_referee_payload = intent.to_payload()
+        if reconcile_result.mismatches:
+            events.append(
+                Event(
+                    name="LEDGER_OBSERVATION_MISMATCH",
+                    ts_cam_ns=tracks_frame.ts_cam_ns,
+                    frame_id=tracks_frame.frame_id,
+                    payload=self.reconciler.event_payload(reconcile_result),
+                    confidence=0.70,
+                )
+            )
+        if pending is not None:
+            events.append(
+                Event(
+                    name="TURN_RESOLVE_COMMITTED",
+                    ts_cam_ns=tracks_frame.ts_cam_ns,
+                    frame_id=tracks_frame.frame_id,
+                    payload={
+                        "deferred_from_frame_id": int(pending.get("frame_id", tracks_frame.frame_id)),
+                        "deferred_ms": self._elapsed_ms(tracks_frame.ts_cam_ns, int(pending.get("ts_cam_ns", tracks_frame.ts_cam_ns))),
+                    },
+                    confidence=1.0,
+                )
+            )
         events.append(
             Event(
                 name="SHOT_CONTEXT_FINALIZED",
@@ -272,6 +328,43 @@ class ModernMatchStateMachine:
                     confidence=0.80,
                 )
             )
+
+    def _should_defer_turn_resolve(self, tracks_frame: TracksFrame, resolve_events: List[Event]) -> bool:
+        if self._pending_turn_resolve is not None:
+            return False
+        if any(str((event.payload or {}).get("source", "")).strip().lower() == "operator" for event in resolve_events):
+            return False
+        if not self.pocket_fsm.has_pending_resolution(tracks_frame.ts_cam_ns):
+            return False
+        return int(getattr(self.config, "turn_resolve_grace_ms", 900)) > 0
+
+    def _start_pending_turn_resolve(self, tracks_frame: TracksFrame, events: List[Event]) -> None:
+        grace_ms = max(1, int(getattr(self.config, "turn_resolve_grace_ms", 900)))
+        self._pending_turn_resolve = {
+            "frame_id": int(tracks_frame.frame_id),
+            "ts_cam_ns": int(tracks_frame.ts_cam_ns),
+            "deadline_ns": int(tracks_frame.ts_cam_ns) + grace_ms * 1_000_000,
+        }
+        events.append(
+            Event(
+                name="TURN_RESOLVE_DEFERRED",
+                ts_cam_ns=tracks_frame.ts_cam_ns,
+                frame_id=tracks_frame.frame_id,
+                payload={
+                    "grace_ms": grace_ms,
+                    "pending_pockets": self.pocket_fsm.pending_candidates(tracks_frame.ts_cam_ns),
+                },
+                confidence=1.0,
+            )
+        )
+
+    def _should_keep_waiting_for_pockets(self, tracks_frame: TracksFrame) -> bool:
+        pending = self._pending_turn_resolve
+        if pending is None:
+            return False
+        if int(tracks_frame.ts_cam_ns) >= int(pending.get("deadline_ns", tracks_frame.ts_cam_ns)):
+            return False
+        return self.pocket_fsm.has_pending_resolution(tracks_frame.ts_cam_ns)
 
     def _sense(self, tracks_frame: TracksFrame) -> tuple[PhaseSignals, List[Event]]:
         tracks = tracks_frame.tracks
@@ -574,3 +667,7 @@ class ModernMatchStateMachine:
     @staticmethod
     def _ts_ms(ts_cam_ns: int) -> int:
         return int(round(int(ts_cam_ns) / 1_000_000.0))
+
+    @staticmethod
+    def _elapsed_ms(now_ns: int, since_ns: int) -> int:
+        return max(0, int(round((int(now_ns) - int(since_ns)) / 1_000_000.0)))

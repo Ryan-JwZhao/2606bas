@@ -6,6 +6,7 @@ from bas.config import AppConfig, StateConfig
 from bas.schemas import Event, MatchPhase, TrackObservation, TracksFrame
 from bas.state import LegacyMatchStateMachine, ModernMatchStateMachine, create_match_state_machine
 from bas.state.models import InventoryLedger, MatchRuleState, ShotContext
+from bas.state.reconcile import ObservationReconciler
 from bas.state.referee import RefereeAdapter
 from bas.user_settings import UserSettings
 
@@ -138,3 +139,92 @@ def test_modern_operator_force_turn_resolve_finalizes_context() -> None:
 
     assert out.phase == "TURN_RESOLVE"
     assert any(event.name == "REFEREE_INTENT" for event in out.events)
+
+
+def test_modern_defers_turn_resolve_until_pending_pocket_confirms() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern", pocket_confirm_missing_ms=300, turn_resolve_grace_ms=900))
+    sm.set_table_context(inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)], pockets_mm=[(0, 0)], ball_diameter_mm=56)
+    sm.phase = MatchPhase.SHOT_ACTIVE
+
+    sm.update(TracksFrame(frame_id=1, ts_cam_ns=1_000_000_000, tracks=[_ball(2, "solid", 35, 35, -20, -20)]))
+    resolve_frame = TracksFrame(frame_id=2, ts_cam_ns=1_100_000_000, tracks=[])
+    deferred_events = [Event("TURN_RESOLVE", 1_100_000_000, 2)]
+    deferred_events.extend(sm.pocket_fsm.update(resolve_frame, MatchPhase.TURN_RESOLVE))
+    sm.aggregator.ingest(deferred_events, ts_ms=1100, rule_state=sm.rule_state)
+    sm._process_turn_resolve_if_needed(resolve_frame, deferred_events)
+
+    assert any(event.name == "TURN_RESOLVE_DEFERRED" for event in deferred_events)
+    assert not any(event.name == "REFEREE_INTENT" for event in deferred_events)
+
+    out = sm.update(TracksFrame(frame_id=3, ts_cam_ns=1_400_000_000, tracks=[]))
+
+    assert any(event.name == "POCKET_CONFIRMED" for event in out.events)
+    assert any(event.name == "TURN_RESOLVE_COMMITTED" for event in out.events)
+    assert any(event.name == "REFEREE_INTENT" for event in out.events)
+    assert sm.ledger.remaining["solid"] == 6
+
+
+def test_referee_effective_remaining_prevents_false_black_upgrade() -> None:
+    ledger = InventoryLedger()
+    ledger.remaining["solid"] = 0
+    rule_state = MatchRuleState(table_state="closed", actor_group="solid", opponent_group="stripe")
+    shot = ShotContext(shot_id=1, ts_start_ms=0, table_state_before="closed", actor_group="solid")
+    shot.potted_confirmed["solid"] = 1
+
+    intent = RefereeAdapter().evaluate(
+        shot,
+        ledger,
+        rule_state,
+        effective_remaining={"cue": 1, "solid": 1, "stripe": 7, "black": 1},
+        review_reasons=["visible_exceeds_ledger"],
+    )
+
+    assert intent.next_group_hint == "solid"
+    assert intent.next_actor_changed is False
+    assert intent.review_required is True
+
+
+def test_observation_reconciler_uses_stable_yolo_as_effective_remaining_only() -> None:
+    cfg = StateConfig(engine="modern", observation_reconcile_stable_frames=2)
+    reconciler = ObservationReconciler(cfg)
+    ledger = InventoryLedger()
+    ledger.remaining["solid"] = 0
+
+    frame = TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[_ball(2, "solid", 120, 120)])
+    reconciler.update_observation(frame)
+    reconciler.update_observation(TracksFrame(frame_id=2, ts_cam_ns=2, tracks=[_ball(2, "solid", 120, 120)]))
+    result = reconciler.reconcile(ledger)
+
+    assert result.effective_remaining["solid"] == 1
+    assert ledger.remaining["solid"] == 0
+    assert result.review_required is True
+    assert result.mismatches[0]["mode"] == "visible_exceeds_ledger"
+
+
+def test_observation_reconciler_does_not_lower_count_without_event_support() -> None:
+    cfg = StateConfig(engine="modern", observation_reconcile_stable_frames=2)
+    reconciler = ObservationReconciler(cfg)
+    ledger = InventoryLedger()
+    ledger.remaining["solid"] = 2
+
+    reconciler.update_observation(TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[]))
+    reconciler.update_observation(TracksFrame(frame_id=2, ts_cam_ns=2, tracks=[]))
+    result = reconciler.reconcile(ledger)
+
+    assert result.effective_remaining["solid"] == 2
+    assert result.review_required is False
+
+
+def test_observation_reconciler_can_lower_count_with_event_support() -> None:
+    cfg = StateConfig(engine="modern", observation_reconcile_stable_frames=2)
+    reconciler = ObservationReconciler(cfg)
+    ledger = InventoryLedger()
+    ledger.remaining["solid"] = 2
+
+    reconciler.update_observation(TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[]))
+    reconciler.update_observation(TracksFrame(frame_id=2, ts_cam_ns=2, tracks=[]))
+    result = reconciler.reconcile(ledger, supporting_events=[Event("BALL_LOST_UNCONFIRMED", 2, 2, payload={"group": "solid"})])
+
+    assert result.effective_remaining["solid"] == 0
+    assert result.review_required is True
+    assert result.mismatches[0]["mode"] == "event_supported_visible_below_ledger"

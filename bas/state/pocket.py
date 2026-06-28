@@ -211,6 +211,34 @@ class PerBallPocketFSM:
             )
         return rows
 
+    def has_pending_resolution(self, now_ns: int) -> bool:
+        return bool(self.pending_candidates(now_ns))
+
+    def pending_candidates(self, now_ns: int) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for memory in self._memory.values():
+            if memory.confirmed:
+                continue
+            if memory.state != "pocket_candidate" and memory.missing_since_ns is None:
+                continue
+            if memory.missing_since_ns is not None:
+                missing_ms = self._elapsed_ms(now_ns, memory.missing_since_ns)
+                if missing_ms > self._confirm_missing_ms():
+                    continue
+            else:
+                missing_ms = 0
+            rows.append(
+                {
+                    "track_id": int(memory.track_id),
+                    "group": memory.group,
+                    "state": memory.state,
+                    "pocket_index": memory.pocket_index,
+                    "missing_ms": int(missing_ms),
+                    "crossed_throat": bool(memory.crossed_throat),
+                }
+            )
+        return rows
+
     def _can_confirm(self, memory: _PocketMemory, now_ns: int) -> bool:
         if memory.state == "pocket_candidate" and memory.crossed_throat:
             return True

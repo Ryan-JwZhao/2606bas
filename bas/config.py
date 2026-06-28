@@ -139,6 +139,12 @@ class StateConfig:
     pocket_confirm_missing_ms: int = 350
     pocket_reappear_window_ms: int = 800
     pocket_mouth_settle_ms: int = 3000
+    turn_resolve_grace_ms: int = 900
+    observation_reconcile_enabled: bool = True
+    observation_reconcile_stable_frames: int = 12
+    observation_reconcile_min_quality: float = 0.45
+    observation_reconcile_min_confidence: float = 0.35
+    observation_reconcile_infer_missing_with_event: bool = True
     event_cooldown_frames: int = 5
     shot_tip_radius_multiplier: float = 3.0
     shot_speed_jump_mm_s: float = 18.0

@@ -92,10 +92,19 @@ class ShotContextAggregator:
 class RefereeAdapter:
     """Structured referee interface. It exposes flags but keeps final judging conservative."""
 
-    def evaluate(self, shot_ctx: ShotContext, ledger: InventoryLedger, rule_state: MatchRuleState) -> RefereeIntent:
+    def evaluate(
+        self,
+        shot_ctx: ShotContext,
+        ledger: InventoryLedger,
+        rule_state: MatchRuleState,
+        *,
+        effective_remaining: dict[str, int] | None = None,
+        review_reasons: list[str] | None = None,
+    ) -> RefereeIntent:
         actor = rule_state.actor_group
         opponent = rule_state.opponent_group
-        legal_first = self._legal_first_contact_group(actor, ledger)
+        effective = effective_remaining or {}
+        legal_first = self._legal_first_contact_group(actor, ledger, effective)
         foul_flags = {
             "cue_scratch": bool(shot_ctx.cue_scratch_candidate or shot_ctx.potted_confirmed.get("cue", 0) > 0),
             "wrong_first_contact": bool(
@@ -110,6 +119,7 @@ class RefereeAdapter:
         foul = bool(foul_flags["cue_scratch"] or foul_flags["wrong_first_contact"] or foul_flags["break_foul"])
         ball_in_hand_scope = "behind_head_string" if shot_ctx.break_shot and foul else "table_anywhere" if foul else "none"
         reasons: List[str] = list(shot_ctx.reasons)
+        reasons.extend(review_reasons or [])
         if foul_flags["cue_scratch"]:
             reasons.append("cue_scratch")
         if foul_flags["wrong_first_contact"]:
@@ -119,7 +129,7 @@ class RefereeAdapter:
         game_status = "ended_pending_review" if black_potted else rule_state.game_status
 
         if rule_state.table_state == "open":
-            return self._evaluate_open_table(shot_ctx, ledger, foul_flags, ball_in_hand_scope, game_status, reasons)
+            return self._evaluate_open_table(shot_ctx, ledger, foul_flags, ball_in_hand_scope, game_status, reasons, effective)
 
         if actor is None or opponent is None:
             return RefereeIntent(
@@ -137,7 +147,7 @@ class RefereeAdapter:
 
         keep_turn = (not foul) and shot_ctx.potted_confirmed.get(actor, 0) > 0
         next_actor = actor if keep_turn else opponent
-        next_group = self._target_for_actor(next_actor, ledger)
+        next_group = self._target_for_actor(next_actor, ledger, effective)
         if game_status != "in_progress":
             next_group = None
         return RefereeIntent(
@@ -148,7 +158,7 @@ class RefereeAdapter:
             opponent_group_after=other_object_group(next_actor),
             ball_in_hand_scope=ball_in_hand_scope,
             foul_flags=foul_flags,
-            review_required=bool(shot_ctx.review_required),
+            review_required=bool(shot_ctx.review_required or review_reasons),
             game_status=game_status,
             reasons=reasons,
         )
@@ -161,6 +171,7 @@ class RefereeAdapter:
         ball_in_hand_scope: str,
         game_status: str,
         reasons: list[str],
+        effective_remaining: dict[str, int] | None = None,
     ) -> RefereeIntent:
         object_potted = {
             group: int(shot_ctx.potted_confirmed.get(group, 0))
@@ -177,7 +188,7 @@ class RefereeAdapter:
                 opponent_group_after=None,
                 ball_in_hand_scope=ball_in_hand_scope,  # type: ignore[arg-type]
                 foul_flags=foul_flags,
-                review_required=bool(shot_ctx.review_required),
+                review_required=bool(shot_ctx.review_required or reasons),
                 game_status=game_status,  # type: ignore[arg-type]
                 reasons=reasons,
             )
@@ -210,7 +221,7 @@ class RefereeAdapter:
                 game_status=game_status,  # type: ignore[arg-type]
                 reasons=reasons + ["open_table_invalid_group"],
             )
-        next_group = self._target_for_actor(actor_group, ledger)
+        next_group = self._target_for_actor(actor_group, ledger, effective_remaining)
         return RefereeIntent(
             next_group_hint=next_group,
             next_actor_changed=False,
@@ -219,26 +230,40 @@ class RefereeAdapter:
             opponent_group_after=other_object_group(actor_group),
             ball_in_hand_scope=ball_in_hand_scope,  # type: ignore[arg-type]
             foul_flags=foul_flags,
-            review_required=bool(shot_ctx.review_required),
+            review_required=bool(shot_ctx.review_required or reasons),
             game_status=game_status,  # type: ignore[arg-type]
             reasons=reasons,
         )
 
     @staticmethod
-    def _target_for_actor(actor: ObjectGroup, ledger: InventoryLedger) -> Optional[TargetGroup]:
-        if int(ledger.remaining.get(actor, 0)) > 0:
+    def _target_for_actor(
+        actor: ObjectGroup,
+        ledger: InventoryLedger,
+        effective_remaining: dict[str, int] | None = None,
+    ) -> Optional[TargetGroup]:
+        if RefereeAdapter._remaining(ledger, effective_remaining, actor) > 0:
             return actor
-        if int(ledger.remaining.get("black", 0)) > 0:
+        if RefereeAdapter._remaining(ledger, effective_remaining, "black") > 0:
             return "black"
         return None
 
     @staticmethod
-    def _legal_first_contact_group(actor: Optional[ObjectGroup], ledger: InventoryLedger) -> Optional[str]:
+    def _legal_first_contact_group(
+        actor: Optional[ObjectGroup],
+        ledger: InventoryLedger,
+        effective_remaining: dict[str, int] | None = None,
+    ) -> Optional[str]:
         if actor is None:
             return None
-        if int(ledger.remaining.get(actor, 0)) > 0:
+        if RefereeAdapter._remaining(ledger, effective_remaining, actor) > 0:
             return actor
         return "black"
+
+    @staticmethod
+    def _remaining(ledger: InventoryLedger, effective_remaining: dict[str, int] | None, group: str) -> int:
+        if effective_remaining is not None and group in effective_remaining:
+            return int(effective_remaining.get(group, 0))
+        return int(ledger.remaining.get(group, 0))
 
 
 def shot_context_payload(ctx: ShotContext) -> dict[str, object]:

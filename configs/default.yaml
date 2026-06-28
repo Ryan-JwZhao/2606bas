@@ -87,6 +87,12 @@ state:
   pocket_confirm_missing_ms: 350
   pocket_reappear_window_ms: 800
   pocket_mouth_settle_ms: 3000
+  turn_resolve_grace_ms: 900
+  observation_reconcile_enabled: true
+  observation_reconcile_stable_frames: 12
+  observation_reconcile_min_quality: 0.45
+  observation_reconcile_min_confidence: 0.35
+  observation_reconcile_infer_missing_with_event: true
 
 planner:
   enabled: true

@@ -22,6 +22,18 @@ python -m bas
 4. 正在采集时切换状态机会自动重启采集管线；设置会写入 `local_settings/user_settings.json`，下次启动自动恢复。
 5. 现场调试建议先用 `状态机（旧）` 保持稳定使用，再切到 `状态机（新）` 开启“深入调试”对比 `POCKET_CONFIRMED`、`REFEREE_INTENT`、库存账本和球局结束候选事件。
 
+## 2026-06-28 新状态机进球后花色判断优化
+- 新状态机现在会在 `TURN_RESOLVE` 到来时检查袋口是否仍有未决进洞候选；若存在，会先输出 `TURN_RESOLVE_DEFERRED`，等待候选完成确认/撤销或达到宽限时间，再输出 `TURN_RESOLVE_COMMITTED` 与 `REFEREE_INTENT`。
+- 这样可以避免“球刚消失但 `POCKET_CONFIRMED` 还没来，回合已经提前结算”的问题，尤其针对进球后下一杆花色判断。
+- 新增 YOLO 长期观察一致性融合：当前可见纯色/花色/黑球数量不会单帧改写账本，但如果连续多帧与事件账本不一致，会生成 `LEDGER_OBSERVATION_MISMATCH`，并把 `effective_remaining` 提供给本次裁判判断。
+- 当 YOLO 长期看到的球数 **多于** 账本剩余数时，会优先防止错误升黑球；当 YOLO 长期看到的球数 **少于** 账本剩余数时，必须同时存在进洞候选、未确认消失等事件支持，才会参与本次判断。
+
+### 调参入口
+- `state.turn_resolve_grace_ms`：进洞候选未决时，回合结算最多等待多久，默认 `900ms`。
+- `state.observation_reconcile_stable_frames`：YOLO 数量需要连续稳定多少帧才参与综合判断，默认 `12`。
+- `state.observation_reconcile_min_quality` / `state.observation_reconcile_min_confidence`：参与数量融合的 track 质量与检测置信门槛。
+- `state.observation_reconcile_infer_missing_with_event`：是否允许“YOLO 长期少于账本 + 有事件支持”时推断账本偏高，默认开启。
+
 ## 2026-06-27 深入调试模式
 - 右侧“状态机人工介入 -> 目标状态（STABLE_IDLE 所在框）”里新增“开始深入调试”按钮。
 - 开启后会自动联动三件事：
