@@ -4,6 +4,7 @@ import argparse
 import json
 from typing import Optional
 
+from .capture import capture_frames_are_distortion_corrected
 from .config import AppConfig
 from .runtime_env import prepare_runtime_environment, preload_torch_for_backend
 from .single_instance import acquire_runtime_single_instance
@@ -102,7 +103,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             configure_logging(cfg.logging.directory, cfg.logging.level)
             service = create_calibration_service(
                 cfg.calibration,
-                frame_undistorted=bool(cfg.camera.distortion_correction_enabled),
+                frame_undistorted=capture_frames_are_distortion_corrected(cfg.camera),
             )
             summary = {
                 "calib_version": service.calib_version,
@@ -131,7 +132,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             configure_logging(cfg.logging.directory, cfg.logging.level)
             service = create_calibration_service(
                 cfg.calibration,
-                frame_undistorted=bool(cfg.camera.distortion_correction_enabled),
+                frame_undistorted=capture_frames_are_distortion_corrected(cfg.camera),
             )
             report = verify_holdout_file(args.holdout_json, service)
             print(format_holdout_report(report))

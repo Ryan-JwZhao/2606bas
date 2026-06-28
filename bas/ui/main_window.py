@@ -34,7 +34,7 @@ from ..calibration import (
 )
 from ..calibration.charuco import CharucoBoardSpec, render_charuco_board
 from ..calibration.verification import format_holdout_report, verify_holdout_file
-from ..capture import create_capture_service, probe_cameras
+from ..capture import capture_frames_are_distortion_corrected, create_capture_service, probe_cameras
 from ..capture.nori_sdk import NoriProtocolController
 from ..geometry import TableGeometryLoader
 from ..logging_config import configure_logging
@@ -91,6 +91,12 @@ def timestamped_projection_output_path(path_value: Optional[str]) -> Path:
     suffix = template.suffix or ".json"
     stamp = time.strftime("%Y%m%d_%H%M%S")
     return DEFAULT_PROJECTION_OUTPUT_DIR / f"{safe_stem}_{stamp}{suffix}"
+
+
+def _configured_frame_undistorted(config: AppConfig, pipeline: Optional[RuntimePipeline] = None) -> bool:
+    if pipeline is not None:
+        return bool(getattr(pipeline.capture, "frame_distortion_corrected", False))
+    return bool(capture_frames_are_distortion_corrected(config.camera))
 
 
 class SettingsDialog(QtWidgets.QDialog):
@@ -804,7 +810,7 @@ class ProjectorCalibrationDialog(QtWidgets.QDialog):
         self.projection_file_edit.setText(str(path))
         self.calibration = create_calibration_service(
             self.operator.config.calibration,
-            frame_undistorted=bool(self.operator.config.camera.distortion_correction_enabled),
+            frame_undistorted=_configured_frame_undistorted(self.operator.config, self.operator.pipeline),
         )
         self.result.setText(self._summary_text())
         self.operator._append_log(f"已切换投影校正配置文件: {path}")
@@ -944,7 +950,7 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
             )
             calibration = create_calibration_service(
                 self.operator.config.calibration,
-                frame_undistorted=bool(self.operator.config.camera.distortion_correction_enabled),
+                frame_undistorted=_configured_frame_undistorted(self.operator.config),
             )
             capture = create_capture_service(self.operator.config.camera)
             patterns = build_linked_patterns(
@@ -1058,7 +1064,7 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
     def show_result(self, calibration=None) -> None:
         calibration = calibration or create_calibration_service(
             self.operator.config.calibration,
-            frame_undistorted=bool(self.operator.config.camera.distortion_correction_enabled),
+            frame_undistorted=_configured_frame_undistorted(self.operator.config, self.operator.pipeline),
         )
         self.operator.show_projector_calibration_result(calibration)
         self.operator.show_projector_residual_overlay(calibration)
@@ -1071,7 +1077,7 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
         self.operator._save_user_settings()
         return create_calibration_service(
             self.operator.config.calibration,
-            frame_undistorted=bool(self.operator.config.camera.distortion_correction_enabled),
+            frame_undistorted=_configured_frame_undistorted(self.operator.config, self.operator.pipeline),
         )
 
 
@@ -1577,7 +1583,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def _apply_projection_tuning_preview(self) -> None:
         calibration = create_calibration_service(
             self.config.calibration,
-            frame_undistorted=bool(self.config.camera.distortion_correction_enabled),
+            frame_undistorted=_configured_frame_undistorted(self.config, self.pipeline),
         )
         if self.pipeline is not None:
             self.pipeline.calibration = calibration
@@ -2664,7 +2670,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.ensure_projection_window_for_operator()
         calibration = calibration or create_calibration_service(
             self.config.calibration,
-            frame_undistorted=bool(self.config.camera.distortion_correction_enabled),
+            frame_undistorted=_configured_frame_undistorted(self.config, self.pipeline),
         )
         overlay = self._projector_calibration_overlay(calibration)
         if self.projection_window is not None:
@@ -2683,7 +2689,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.ensure_projection_window_for_operator()
         calibration = calibration or create_calibration_service(
             self.config.calibration,
-            frame_undistorted=bool(self.config.camera.distortion_correction_enabled),
+            frame_undistorted=_configured_frame_undistorted(self.config, self.pipeline),
         )
         overlay = self._projector_calibration_overlay(calibration)
         controls = np.asarray(calibration.projection.residual_field.control_points_cam, dtype=np.float32).reshape((-1, 2))
@@ -2810,7 +2816,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         try:
             calibration = create_calibration_service(
                 self.config.calibration,
-                frame_undistorted=bool(self.config.camera.distortion_correction_enabled),
+                frame_undistorted=_configured_frame_undistorted(self.config, self.pipeline),
             )
             geometry = TableGeometryLoader.load_optional(
                 self.config.geometry.outline_path,
@@ -2842,7 +2848,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         try:
             calibration = create_calibration_service(
                 self.config.calibration,
-                frame_undistorted=bool(self.config.camera.distortion_correction_enabled),
+                frame_undistorted=_configured_frame_undistorted(self.config, self.pipeline),
             )
             if calibration.projection.is_valid:
                 self.show_projector_calibration_result(calibration)

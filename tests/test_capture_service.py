@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from bas.capture import service as capture_service
-from bas.config import CameraConfig
 from bas.capture.base import CaptureInfo
+from bas.config import CameraConfig
 
 
 class _StubController:
@@ -40,6 +40,20 @@ class _StubNoriCapture:
         return CaptureInfo(backend="nori", camera_id="stub", width=1920, height=1080, fps=30.0, metadata={})
 
 
+class _StubVideoCapture:
+    def is_opened(self) -> bool:
+        return True
+
+    def read(self):
+        return False, None, {}
+
+    def release(self) -> None:
+        return None
+
+    def info(self) -> CaptureInfo:
+        return CaptureInfo(backend="video", camera_id="video_stub", width=1920, height=1080, fps=30.0, metadata={})
+
+
 def test_create_capture_service_applies_nori_white_balance_controls(monkeypatch) -> None:
     controller = _StubController()
     nori = _StubNoriCapture(controller)
@@ -63,3 +77,53 @@ def test_create_capture_service_applies_nori_white_balance_controls(monkeypatch)
         ("white_balance_auto", 3, False),
         ("white_balance_value", 3, 5200),
     ]
+
+
+def test_capture_frames_are_distortion_corrected_treats_video_backend_as_precorrected(monkeypatch) -> None:
+    def _unexpected_load(_path):
+        raise AssertionError("video backend should not load OpenCV distortion calibration")
+
+    monkeypatch.setattr(capture_service.CameraCalibration, "load_opencv_yaml", _unexpected_load)
+
+    config = CameraConfig(
+        backend="video",
+        video_path="already_corrected.mp4",
+        distortion_correction_enabled=True,
+        distortion_correction_file="missing.yaml",
+    )
+
+    assert capture_service.capture_frames_are_distortion_corrected(config) is True
+
+
+def test_create_capture_service_skips_runtime_undistortion_for_video_backend(monkeypatch) -> None:
+    source = _StubVideoCapture()
+
+    def _unexpected_load(_path):
+        raise AssertionError("video backend should not load OpenCV distortion calibration")
+
+    monkeypatch.setattr(capture_service, "VideoFileCapture", lambda *args, **kwargs: source)
+    monkeypatch.setattr(capture_service.CameraCalibration, "load_opencv_yaml", _unexpected_load)
+
+    config = CameraConfig(
+        backend="video",
+        video_path="already_corrected.mp4",
+        camera_id="video_source",
+        distortion_correction_enabled=True,
+        distortion_correction_file="missing.yaml",
+    )
+
+    service = capture_service.create_capture_service(config)
+
+    assert service.source is source
+    assert service.frame_distortion_corrected is True
+    assert service.info().backend == "video"
+
+
+def test_capture_frames_are_distortion_corrected_requires_valid_calibration_for_live_capture() -> None:
+    config = CameraConfig(
+        backend="opencv",
+        distortion_correction_enabled=True,
+        distortion_correction_file="missing.yaml",
+    )
+
+    assert capture_service.capture_frames_are_distortion_corrected(config) is False

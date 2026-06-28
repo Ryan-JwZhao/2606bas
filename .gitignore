@@ -61,9 +61,11 @@ weights/
 
 # Large media/data
 *.mp4
+*.m4v
 *.avi
 *.mov
 *.mkv
+*.webm
 *.wmv
 *.h264
 *.h265

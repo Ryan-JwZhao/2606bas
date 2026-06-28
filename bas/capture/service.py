@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 from typing import List, Optional, Tuple
 
@@ -15,6 +16,13 @@ from .nori_sdk import NoriProtocolController, open_nori_capture
 from .opencv_capture import OpenCVCapture, SyntheticCapture, VideoFileCapture, probe_cameras as _probe_opencv
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _DistortionCorrectionState:
+    frames_are_corrected: bool
+    should_wrap_source: bool
+    calibration: Optional[CameraCalibration] = None
 
 
 class CaptureService:
@@ -102,24 +110,41 @@ class DistortionCorrectedCapture:
         )
 
 
+def _distortion_correction_state(config: CameraConfig) -> _DistortionCorrectionState:
+    backend = str(config.backend or "auto").lower()
+    if backend == "video":
+        return _DistortionCorrectionState(frames_are_corrected=True, should_wrap_source=False)
+    if not bool(config.distortion_correction_enabled):
+        return _DistortionCorrectionState(frames_are_corrected=False, should_wrap_source=False)
+    calibration = CameraCalibration.load_opencv_yaml(config.distortion_correction_file)
+    valid = bool(calibration.is_valid)
+    return _DistortionCorrectionState(
+        frames_are_corrected=valid,
+        should_wrap_source=valid,
+        calibration=calibration,
+    )
+
+
+def capture_frames_are_distortion_corrected(config: CameraConfig) -> bool:
+    return _distortion_correction_state(config).frames_are_corrected
+
+
 def create_capture_service(config: CameraConfig) -> CaptureService:
     backend = str(config.backend or "auto").lower()
     source: CaptureSource
-    frame_distortion_corrected = False
 
     def finish(src: CaptureSource) -> CaptureService:
-        nonlocal frame_distortion_corrected
-        if bool(config.distortion_correction_enabled):
-            calibration = CameraCalibration.load_opencv_yaml(config.distortion_correction_file)
-            if calibration.is_valid:
-                src = DistortionCorrectedCapture(src, calibration)
-                frame_distortion_corrected = True
-            else:
-                LOGGER.warning(
-                    "Camera distortion correction requested but calibration is invalid or missing: %s",
-                    config.distortion_correction_file,
-                )
-        return CaptureService(src, camera_id=config.camera_id, frame_distortion_corrected=frame_distortion_corrected)
+        state = _distortion_correction_state(config)
+        if state.should_wrap_source and state.calibration is not None:
+            src = DistortionCorrectedCapture(src, state.calibration)
+        elif backend == "video" and bool(config.distortion_correction_enabled):
+            LOGGER.info("Skipping OpenCV distortion correction for video input; frames are treated as pre-corrected.")
+        elif bool(config.distortion_correction_enabled):
+            LOGGER.warning(
+                "Camera distortion correction requested but calibration is invalid or missing: %s",
+                config.distortion_correction_file,
+            )
+        return CaptureService(src, camera_id=config.camera_id, frame_distortion_corrected=state.frames_are_corrected)
 
     if backend == "synthetic":
         source = SyntheticCapture(config.width, config.height, config.fps, camera_id=config.camera_id)
