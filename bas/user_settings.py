@@ -75,6 +75,12 @@ class UserSettings:
     planner_route_freeze_switch_confirm_frames: Optional[int] = None
     planner_route_freeze_switch_min_distance_mm: Optional[float] = None
     planner_route_freeze_switch_min_score_delta: Optional[float] = None
+    planner_cue_sector_correction_enabled: Optional[bool] = None
+    planner_cue_sector_angle_deg: Optional[float] = None
+    planner_cue_sector_edge_margin_deg: Optional[float] = None
+    planner_cue_sector_switch_confirm_frames: Optional[int] = None
+    planner_cue_sector_switch_min_score_delta: Optional[float] = None
+    planner_cue_sector_min_stick_quality: Optional[float] = None
     learning_ranker_enabled: Optional[bool] = None
     learning_ranker_model_path: Optional[str] = None
     learning_score_blend: Optional[float] = None
@@ -250,6 +256,18 @@ class UserSettings:
             config.planner.route_freeze_switch_min_distance_mm = max(0.0, float(self.planner_route_freeze_switch_min_distance_mm))
         if self.planner_route_freeze_switch_min_score_delta is not None:
             config.planner.route_freeze_switch_min_score_delta = max(0.0, float(self.planner_route_freeze_switch_min_score_delta))
+        if self.planner_cue_sector_correction_enabled is not None:
+            config.planner.cue_sector_correction_enabled = bool(self.planner_cue_sector_correction_enabled)
+        if self.planner_cue_sector_angle_deg is not None:
+            config.planner.cue_sector_angle_deg = max(1.0, min(120.0, float(self.planner_cue_sector_angle_deg)))
+        if self.planner_cue_sector_edge_margin_deg is not None:
+            config.planner.cue_sector_edge_margin_deg = max(0.0, min(30.0, float(self.planner_cue_sector_edge_margin_deg)))
+        if self.planner_cue_sector_switch_confirm_frames is not None:
+            config.planner.cue_sector_switch_confirm_frames = max(1, int(self.planner_cue_sector_switch_confirm_frames))
+        if self.planner_cue_sector_switch_min_score_delta is not None:
+            config.planner.cue_sector_switch_min_score_delta = max(0.0, float(self.planner_cue_sector_switch_min_score_delta))
+        if self.planner_cue_sector_min_stick_quality is not None:
+            config.planner.cue_sector_min_stick_quality = max(0.0, min(1.0, float(self.planner_cue_sector_min_stick_quality)))
         if self.learning_ranker_enabled is not None:
             config.learning.ranker_enabled = bool(self.learning_ranker_enabled)
         if self._has("learning_ranker_model_path"):
@@ -330,6 +348,12 @@ class UserSettings:
             planner_route_freeze_switch_confirm_frames=config.planner.route_freeze_switch_confirm_frames,
             planner_route_freeze_switch_min_distance_mm=config.planner.route_freeze_switch_min_distance_mm,
             planner_route_freeze_switch_min_score_delta=config.planner.route_freeze_switch_min_score_delta,
+            planner_cue_sector_correction_enabled=config.planner.cue_sector_correction_enabled,
+            planner_cue_sector_angle_deg=config.planner.cue_sector_angle_deg,
+            planner_cue_sector_edge_margin_deg=config.planner.cue_sector_edge_margin_deg,
+            planner_cue_sector_switch_confirm_frames=config.planner.cue_sector_switch_confirm_frames,
+            planner_cue_sector_switch_min_score_delta=config.planner.cue_sector_switch_min_score_delta,
+            planner_cue_sector_min_stick_quality=config.planner.cue_sector_min_stick_quality,
             learning_ranker_enabled=config.learning.ranker_enabled,
             learning_ranker_model_path=config.learning.ranker_model_path,
             learning_score_blend=config.learning.score_blend,

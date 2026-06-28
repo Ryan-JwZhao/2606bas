@@ -21,6 +21,7 @@ from .projection import OverlayBuilder
 from .projection.star_formula import StarFormulaConfig
 from .replay import ReplayRecorder
 from .schemas import DetectionsFrame, FramePacket, MatchStateFrame, ProjectionOverlay, ShotPlan, TracksFrame
+from .secondary_correction import SecondaryCorrectionController
 from .state import create_match_state_machine
 from .table_boundaries import EdgeInsets, derive_table_boundaries
 from .tracking import TemporalTracker
@@ -66,6 +67,7 @@ class RuntimePipeline:
         self.tracker = TemporalTracker(config.tracker)
         self.state_machine = create_match_state_machine(config.state)
         self.planner = GeometryPhysicsPlanner(config.planner, self.calibration, learning_config=config.learning)
+        self.secondary_correction = SecondaryCorrectionController(config.planner)
         self.overlay_builder = OverlayBuilder(config.projection, self.calibration, star_formula=star_formula)
         self.recorder: Optional[ReplayRecorder] = ReplayRecorder(config.replay) if config.replay.enabled else None
         self.learning_recorder: Optional[LearningSampleRecorder] = LearningSampleRecorder(config.learning) if config.learning.collect_enabled else None
@@ -117,6 +119,14 @@ class RuntimePipeline:
             ball_diameter_mm=self.calibration.table.ball_diameter_mm,
         )
         state = self.state_machine.update(tracks)
+        secondary_correction = getattr(self, "secondary_correction", None)
+        updated_turn_group = (
+            secondary_correction.advance_from_state(state, self.state_machine)
+            if secondary_correction is not None
+            else None
+        )
+        if updated_turn_group is not None:
+            state = replace(state, turn_target_group=updated_turn_group)
         self.control_state.advance_from_events(state.events)
         effective_shot_mode = self.control_state.effective_shot_mode(self.config.planner.shot_mode)
         effective_turn_target_group = self.control_state.effective_turn_target_group(state.turn_target_group, effective_shot_mode)
@@ -126,6 +136,8 @@ class RuntimePipeline:
             forced_shot_mode=effective_shot_mode,
             forced_turn_target_group=effective_turn_target_group,
         )
+        if secondary_correction is not None:
+            secondary_correction.arm_from_plan(state, plan)
         overlay = self.overlay_builder.from_plan(plan)
         self._last_state = state
         self._last_plan = plan

@@ -133,6 +133,101 @@ def test_planner_keeps_recommending_stripes_when_solids_are_cleared_on_stripe_tu
     assert all(candidate.target_group == "stripe" for candidate in plan.candidates)
 
 
+def test_cue_sector_correction_keeps_turn_group_when_available_in_sector() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=1), _service())
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _stick(9, 20, 240, 90, 260),
+            _obs(2, "solid", 620, 250),
+            _obs(3, "stripe", 620, 300),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert plan.best.target_group == "solid"
+    assert all(candidate.target_group == "solid" for candidate in plan.candidates)
+    assert plan.best.explanation["cue_sector_policy"] == "own_group"
+
+
+def test_cue_sector_correction_recommends_opponent_with_secondary_confirmation() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=1), _service())
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _stick(9, 20, 240, 90, 260),
+            _obs(2, "solid", 620, 380),
+            _obs(3, "stripe", 620, 250),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert plan.best.target_group == "stripe"
+    assert all(candidate.target_group == "stripe" for candidate in plan.candidates)
+    assert plan.best.explanation["cue_sector_policy"] == "opponent_confirmation"
+    assert plan.best.explanation["cue_sector_requires_confirmation"] is True
+    assert plan.best.explanation["cue_sector_confirmation_target_id"] == 3
+
+
+def test_cue_sector_correction_prefers_black_over_opponent_when_no_turn_group_in_sector() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=1), _service())
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _stick(9, 20, 240, 90, 260),
+            _obs(2, "solid", 620, 380),
+            _obs(3, "stripe", 620, 300),
+            _obs(4, "black", 620, 250),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert plan.best.target_group == "black"
+    assert all(candidate.target_group == "black" for candidate in plan.candidates)
+    assert plan.best.explanation["cue_sector_policy"] == "black_fallback"
+    assert plan.best.explanation["cue_sector_requires_confirmation"] is False
+
+
+def test_cue_sector_correction_leaves_existing_algorithm_when_stick_is_not_pointing_cue() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=1), _service())
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _stick(9, 40, 20, 70, 110),
+            _obs(2, "solid", 620, 380),
+            _obs(3, "stripe", 620, 250),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert plan.best.target_group == "solid"
+    assert "cue_sector_policy" not in plan.best.explanation
+
+
 def test_planner_uses_center_playable_boundary_for_edge_rejection() -> None:
     service = _service()
     service.table.inner_polygon_mm = [(0, 0), (1000, 0), (1000, 500), (0, 500)]

@@ -204,3 +204,31 @@ def test_user_settings_applies_route_freeze_parameters(tmp_path) -> None:
     assert cfg.planner.route_freeze_switch_confirm_frames == 4
     assert cfg.planner.route_freeze_switch_min_distance_mm == 36.0
     assert cfg.planner.route_freeze_switch_min_score_delta == 0.27
+
+
+def test_user_settings_applies_cue_sector_correction_parameters(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "planner_cue_sector_correction_enabled": False,
+                "planner_cue_sector_angle_deg": 18.0,
+                "planner_cue_sector_edge_margin_deg": 1.5,
+                "planner_cue_sector_switch_confirm_frames": 5,
+                "planner_cue_sector_switch_min_score_delta": 0.33,
+                "planner_cue_sector_min_stick_quality": 0.4,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig()
+
+    UserSettings.load(path).apply_to_config(cfg)
+
+    assert cfg.planner.cue_sector_correction_enabled is False
+    assert cfg.planner.cue_sector_angle_deg == 18.0
+    assert cfg.planner.cue_sector_edge_margin_deg == 1.5
+    assert cfg.planner.cue_sector_switch_confirm_frames == 5
+    assert cfg.planner.cue_sector_switch_min_score_delta == 0.33
+    assert cfg.planner.cue_sector_min_stick_quality == 0.4

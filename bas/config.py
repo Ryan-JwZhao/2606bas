@@ -169,6 +169,12 @@ class PlannerConfig:
     route_freeze_switch_confirm_frames: int = 3
     route_freeze_switch_min_distance_mm: float = 28.0
     route_freeze_switch_min_score_delta: float = 0.18
+    cue_sector_correction_enabled: bool = True
+    cue_sector_angle_deg: float = 15.0
+    cue_sector_edge_margin_deg: float = 1.0
+    cue_sector_switch_confirm_frames: int = 2
+    cue_sector_switch_min_score_delta: float = 0.10
+    cue_sector_min_stick_quality: float = 0.25
 
 
 @dataclass

@@ -255,6 +255,18 @@ class SettingsDialog(QtWidgets.QDialog):
             0.01,
             decimals=2,
         )
+        self.cue_sector_enabled = QtWidgets.QCheckBox("启用球杆扇形二次纠正")
+        self.cue_sector_enabled.setChecked(bool(config.planner.cue_sector_correction_enabled))
+        self.cue_sector_angle = self._dspin(float(config.planner.cue_sector_angle_deg), 1.0, 120.0, 0.5)
+        self.cue_sector_edge_margin = self._dspin(float(config.planner.cue_sector_edge_margin_deg), 0.0, 30.0, 0.5)
+        self.cue_sector_switch_confirm_frames = self._spin(int(config.planner.cue_sector_switch_confirm_frames), 1, 30)
+        self.cue_sector_switch_min_score_delta = self._dspin(
+            float(config.planner.cue_sector_switch_min_score_delta),
+            0.0,
+            2.0,
+            0.01,
+            decimals=2,
+        )
         route_freeze_box = QtWidgets.QGroupBox("路线防闪烁")
         route_freeze_grid = QtWidgets.QGridLayout(route_freeze_box)
         route_freeze_grid.addWidget(self.route_freeze_enabled, 0, 0, 1, 4)
@@ -278,6 +290,25 @@ class SettingsDialog(QtWidgets.QDialog):
         route_freeze_grid.addWidget(QtWidgets.QLabel("切换最小分差"), 4, 0)
         route_freeze_grid.addWidget(self.route_freeze_switch_min_score_delta, 4, 1)
         route_freeze_grid.addWidget(QtWidgets.QLabel("建议先从进入冻结 2、解冻 8、同路线 12mm、切换确认 3 开始调。"), 4, 2, 1, 2)
+        cue_sector_box = QtWidgets.QGroupBox("球杆扇形二次纠正")
+        cue_sector_grid = QtWidgets.QGridLayout(cue_sector_box)
+        cue_sector_grid.addWidget(self.cue_sector_enabled, 0, 0, 1, 4)
+        self._grid_pair(cue_sector_grid, 1, "扇形总夹角(度)", self.cue_sector_angle, "边缘剔除(度)", self.cue_sector_edge_margin)
+        self._grid_pair(
+            cue_sector_grid,
+            2,
+            "切换确认连续帧",
+            self.cue_sector_switch_confirm_frames,
+            "切换最小分差",
+            self.cue_sector_switch_min_score_delta,
+        )
+        cue_sector_grid.addWidget(
+            QtWidgets.QLabel("设置的角度是总夹角，系统会自动左右各取一半；边缘剔除用于减少两侧边界附近的路线闪烁。"),
+            3,
+            0,
+            1,
+            4,
+        )
         form.addRow("台球模型路径", self.model_path)
         form.addRow("类别文件路径", self.class_file_path)
         form.addRow("学习排序模型", learning_ranker_box)
@@ -301,6 +332,7 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("默认投影设备", self.proj_screen)
         form.addRow("默认投影分辨率", proj_size)
         form.addRow("路线防闪烁", route_freeze_box)
+        form.addRow("二次纠正", cue_sector_box)
         tabs.addTab(general, "基础")
 
         tuning = QtWidgets.QWidget()
@@ -483,6 +515,11 @@ class SettingsDialog(QtWidgets.QDialog):
         config.planner.route_freeze_switch_confirm_frames = int(self.route_freeze_switch_confirm_frames.value())
         config.planner.route_freeze_switch_min_distance_mm = float(self.route_freeze_switch_min_distance_mm.value())
         config.planner.route_freeze_switch_min_score_delta = float(self.route_freeze_switch_min_score_delta.value())
+        config.planner.cue_sector_correction_enabled = self.cue_sector_enabled.isChecked()
+        config.planner.cue_sector_angle_deg = float(self.cue_sector_angle.value())
+        config.planner.cue_sector_edge_margin_deg = float(self.cue_sector_edge_margin.value())
+        config.planner.cue_sector_switch_confirm_frames = int(self.cue_sector_switch_confirm_frames.value())
+        config.planner.cue_sector_switch_min_score_delta = float(self.cue_sector_switch_min_score_delta.value())
         self._apply_projection_tuning_to_config(config)
 
     def _apply_projection_tuning_to_config(self, config: AppConfig) -> None:
@@ -1688,6 +1725,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
             forced_shot_mode=effective_shot_mode,
             forced_turn_target_group=effective_turn_target_group,
         )
+        secondary_correction = getattr(self.pipeline, "secondary_correction", None)
+        if secondary_correction is not None:
+            secondary_correction.arm_from_plan(self.last_output.state, plan)
         overlay = self.pipeline.overlay_builder.from_plan(plan)
         self.last_output = self._apply_route_display_filters(
             replace(self.last_output, plan=plan, overlay=overlay),

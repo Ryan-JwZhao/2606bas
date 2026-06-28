@@ -111,6 +111,12 @@ planner:
   route_freeze_switch_confirm_frames: 3
   route_freeze_switch_min_distance_mm: 28.0
   route_freeze_switch_min_score_delta: 0.18
+  cue_sector_correction_enabled: true
+  cue_sector_angle_deg: 15.0
+  cue_sector_edge_margin_deg: 1.0
+  cue_sector_switch_confirm_frames: 2
+  cue_sector_switch_min_score_delta: 0.10
+  cue_sector_min_stick_quality: 0.25
 
 learning:
   ranker_enabled: true

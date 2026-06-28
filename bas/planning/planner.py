@@ -11,6 +11,7 @@ from ..calibration.service import CalibrationService
 from ..config import LearningConfig, PlannerConfig
 from ..schemas import MatchStateFrame, Point, ShotCandidate, ShotPlan, TrackObservation
 from ..utils import angle_deg, clamp, point_segment_distance, unit, wall_time_id
+from .cue_sector import CueSectorCorrection
 from .free_shot import FreeShotPlanner
 from .learning import create_learning_ranker
 
@@ -36,6 +37,7 @@ class GeometryPhysicsPlanner:
             table_height_mm=self.calibration.table.height_mm,
         )
         self.free_planner = FreeShotPlanner(config, calibration)
+        self.cue_sector = CueSectorCorrection(config, calibration)
 
     def plan(
         self,
@@ -63,9 +65,11 @@ class GeometryPhysicsPlanner:
         cue = next((b for b in balls if b.group == "cue"), None)
         if cue is None:
             return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
-        targets = self._eligible_targets(
+        turn_target_group = forced_turn_target_group if forced_turn_target_group is not None else getattr(state, "turn_target_group", None)
+        cue_sector_aim = self.cue_sector.detect_aim(state, cue)
+        targets = self.cue_sector.all_object_targets(balls) if cue_sector_aim is not None else self._eligible_targets(
             balls,
-            turn_target_group=forced_turn_target_group if forced_turn_target_group is not None else getattr(state, "turn_target_group", None),
+            turn_target_group=turn_target_group,
         )
         if not targets:
             return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
@@ -78,7 +82,17 @@ class GeometryPhysicsPlanner:
                 candidate = self._candidate(cue, target, pocket, pocket_index, balls, inner)
                 if candidate is not None:
                     candidates.append(candidate)
-        candidates = self.learning_ranker.rerank(candidates, state)[: max(1, int(self.config.top_k))]
+        candidates = self.learning_ranker.rerank(candidates, state)
+        if cue_sector_aim is not None:
+            candidates = self.cue_sector.apply(
+                state=state,
+                cue_ball=cue,
+                balls=balls,
+                candidates=candidates,
+                aim=cue_sector_aim,
+                turn_target_group=turn_target_group,
+            )
+        candidates = candidates[: max(1, int(self.config.top_k))]
         best = candidates[0] if candidates else None
         return ShotPlan(
             plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
