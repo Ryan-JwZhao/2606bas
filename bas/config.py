@@ -175,6 +175,9 @@ class PlannerConfig:
     cue_sector_switch_confirm_frames: int = 2
     cue_sector_switch_min_score_delta: float = 0.10
     cue_sector_min_stick_quality: float = 0.25
+    cue_sector_require_balls_stationary: bool = True
+    cue_sector_stationary_speed_mm_s: float = 8.0
+    cue_sector_stationary_speed_px_s: float = 25.0
 
 
 @dataclass

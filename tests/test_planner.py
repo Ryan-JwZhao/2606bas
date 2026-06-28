@@ -228,6 +228,54 @@ def test_cue_sector_correction_leaves_existing_algorithm_when_stick_is_not_point
     assert "cue_sector_policy" not in plan.best.explanation
 
 
+def test_cue_sector_correction_waits_until_balls_are_stationary() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=1), _service())
+    moving_stripe = _obs(3, "stripe", 620, 250)
+    moving_stripe.velocity_mm_s = (12.0, 0.0)
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _stick(9, 20, 240, 90, 260),
+            _obs(2, "solid", 620, 380),
+            moving_stripe,
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert plan.best.target_group == "solid"
+    assert "cue_sector_policy" not in plan.best.explanation
+
+
+def test_cue_sector_correction_does_not_require_stationary_cue_stick() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=1), _service())
+    moving_stick = _stick(9, 20, 240, 90, 260)
+    moving_stick.velocity_mm_s = (800.0, 0.0)
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            moving_stick,
+            _obs(2, "solid", 620, 380),
+            _obs(3, "stripe", 620, 250),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert plan.best.target_group == "stripe"
+    assert plan.best.explanation["cue_sector_policy"] == "opponent_confirmation"
+
+
 def test_planner_uses_center_playable_boundary_for_edge_rejection() -> None:
     service = _service()
     service.table.inner_polygon_mm = [(0, 0), (1000, 0), (1000, 500), (0, 500)]

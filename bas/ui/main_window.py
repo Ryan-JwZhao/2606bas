@@ -266,6 +266,10 @@ class SettingsDialog(QtWidgets.QDialog):
             0.01,
             decimals=2,
         )
+        self.cue_sector_require_balls_stationary = QtWidgets.QCheckBox("只在所有球静止时生效")
+        self.cue_sector_require_balls_stationary.setChecked(bool(config.planner.cue_sector_require_balls_stationary))
+        self.cue_sector_stationary_speed_mm = self._dspin(float(config.planner.cue_sector_stationary_speed_mm_s), 0.0, 120.0, 0.5)
+        self.cue_sector_stationary_speed_px = self._dspin(float(config.planner.cue_sector_stationary_speed_px_s), 0.0, 300.0, 1.0)
         route_freeze_box = QtWidgets.QGroupBox("路线防闪烁")
         route_freeze_grid = QtWidgets.QGridLayout(route_freeze_box)
         route_freeze_grid.addWidget(self.route_freeze_enabled, 0, 0, 1, 4)
@@ -292,18 +296,27 @@ class SettingsDialog(QtWidgets.QDialog):
         cue_sector_box = QtWidgets.QGroupBox("球杆扇形二次纠正")
         cue_sector_grid = QtWidgets.QGridLayout(cue_sector_box)
         cue_sector_grid.addWidget(self.cue_sector_enabled, 0, 0, 1, 4)
-        self._grid_pair(cue_sector_grid, 1, "扇形总夹角(度)", self.cue_sector_angle, "边缘剔除(度)", self.cue_sector_edge_margin)
+        cue_sector_grid.addWidget(self.cue_sector_require_balls_stationary, 1, 0, 1, 4)
+        self._grid_pair(cue_sector_grid, 2, "扇形总夹角(度)", self.cue_sector_angle, "边缘剔除(度)", self.cue_sector_edge_margin)
         self._grid_pair(
             cue_sector_grid,
-            2,
+            3,
             "切换确认连续帧",
             self.cue_sector_switch_confirm_frames,
             "切换最小分差",
             self.cue_sector_switch_min_score_delta,
         )
+        self._grid_pair(
+            cue_sector_grid,
+            4,
+            "静止阈值(mm/s)",
+            self.cue_sector_stationary_speed_mm,
+            "静止阈值(px/s)",
+            self.cue_sector_stationary_speed_px,
+        )
         cue_sector_grid.addWidget(
-            QtWidgets.QLabel("设置的角度是总夹角，系统会自动左右各取一半；边缘剔除用于减少两侧边界附近的路线闪烁。"),
-            3,
+            QtWidgets.QLabel("设置的角度是总夹角，系统会自动左右各取一半；静止判断只检查球，不要求球杆静止。"),
+            5,
             0,
             1,
             4,
@@ -571,6 +584,9 @@ class SettingsDialog(QtWidgets.QDialog):
         config.planner.cue_sector_edge_margin_deg = float(self.cue_sector_edge_margin.value())
         config.planner.cue_sector_switch_confirm_frames = int(self.cue_sector_switch_confirm_frames.value())
         config.planner.cue_sector_switch_min_score_delta = float(self.cue_sector_switch_min_score_delta.value())
+        config.planner.cue_sector_require_balls_stationary = self.cue_sector_require_balls_stationary.isChecked()
+        config.planner.cue_sector_stationary_speed_mm_s = float(self.cue_sector_stationary_speed_mm.value())
+        config.planner.cue_sector_stationary_speed_px_s = float(self.cue_sector_stationary_speed_px.value())
         self._apply_projection_tuning_to_config(config)
 
     def _apply_projection_tuning_to_config(self, config: AppConfig) -> None:

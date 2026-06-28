@@ -57,6 +57,10 @@ class CueSectorCorrection:
             self.last_status = "disabled"
             self._reset_stability()
             return None
+        if not self._balls_stationary(state.layout):
+            self.last_status = "balls_moving"
+            self._reset_stability()
+            return None
         cue_track = self._cue_track(state.layout, int(cue_ball.track_id))
         if cue_track is None:
             self.last_status = "no_cue_track"
@@ -182,6 +186,31 @@ class CueSectorCorrection:
                 if str(getattr(track, "visibility", "visible")).strip().lower() == "visible" and float(track.quality) > 0.25:
                     return track
         return None
+
+    def _balls_stationary(self, tracks: Sequence[TrackObservation]) -> bool:
+        if not bool(getattr(self.config, "cue_sector_require_balls_stationary", True)):
+            return True
+        mm_threshold = max(0.0, float(getattr(self.config, "cue_sector_stationary_speed_mm_s", 8.0)))
+        px_threshold = max(0.0, float(getattr(self.config, "cue_sector_stationary_speed_px_s", 25.0)))
+        for track in tracks:
+            group = str(track.group or "").strip().lower()
+            if group not in {"cue", "solid", "stripe", "black"}:
+                continue
+            if str(getattr(track, "visibility", "visible")).strip().lower() != "visible":
+                continue
+            if float(getattr(track, "quality", 0.0)) <= 0.25:
+                continue
+            if track.velocity_mm_s is not None:
+                vx, vy = track.velocity_mm_s
+                speed = float(np.hypot(vx, vy))
+                if speed > mm_threshold:
+                    return False
+            else:
+                vx, vy = track.velocity_px_s
+                speed = float(np.hypot(vx, vy))
+                if speed > px_threshold:
+                    return False
+        return True
 
     @staticmethod
     def _stick_axis_endpoints(track: TrackObservation) -> Optional[tuple[np.ndarray, np.ndarray]]:

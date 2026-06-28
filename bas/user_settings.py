@@ -81,6 +81,9 @@ class UserSettings:
     planner_cue_sector_switch_confirm_frames: Optional[int] = None
     planner_cue_sector_switch_min_score_delta: Optional[float] = None
     planner_cue_sector_min_stick_quality: Optional[float] = None
+    planner_cue_sector_require_balls_stationary: Optional[bool] = None
+    planner_cue_sector_stationary_speed_mm_s: Optional[float] = None
+    planner_cue_sector_stationary_speed_px_s: Optional[float] = None
     learning_ranker_enabled: Optional[bool] = None
     learning_ranker_model_path: Optional[str] = None
     learning_score_blend: Optional[float] = None
@@ -268,6 +271,12 @@ class UserSettings:
             config.planner.cue_sector_switch_min_score_delta = max(0.0, float(self.planner_cue_sector_switch_min_score_delta))
         if self.planner_cue_sector_min_stick_quality is not None:
             config.planner.cue_sector_min_stick_quality = max(0.0, min(1.0, float(self.planner_cue_sector_min_stick_quality)))
+        if self.planner_cue_sector_require_balls_stationary is not None:
+            config.planner.cue_sector_require_balls_stationary = bool(self.planner_cue_sector_require_balls_stationary)
+        if self.planner_cue_sector_stationary_speed_mm_s is not None:
+            config.planner.cue_sector_stationary_speed_mm_s = max(0.0, float(self.planner_cue_sector_stationary_speed_mm_s))
+        if self.planner_cue_sector_stationary_speed_px_s is not None:
+            config.planner.cue_sector_stationary_speed_px_s = max(0.0, float(self.planner_cue_sector_stationary_speed_px_s))
         if self.learning_ranker_enabled is not None:
             config.learning.ranker_enabled = bool(self.learning_ranker_enabled)
         if self._has("learning_ranker_model_path"):
@@ -354,6 +363,9 @@ class UserSettings:
             planner_cue_sector_switch_confirm_frames=config.planner.cue_sector_switch_confirm_frames,
             planner_cue_sector_switch_min_score_delta=config.planner.cue_sector_switch_min_score_delta,
             planner_cue_sector_min_stick_quality=config.planner.cue_sector_min_stick_quality,
+            planner_cue_sector_require_balls_stationary=config.planner.cue_sector_require_balls_stationary,
+            planner_cue_sector_stationary_speed_mm_s=config.planner.cue_sector_stationary_speed_mm_s,
+            planner_cue_sector_stationary_speed_px_s=config.planner.cue_sector_stationary_speed_px_s,
             learning_ranker_enabled=config.learning.ranker_enabled,
             learning_ranker_model_path=config.learning.ranker_model_path,
             learning_score_blend=config.learning.score_blend,

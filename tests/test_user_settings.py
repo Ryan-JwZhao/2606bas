@@ -217,6 +217,9 @@ def test_user_settings_applies_cue_sector_correction_parameters(tmp_path) -> Non
                 "planner_cue_sector_switch_confirm_frames": 5,
                 "planner_cue_sector_switch_min_score_delta": 0.33,
                 "planner_cue_sector_min_stick_quality": 0.4,
+                "planner_cue_sector_require_balls_stationary": False,
+                "planner_cue_sector_stationary_speed_mm_s": 11.0,
+                "planner_cue_sector_stationary_speed_px_s": 33.0,
             }
         ),
         encoding="utf-8",
@@ -232,3 +235,6 @@ def test_user_settings_applies_cue_sector_correction_parameters(tmp_path) -> Non
     assert cfg.planner.cue_sector_switch_confirm_frames == 5
     assert cfg.planner.cue_sector_switch_min_score_delta == 0.33
     assert cfg.planner.cue_sector_min_stick_quality == 0.4
+    assert cfg.planner.cue_sector_require_balls_stationary is False
+    assert cfg.planner.cue_sector_stationary_speed_mm_s == 11.0
+    assert cfg.planner.cue_sector_stationary_speed_px_s == 33.0

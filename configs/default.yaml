@@ -117,6 +117,9 @@ planner:
   cue_sector_switch_confirm_frames: 2
   cue_sector_switch_min_score_delta: 0.10
   cue_sector_min_stick_quality: 0.25
+  cue_sector_require_balls_stationary: true
+  cue_sector_stationary_speed_mm_s: 8.0
+  cue_sector_stationary_speed_px_s: 25.0
 
 learning:
   ranker_enabled: true
