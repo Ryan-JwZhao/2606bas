@@ -47,6 +47,7 @@ from ..projection.overlay import projection_route_stroke_style
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
 from ..recording_frame import RecordingFrameCorrector
+from ..recording_fps import RecordingFpsEstimator
 from ..remote_control import RemoteCommand, RemoteCommandQueue
 from ..route_freeze import MotionRouteFreezeController
 from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
@@ -1105,6 +1106,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.control_state = RuntimeControlState()
         self._route_freeze = MotionRouteFreezeController(self.config.planner)
         self._recording_frame_corrector = RecordingFrameCorrector(self._recording_calibration_paths())
+        self._recording_fps_estimator = RecordingFpsEstimator()
         self._pending_turn_target_group: Optional[str] = None
         self._remote_command_queue = RemoteCommandQueue()
 
@@ -1943,6 +1945,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self._append_log(f"{self._recording_frame_error()} ({source})")
             return
         self._ensure_instant_replay_started(frame)
+        if not self._instant_replay.is_running:
+            self._append_log(f"前60秒纯净视频缓存仍在预热帧率，请等待几帧后再试 ({source})")
+            return
         if self._instant_replay_start_failed:
             self._append_log(f"前60秒纯净视频缓存启动失败，无法导出 ({source})")
             return
@@ -1956,9 +1961,12 @@ class OperatorWindow(QtWidgets.QMainWindow):
             return
         if self._instant_replay.is_running:
             return
+        fps = self._recording_fps(require_observed=True)
+        if fps is None:
+            return
         h, w = frame.shape[:2]
         try:
-            self._instant_replay.start(width=w, height=h, fps=self._recording_fps())
+            self._instant_replay.start(width=w, height=h, fps=fps)
         except FileNotFoundError:
             self._instant_replay_start_failed = True
             self._append_log("前60秒纯净视频缓存启动失败：未找到 ffmpeg。")
@@ -2004,6 +2012,12 @@ class OperatorWindow(QtWidgets.QMainWindow):
             return "当前没有可用于录制的 OpenCV 校正画面"
         return "录制需要 OpenCV 畸变校正画面，但当前未加载有效的标定文件"
 
+    def _observed_recording_fps(self, *, require_ready: bool) -> Optional[float]:
+        fps = self._recording_fps_estimator.estimate(require_ready=require_ready)
+        if fps is None:
+            return None
+        return max(1.0, min(240.0, float(fps)))
+
     @QtCore.pyqtSlot()
     def toggle_raw_video_recording(self) -> None:
         if self._deep_debug_session is not None:
@@ -2039,10 +2053,13 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if frame is None:
             self._append_log(self._recording_frame_error())
             return False
+        record_fps = self._recording_fps(require_observed=True)
+        if record_fps is None:
+            self._append_log("录制帧率仍在预热，请等待几帧后再试")
+            return False
         h, w = frame.shape[:2]
         prefix = "pocket_route_video" if route else "no_line_video"
         path = self._capture_output_dir() / f"{prefix}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
-        record_fps = self._recording_fps()
         try:
             recorder = FfmpegH264Recorder(
                 path,
@@ -2216,7 +2233,12 @@ class OperatorWindow(QtWidgets.QMainWindow):
             return None
         return self._recording_base_frame(self.last_output)
 
-    def _recording_fps(self) -> float:
+    def _recording_fps(self, *, require_observed: bool = False) -> Optional[float]:
+        observed = self._observed_recording_fps(require_ready=require_observed)
+        if observed is not None:
+            return observed
+        if require_observed:
+            return None
         fps = 0.0
         if self.pipeline is not None:
             try:
@@ -2228,6 +2250,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 fps = float(self.config.camera.fps)
             except Exception:
                 fps = 30.0
+        observed = self._observed_recording_fps(require_ready=False)
+        if observed is not None and abs(observed - fps) >= max(1.0, fps * 0.05):
+            fps = observed
         if self.started_at > 0.0 and self.frame_count >= 5:
             actual = self.frame_count / max(1e-6, time.perf_counter() - self.started_at)
             if 1.0 <= actual < fps * 0.9:
@@ -2235,6 +2260,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         return max(1.0, min(240.0, fps))
 
     def _record_media_frames(self, out: PipelineOutput) -> None:
+        self._recording_fps_estimator.observe(out.frame.ts_cam_ns)
         recording_frame = self._recording_base_frame(out)
         if recording_frame is None:
             if out.frame.image is not None and self.config.instant_replay.enabled and not self._instant_replay_start_failed:
@@ -2851,6 +2877,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._pipeline_start_pending = False
         self.pipeline = pipeline
         self._refresh_recording_frame_corrector()
+        self._recording_fps_estimator.reset()
         self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
         self._instant_replay_start_failed = False
         self._route_freeze.reset()
@@ -2879,6 +2906,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def stop_pipeline(self) -> None:
         self.timer.stop()
         self._frame_busy = False
+        self._recording_fps_estimator.reset()
         self._stop_deep_debug_mode(reason="pipeline_stop")
         self._stop_instant_replay()
         self._instant_replay_start_failed = False
