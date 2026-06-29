@@ -309,7 +309,7 @@ def test_cue_sector_correction_prefers_frame_line_over_stick_bbox_axis() -> None
     assert plan.best.explanation["cue_sector_policy"] == "opponent_confirmation"
 
 
-def test_cue_sector_correction_holds_previous_target_when_jitter_points_at_opponent() -> None:
+def test_cue_sector_correction_holds_previous_target_when_jitter_points_at_opponent(monkeypatch) -> None:
     planner = GeometryPhysicsPlanner(
         PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=3, cue_sector_corridor_width_px=240.0),
         _service(),
@@ -333,6 +333,25 @@ def test_cue_sector_correction_holds_previous_target_when_jitter_points_at_oppon
         turn_target_group="solid",
         layout=[base_layout[0], _stick(9, 50, 230, 100, 250), base_layout[1], base_layout[2]],
     )
+    raw_aims = iter(
+        [
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([1.0, 0.0], dtype=np.float32),
+                source="test",
+                score=1.0,
+            ),
+            CueStickAimPx(
+                tip_px=np.asarray([138.0, 254.5], dtype=np.float32),
+                tail_px=np.asarray([80.0, 239.5], dtype=np.float32),
+                direction_px=np.asarray([0.968, 0.252], dtype=np.float32),
+                source="test_jitter",
+                score=1.0,
+            ),
+        ]
+    )
+    monkeypatch.setattr(planner.cue_sector.aim_detector, "detect", lambda **_kwargs: next(raw_aims))
 
     first = planner.plan(solid_aim)
     second = planner.plan(stripe_jitter)
@@ -344,7 +363,7 @@ def test_cue_sector_correction_holds_previous_target_when_jitter_points_at_oppon
     assert second.best.explanation["cue_sector_policy"] == "stable_hold"
 
 
-def test_cue_sector_correction_switches_after_confirmation_frames() -> None:
+def test_cue_sector_correction_switches_after_confirmation_frames(monkeypatch) -> None:
     planner = GeometryPhysicsPlanner(
         PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=3, cue_sector_corridor_width_px=240.0),
         _service(),
@@ -371,6 +390,39 @@ def test_cue_sector_correction_switches_after_confirmation_frames() -> None:
         )
         for frame_id in (2, 3, 4)
     ]
+    raw_aims = iter(
+        [
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([1.0, 0.0], dtype=np.float32),
+                source="test",
+                score=1.0,
+            ),
+            CueStickAimPx(
+                tip_px=np.asarray([138.0, 254.5], dtype=np.float32),
+                tail_px=np.asarray([80.0, 239.5], dtype=np.float32),
+                direction_px=np.asarray([0.968, 0.252], dtype=np.float32),
+                source="test_pending_1",
+                score=1.0,
+            ),
+            CueStickAimPx(
+                tip_px=np.asarray([138.0, 254.5], dtype=np.float32),
+                tail_px=np.asarray([80.0, 239.5], dtype=np.float32),
+                direction_px=np.asarray([0.968, 0.252], dtype=np.float32),
+                source="test_pending_2",
+                score=1.0,
+            ),
+            CueStickAimPx(
+                tip_px=np.asarray([138.0, 254.5], dtype=np.float32),
+                tail_px=np.asarray([80.0, 239.5], dtype=np.float32),
+                direction_px=np.asarray([0.968, 0.252], dtype=np.float32),
+                source="test_commit",
+                score=1.0,
+            ),
+        ]
+    )
+    monkeypatch.setattr(planner.cue_sector.aim_detector, "detect", lambda **_kwargs: next(raw_aims))
 
     planner.plan(solid_aim)
     first_pending = planner.plan(stripe_aim[0])

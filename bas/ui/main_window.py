@@ -1322,7 +1322,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.projection_debug_check.setChecked(False)
         self.projection_debug_check.toggled.connect(self._projection_debug_toggled)
         self.side_layout.addWidget(self.projection_debug_check)
-        self.cue_sector_preview_check = QtWidgets.QCheckBox("鏄剧ず鐞冩潌鐭╁舰鍊欓€夋")
+        self.cue_sector_preview_check = QtWidgets.QCheckBox()
         self.cue_sector_preview_check.setChecked(False)
         self.cue_sector_preview_check.setText("\u663e\u793a\u7403\u6746\u77e9\u5f62\u5019\u9009\u6846")
         self.cue_sector_preview_check.toggled.connect(self._cue_sector_preview_toggled)

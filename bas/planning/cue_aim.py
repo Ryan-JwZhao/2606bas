@@ -9,6 +9,7 @@ import numpy as np
 
 from ..schemas import TrackObservation
 from ..utils import clamp, point_segment_distance, unit
+from .cue_direction_resolver import CueDirectionResolver, ResolvedCueDirectionPx
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class CueStickAimDetector:
         self.min_line_length_px = float(min_line_length_px)
         self.cue_tip_near_factor = float(cue_tip_near_factor)
         self.cue_line_near_factor = float(cue_line_near_factor)
+        self.direction_resolver = CueDirectionResolver()
 
     def detect(
         self,
@@ -65,7 +67,7 @@ class CueStickAimDetector:
         *,
         min_stick_quality: float,
     ) -> Optional[CueStickAimPx]:
-        best: Optional[tuple[float, np.ndarray, np.ndarray, np.ndarray]] = None
+        best: Optional[tuple[float, ResolvedCueDirectionPx]] = None
         line_limit = max(18.0, 4.5 * cue_radius)
         near_limit = max(line_limit, 8.0 * cue_radius)
         for track in tracks:
@@ -83,21 +85,36 @@ class CueStickAimDetector:
             if seg_len < max(24.0, 1.6 * cue_radius):
                 continue
             line_dist = point_segment_distance(cue_center, p1, p2)
-            near, far = (p1, p2) if float(np.linalg.norm(p1 - cue_center)) <= float(np.linalg.norm(p2 - cue_center)) else (p2, p1)
+            near = p1 if float(np.linalg.norm(p1 - cue_center)) <= float(np.linalg.norm(p2 - cue_center)) else p2
             near_dist = float(np.linalg.norm(near - cue_center))
             if line_dist > line_limit and near_dist > near_limit:
                 continue
-            direction = unit(cue_center - near)
-            align_axis = abs(float(np.dot(unit(p2 - p1), direction)))
+            resolved = self._resolve_direction(cue_center, cue_radius, p1, p2)
+            if resolved is None:
+                continue
+            align_axis = self._cue_alignment(cue_center, resolved.tip_px, resolved.direction_px)
             if align_axis < 0.42:
                 continue
-            score = float(seg_len + 70.0 * float(track.confidence) - 1.4 * line_dist - 0.28 * near_dist)
+            tip_dist = float(np.linalg.norm(resolved.tip_px - cue_center))
+            score = float(
+                seg_len
+                + 70.0 * float(track.confidence)
+                - 1.4 * line_dist
+                - 0.28 * tip_dist
+                + self._orientation_bonus(resolved)
+            )
             if best is None or score > best[0]:
-                best = (score, near.astype(np.float32), far.astype(np.float32), direction.astype(np.float32))
+                best = (score, resolved)
         if best is None:
             return None
-        score, tip, tail, direction = best
-        return CueStickAimPx(tip_px=tip, tail_px=tail, direction_px=direction, source="track_bbox", score=float(score))
+        score, resolved = best
+        return CueStickAimPx(
+            tip_px=resolved.tip_px.astype(np.float32),
+            tail_px=resolved.tail_px.astype(np.float32),
+            direction_px=resolved.direction_px.astype(np.float32),
+            source="track_bbox",
+            score=float(score),
+        )
 
     def _detect_from_edges(
         self,
@@ -150,7 +167,7 @@ class CueStickAimDetector:
 
         tip_limit = max(26.0, self.cue_tip_near_factor * cue_radius + 10.0)
         line_limit = max(14.0, self.cue_line_near_factor * cue_radius + 8.0)
-        best: Optional[tuple[float, np.ndarray, np.ndarray, np.ndarray]] = None
+        best: Optional[tuple[float, ResolvedCueDirectionPx]] = None
         for line_block in line_blocks:
             for line in line_block:
                 p1 = np.asarray([float(line[0] + x1), float(line[1] + y1)], dtype=np.float32)
@@ -164,35 +181,65 @@ class CueStickAimDetector:
                     continue
                 d1 = float(np.linalg.norm(p1 - cue_center))
                 d2 = float(np.linalg.norm(p2 - cue_center))
-                near = p1 if d1 <= d2 else p2
-                far = p2 if d1 <= d2 else p1
-
-                denom = float(np.dot(seg, seg))
-                if denom <= 1e-9:
+                resolved = self._resolve_direction(cue_center, cue_radius, p1, p2)
+                if resolved is None:
                     continue
-                t = clamp(float(np.dot(cue_center - p1, seg) / denom), 0.0, 1.0)
-                projected = p1 + seg * t
-                tip = projected if float(np.linalg.norm(projected - cue_center)) >= max(3.0, 0.22 * cue_radius) else near
-                tip_dist = float(np.linalg.norm(tip - cue_center))
+                tip_dist = float(np.linalg.norm(resolved.tip_px - cue_center))
                 if tip_dist > tip_limit:
-                    tip = near
-                    tip_dist = float(np.linalg.norm(tip - cue_center))
-                    if tip_dist > tip_limit:
-                        continue
-
-                axis = unit(tip - far)
-                cue_to_tip = unit(cue_center - tip)
-                align = abs(float(np.dot(axis, cue_to_tip)))
+                    continue
+                align = self._cue_alignment(cue_center, resolved.tip_px, resolved.direction_px)
                 if align < 0.42:
                     continue
-                direction = axis if float(np.dot(axis, cue_to_tip)) >= 0.0 else -axis
-                score = float(seg_len + 70.0 * align - 1.2 * line_dist - 0.9 * tip_dist + 0.1 * max(d1, d2))
+                score = float(
+                    seg_len
+                    + 70.0 * align
+                    - 1.2 * line_dist
+                    - 0.9 * tip_dist
+                    + 0.1 * max(d1, d2)
+                    + self._orientation_bonus(resolved)
+                )
                 if best is None or score > best[0]:
-                    best = (score, tip.astype(np.float32), far.astype(np.float32), direction.astype(np.float32))
+                    best = (score, resolved)
         if best is None:
             return None
-        score, tip, tail, direction = best
-        return CueStickAimPx(tip_px=tip, tail_px=tail, direction_px=direction, source="frame_edges", score=float(score))
+        score, resolved = best
+        return CueStickAimPx(
+            tip_px=resolved.tip_px.astype(np.float32),
+            tail_px=resolved.tail_px.astype(np.float32),
+            direction_px=resolved.direction_px.astype(np.float32),
+            source="frame_edges",
+            score=float(score),
+        )
+
+    def _resolve_direction(
+        self,
+        cue_center: np.ndarray,
+        cue_radius: float,
+        p1: np.ndarray,
+        p2: np.ndarray,
+    ) -> Optional[ResolvedCueDirectionPx]:
+        resolved = self.direction_resolver.resolve(
+            cue_center_px=cue_center,
+            cue_radius_px=cue_radius,
+            p1_px=p1,
+            p2_px=p2,
+        )
+        if resolved is None:
+            return None
+        if float(np.linalg.norm(resolved.direction_px)) < 1e-6:
+            return None
+        return resolved
+
+    @staticmethod
+    def _cue_alignment(cue_center: np.ndarray, tip_px: np.ndarray, direction_px: np.ndarray) -> float:
+        cue_to_tip = cue_center - tip_px
+        if float(np.linalg.norm(cue_to_tip)) < 1e-6:
+            return 1.0
+        return abs(float(np.dot(unit(direction_px), unit(cue_to_tip))))
+
+    @staticmethod
+    def _orientation_bonus(resolved: ResolvedCueDirectionPx) -> float:
+        return float(0.12 * resolved.score)
 
     @staticmethod
     def _track_axis_endpoints(track: TrackObservation) -> Optional[tuple[np.ndarray, np.ndarray]]:

@@ -28,6 +28,16 @@ def _app() -> QtWidgets.QApplication:
     return app
 
 
+def test_operator_window_uses_clean_cue_sector_preview_label() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+
+    assert window.cue_sector_preview_check.text() == "显示球杆矩形候选框"
+
+    window.close()
+    app.processEvents()
+
+
 def test_start_pipeline_and_tick_use_same_thread(monkeypatch) -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())
