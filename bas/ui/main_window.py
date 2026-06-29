@@ -1324,6 +1324,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.side_layout.addWidget(self.projection_debug_check)
         self.cue_sector_preview_check = QtWidgets.QCheckBox("鏄剧ず鐞冩潌鐭╁舰鍊欓€夋")
         self.cue_sector_preview_check.setChecked(False)
+        self.cue_sector_preview_check.setText("\u663e\u793a\u7403\u6746\u77e9\u5f62\u5019\u9009\u6846")
         self.cue_sector_preview_check.toggled.connect(self._cue_sector_preview_toggled)
         self.side_layout.addWidget(self.cue_sector_preview_check)
         self.shot_mode_combo = QtWidgets.QComboBox()
@@ -1681,6 +1682,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._save_user_settings()
         if self.last_output is not None:
             self._update_preview(self.last_output)
+        checked_message = "\u51e0\u4f55\u53c2\u8003\u7ebf\u5df2\u5f00\u542f" if checked else "\u51e0\u4f55\u53c2\u8003\u7ebf\u5df2\u5173\u95ed"
+        self._append_log(checked_message)
+        return
         self._append_log("几何参考线已开启" if checked else "几何参考线已关闭")
 
     @QtCore.pyqtSlot(bool)
@@ -1697,6 +1701,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._cue_sector_preview_enabled = bool(checked)
         if self.last_output is not None:
             self._update_preview(self.last_output)
+        checked_message = "\u7403\u6746\u77e9\u5f62\u5019\u9009\u6846\u5df2\u5f00\u542f" if checked else "\u7403\u6746\u77e9\u5f62\u5019\u9009\u6846\u5df2\u5173\u95ed"
+        self._append_log(checked_message)
+        return
         self._append_log("鐞冩潌鐭╁舰鍊欓€夋宸插紑鍚?" if checked else "鐞冩潌鐭╁舰鍊欓€夋宸插叧闂?")
 
     def _apply_projection_tuning_preview(self) -> None:
