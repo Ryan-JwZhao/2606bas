@@ -155,6 +155,8 @@ def test_cue_sector_correction_keeps_turn_group_when_available_in_sector() -> No
     assert plan.best.target_group == "solid"
     assert all(candidate.target_group == "solid" for candidate in plan.candidates)
     assert plan.best.explanation["cue_sector_policy"] == "own_group"
+    assert plan.best.explanation["cue_sector_geometry"] == "corridor"
+    assert plan.best.explanation["cue_sector_corridor_width_px"] == 140.0
 
 
 def test_cue_sector_correction_recommends_opponent_with_secondary_confirmation() -> None:
@@ -178,6 +180,8 @@ def test_cue_sector_correction_recommends_opponent_with_secondary_confirmation()
     assert plan.best.target_group == "stripe"
     assert all(candidate.target_group == "stripe" for candidate in plan.candidates)
     assert plan.best.explanation["cue_sector_policy"] == "opponent_confirmation"
+    assert plan.best.explanation["cue_sector_geometry"] == "corridor"
+    assert plan.best.explanation["cue_sector_target_ids"] == [3]
     assert plan.best.explanation["cue_sector_requires_confirmation"] is True
     assert plan.best.explanation["cue_sector_confirmation_target_id"] == 3
 
@@ -279,7 +283,7 @@ def test_cue_sector_correction_does_not_require_stationary_cue_stick() -> None:
 
 def test_cue_sector_correction_prefers_frame_line_over_stick_bbox_axis() -> None:
     planner = GeometryPhysicsPlanner(
-        PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=1, cue_sector_angle_deg=30.0),
+        PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=1, cue_sector_corridor_width_px=140.0),
         _service(),
     )
     frame = np.zeros((500, 1000, 3), dtype=np.uint8)
@@ -306,7 +310,7 @@ def test_cue_sector_correction_prefers_frame_line_over_stick_bbox_axis() -> None
 
 def test_cue_sector_correction_holds_previous_target_when_jitter_points_at_opponent() -> None:
     planner = GeometryPhysicsPlanner(
-        PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=3, cue_sector_angle_deg=30.0),
+        PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=3, cue_sector_corridor_width_px=240.0),
         _service(),
     )
     base_layout = [
@@ -341,7 +345,7 @@ def test_cue_sector_correction_holds_previous_target_when_jitter_points_at_oppon
 
 def test_cue_sector_correction_switches_after_confirmation_frames() -> None:
     planner = GeometryPhysicsPlanner(
-        PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=3, cue_sector_angle_deg=30.0),
+        PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=3, cue_sector_corridor_width_px=240.0),
         _service(),
     )
     layout = [

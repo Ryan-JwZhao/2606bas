@@ -78,6 +78,7 @@ class UserSettings:
     planner_cue_sector_correction_enabled: Optional[bool] = None
     planner_cue_sector_angle_deg: Optional[float] = None
     planner_cue_sector_edge_margin_deg: Optional[float] = None
+    planner_cue_sector_corridor_width_px: Optional[float] = None
     planner_cue_sector_switch_confirm_frames: Optional[int] = None
     planner_cue_sector_switch_min_score_delta: Optional[float] = None
     planner_cue_sector_min_stick_quality: Optional[float] = None
@@ -265,6 +266,8 @@ class UserSettings:
             config.planner.cue_sector_angle_deg = max(1.0, min(120.0, float(self.planner_cue_sector_angle_deg)))
         if self.planner_cue_sector_edge_margin_deg is not None:
             config.planner.cue_sector_edge_margin_deg = max(0.0, min(30.0, float(self.planner_cue_sector_edge_margin_deg)))
+        if self.planner_cue_sector_corridor_width_px is not None:
+            config.planner.cue_sector_corridor_width_px = max(1.0, float(self.planner_cue_sector_corridor_width_px))
         if self.planner_cue_sector_switch_confirm_frames is not None:
             config.planner.cue_sector_switch_confirm_frames = max(1, int(self.planner_cue_sector_switch_confirm_frames))
         if self.planner_cue_sector_switch_min_score_delta is not None:
@@ -360,6 +363,7 @@ class UserSettings:
             planner_cue_sector_correction_enabled=config.planner.cue_sector_correction_enabled,
             planner_cue_sector_angle_deg=config.planner.cue_sector_angle_deg,
             planner_cue_sector_edge_margin_deg=config.planner.cue_sector_edge_margin_deg,
+            planner_cue_sector_corridor_width_px=config.planner.cue_sector_corridor_width_px,
             planner_cue_sector_switch_confirm_frames=config.planner.cue_sector_switch_confirm_frames,
             planner_cue_sector_switch_min_score_delta=config.planner.cue_sector_switch_min_score_delta,
             planner_cue_sector_min_stick_quality=config.planner.cue_sector_min_stick_quality,

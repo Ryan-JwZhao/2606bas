@@ -254,10 +254,9 @@ class SettingsDialog(QtWidgets.QDialog):
             0.01,
             decimals=2,
         )
-        self.cue_sector_enabled = QtWidgets.QCheckBox("启用球杆扇形二次纠正")
+        self.cue_sector_enabled = QtWidgets.QCheckBox("启用球杆矩形走廊纠正")
         self.cue_sector_enabled.setChecked(bool(config.planner.cue_sector_correction_enabled))
-        self.cue_sector_angle = self._dspin(float(config.planner.cue_sector_angle_deg), 1.0, 120.0, 0.5)
-        self.cue_sector_edge_margin = self._dspin(float(config.planner.cue_sector_edge_margin_deg), 0.0, 30.0, 0.5)
+        self.cue_sector_corridor_width = self._dspin(float(config.planner.cue_sector_corridor_width_px), 1.0, 600.0, 5.0)
         self.cue_sector_switch_confirm_frames = self._spin(int(config.planner.cue_sector_switch_confirm_frames), 1, 30)
         self.cue_sector_switch_min_score_delta = self._dspin(
             float(config.planner.cue_sector_switch_min_score_delta),
@@ -293,11 +292,12 @@ class SettingsDialog(QtWidgets.QDialog):
         route_freeze_grid.addWidget(QtWidgets.QLabel("切换最小分差"), 4, 0)
         route_freeze_grid.addWidget(self.route_freeze_switch_min_score_delta, 4, 1)
         route_freeze_grid.addWidget(QtWidgets.QLabel("建议先从进入冻结 2、解冻 8、同路线 12mm、切换确认 3 开始调。"), 4, 2, 1, 2)
-        cue_sector_box = QtWidgets.QGroupBox("球杆扇形二次纠正")
+        cue_sector_box = QtWidgets.QGroupBox("球杆矩形走廊纠正")
         cue_sector_grid = QtWidgets.QGridLayout(cue_sector_box)
         cue_sector_grid.addWidget(self.cue_sector_enabled, 0, 0, 1, 4)
         cue_sector_grid.addWidget(self.cue_sector_require_balls_stationary, 1, 0, 1, 4)
-        self._grid_pair(cue_sector_grid, 2, "扇形总夹角(度)", self.cue_sector_angle, "边缘剔除(度)", self.cue_sector_edge_margin)
+        cue_sector_grid.addWidget(QtWidgets.QLabel("矩形总宽度(px)"), 2, 0)
+        cue_sector_grid.addWidget(self.cue_sector_corridor_width, 2, 1)
         self._grid_pair(
             cue_sector_grid,
             3,
@@ -315,7 +315,7 @@ class SettingsDialog(QtWidgets.QDialog):
             self.cue_sector_stationary_speed_px,
         )
         cue_sector_grid.addWidget(
-            QtWidgets.QLabel("设置的角度是总夹角，系统会自动左右各取一半；静止判断只检查球，不要求球杆静止。"),
+            QtWidgets.QLabel("矩形总宽度按球杆方向的横向像素距离计算；前向长度不限制；静止判断只检查球，不要求球杆静止。"),
             5,
             0,
             1,
@@ -580,8 +580,7 @@ class SettingsDialog(QtWidgets.QDialog):
         config.planner.route_freeze_switch_min_distance_mm = float(self.route_freeze_switch_min_distance_mm.value())
         config.planner.route_freeze_switch_min_score_delta = float(self.route_freeze_switch_min_score_delta.value())
         config.planner.cue_sector_correction_enabled = self.cue_sector_enabled.isChecked()
-        config.planner.cue_sector_angle_deg = float(self.cue_sector_angle.value())
-        config.planner.cue_sector_edge_margin_deg = float(self.cue_sector_edge_margin.value())
+        config.planner.cue_sector_corridor_width_px = float(self.cue_sector_corridor_width.value())
         config.planner.cue_sector_switch_confirm_frames = int(self.cue_sector_switch_confirm_frames.value())
         config.planner.cue_sector_switch_min_score_delta = float(self.cue_sector_switch_min_score_delta.value())
         config.planner.cue_sector_require_balls_stationary = self.cue_sector_require_balls_stationary.isChecked()

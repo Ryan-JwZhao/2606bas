@@ -8,7 +8,7 @@ import numpy as np
 from ..calibration.service import CalibrationService
 from ..config import PlannerConfig
 from ..schemas import MatchStateFrame, ShotCandidate, TrackObservation
-from ..utils import angle_deg, unit
+from ..utils import unit
 from .cue_aim import CueStickAimDetector
 
 
@@ -18,23 +18,27 @@ OBJECT_GROUPS = {"solid", "stripe", "black"}
 @dataclass(frozen=True)
 class CueSectorAim:
     cue_track_id: int
+    tip_px: tuple[float, float]
+    tail_px: tuple[float, float]
+    direction_px: tuple[float, float]
     tip_mm: tuple[float, float]
     tail_mm: tuple[float, float]
     direction_mm: tuple[float, float]
-    total_angle_deg: float
-    half_angle_deg: float
+    corridor_width_px: float
+    half_width_px: float
 
 
 @dataclass(frozen=True)
 class SectorBall:
     track_id: int
     group: str
-    angle_deg: float
-    distance_mm: float
+    lateral_px: float
+    forward_px: float
+    distance_px: float
 
 
 class CueSectorCorrection:
-    version = "cue_sector_correction_v1"
+    version = "cue_corridor_correction_v2"
 
     def __init__(self, config: PlannerConfig, calibration: CalibrationService):
         self.config = config
@@ -224,23 +228,26 @@ class CueSectorCorrection:
         direction_mm = unit(points_mm[3] - points_mm[2])
         if float(np.linalg.norm(direction_mm)) < 1e-6:
             return None
-        total_angle = max(1.0, min(120.0, float(getattr(self.config, "cue_sector_angle_deg", 15.0))))
+        corridor_width = max(1.0, float(getattr(self.config, "cue_sector_corridor_width_px", 140.0)))
         return CueSectorAim(
             cue_track_id=int(cue_track_id),
+            tip_px=(float(tip_px[0]), float(tip_px[1])),
+            tail_px=(float(tail_px[0]), float(tail_px[1])),
+            direction_px=(float(direction_px[0]), float(direction_px[1])),
             tip_mm=(float(points_mm[0, 0]), float(points_mm[0, 1])),
             tail_mm=(float(points_mm[1, 0]), float(points_mm[1, 1])),
             direction_mm=(float(direction_mm[0]), float(direction_mm[1])),
-            total_angle_deg=float(total_angle),
-            half_angle_deg=float(total_angle * 0.5),
+            corridor_width_px=float(corridor_width),
+            half_width_px=float(corridor_width * 0.5),
         )
 
     def _sector_balls(self, cue_ball, balls: Sequence[object], aim: CueSectorAim) -> list[SectorBall]:
-        direction = np.asarray(aim.direction_mm, dtype=np.float32)
-        cue_center = np.asarray(getattr(cue_ball, "center_mm"), dtype=np.float32)
-        edge_margin = max(0.0, float(getattr(self.config, "cue_sector_edge_margin_deg", 1.0)))
-        effective_half = max(0.0, float(aim.half_angle_deg) - edge_margin)
-        if effective_half <= 0.0:
+        direction = unit(np.asarray(aim.direction_px, dtype=np.float32))
+        cue_center = np.asarray(getattr(cue_ball, "center_px"), dtype=np.float32)
+        half_width = max(0.5, float(aim.half_width_px))
+        if half_width <= 0.0:
             return []
+        normal = np.asarray([-float(direction[1]), float(direction[0])], dtype=np.float32)
         sector: list[SectorBall] = []
         for ball in balls:
             group = str(getattr(ball, "group", "")).strip().lower()
@@ -250,17 +257,22 @@ class CueSectorCorrection:
                 continue
             if float(getattr(ball, "quality", 0.0)) <= 0.25:
                 continue
-            center = np.asarray(getattr(ball, "center_mm"), dtype=np.float32)
+            center = np.asarray(getattr(ball, "center_px"), dtype=np.float32)
             vec = center - cue_center
-            dist = float(np.linalg.norm(vec))
-            if dist <= 1.0:
+            forward = float(np.dot(vec, direction))
+            if forward <= 0.0:
                 continue
-            vec_dir = unit(vec)
-            if float(np.dot(vec_dir, direction)) <= 0.0:
-                continue
-            angle = angle_deg(direction, vec)
-            if angle <= effective_half:
-                sector.append(SectorBall(track_id=int(getattr(ball, "track_id")), group=group, angle_deg=float(angle), distance_mm=dist))
+            lateral = float(np.dot(vec, normal))
+            if abs(lateral) <= half_width:
+                sector.append(
+                    SectorBall(
+                        track_id=int(getattr(ball, "track_id")),
+                        group=group,
+                        lateral_px=float(lateral),
+                        forward_px=float(forward),
+                        distance_px=float(np.linalg.norm(vec)),
+                    )
+                )
         return sector
 
     def _allowed_groups(
@@ -360,10 +372,12 @@ class CueSectorCorrection:
                 "cue_sector_correction": True,
                 "cue_sector_version": self.version,
                 "cue_sector_policy": policy,
-                "cue_sector_angle_deg": float(aim.total_angle_deg),
-                "cue_sector_half_angle_deg": float(aim.half_angle_deg),
-                "cue_sector_edge_margin_deg": float(getattr(self.config, "cue_sector_edge_margin_deg", 1.0)),
+                "cue_sector_geometry": "corridor",
+                "cue_sector_corridor_width_px": float(aim.corridor_width_px),
+                "cue_sector_corridor_half_width_px": float(aim.half_width_px),
                 "cue_sector_target_ids": [int(ball.track_id) for ball in sector_balls],
+                "cue_sector_target_lateral_px": [float(ball.lateral_px) for ball in sector_balls],
+                "cue_sector_target_forward_px": [float(ball.forward_px) for ball in sector_balls],
                 "cue_sector_requires_confirmation": bool(requires_confirmation),
                 "cue_sector_confirmation_target_id": confirmation_target_id,
                 "cue_sector_confirmation_target_group": confirmation_target_group,

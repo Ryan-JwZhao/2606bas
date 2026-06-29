@@ -20,6 +20,7 @@ from .learning import create_learning_ranker
 class _Ball:
     track_id: int
     group: str
+    center_px: np.ndarray
     center_mm: np.ndarray
     radius_mm: float
     quality: float
@@ -132,6 +133,7 @@ class GeometryPhysicsPlanner:
                 _Ball(
                     track_id=tr.track_id,
                     group=tr.group,
+                    center_px=np.asarray(tr.center_px, dtype=np.float32).reshape((2,)),
                     center_mm=center.astype(np.float32),
                     radius_mm=float(radius_mm),
                     quality=float(tr.quality),

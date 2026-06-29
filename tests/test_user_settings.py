@@ -214,6 +214,7 @@ def test_user_settings_applies_cue_sector_correction_parameters(tmp_path) -> Non
                 "planner_cue_sector_correction_enabled": False,
                 "planner_cue_sector_angle_deg": 18.0,
                 "planner_cue_sector_edge_margin_deg": 1.5,
+                "planner_cue_sector_corridor_width_px": 180.0,
                 "planner_cue_sector_switch_confirm_frames": 5,
                 "planner_cue_sector_switch_min_score_delta": 0.33,
                 "planner_cue_sector_min_stick_quality": 0.4,
@@ -232,6 +233,7 @@ def test_user_settings_applies_cue_sector_correction_parameters(tmp_path) -> Non
     assert cfg.planner.cue_sector_correction_enabled is False
     assert cfg.planner.cue_sector_angle_deg == 18.0
     assert cfg.planner.cue_sector_edge_margin_deg == 1.5
+    assert cfg.planner.cue_sector_corridor_width_px == 180.0
     assert cfg.planner.cue_sector_switch_confirm_frames == 5
     assert cfg.planner.cue_sector_switch_min_score_delta == 0.33
     assert cfg.planner.cue_sector_min_stick_quality == 0.4
