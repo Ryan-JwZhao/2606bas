@@ -66,7 +66,7 @@ class GeometryPhysicsPlanner:
         if cue is None:
             return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
         turn_target_group = forced_turn_target_group if forced_turn_target_group is not None else getattr(state, "turn_target_group", None)
-        cue_sector_aim = self.cue_sector.detect_aim(state, cue)
+        cue_sector_aim = self.cue_sector.detect_aim(state, cue, frame_bgr=frame_bgr)
         targets = self.cue_sector.all_object_targets(balls) if cue_sector_aim is not None else self._eligible_targets(
             balls,
             turn_target_group=turn_target_group,

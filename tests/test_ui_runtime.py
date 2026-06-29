@@ -13,7 +13,8 @@ from PyQt5 import QtWidgets
 
 from bas.config import AppConfig
 from bas import runtime_env
-from bas.schemas import ShotCandidate
+from bas.operator_controls import RuntimeControlState
+from bas.schemas import DetectionsFrame, FramePacket, MatchStateFrame, ProjectionOverlay, ShotCandidate, ShotPlan, TracksFrame
 
 runtime_env.preload_torch_for_backend = lambda backend: None
 
@@ -183,3 +184,50 @@ def test_draw_rule_plan_preview_uses_computed_stroke_style() -> None:
 
     assert len(called) >= 2
     assert called[1][0][4] == 4
+
+
+def test_refresh_current_plan_uses_live_state_machine_turn_group() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    window.config = AppConfig()
+    window.control_state = RuntimeControlState()
+    window._apply_route_display_filters = lambda out, *, force_raw=False: out
+    window._update_plan = lambda _out: None
+    window._update_preview = lambda _out: None
+    window._refresh_projection = lambda: None
+
+    seen: list[tuple[str | None, str | None]] = []
+
+    class _Planner:
+        def plan(self, state, frame_bgr=None, *, forced_shot_mode=None, forced_turn_target_group=None):
+            seen.append((state.turn_target_group, forced_turn_target_group))
+            return ShotPlan(plan_id="new", frame_id=state.frame_id, ts_cam_ns=state.ts_cam_ns)
+
+    window.pipeline = SimpleNamespace(
+        state_machine=SimpleNamespace(turn_target_group="stripe"),
+        planner=_Planner(),
+        overlay_builder=SimpleNamespace(
+            from_plan=lambda plan: ProjectionOverlay(
+                overlay_id="overlay",
+                frame_id=plan.frame_id,
+                projector_size=(1000, 500),
+            )
+        ),
+        secondary_correction=None,
+        _last_state=None,
+        _last_plan=None,
+        _last_overlay=None,
+    )
+    state = MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="STABLE_IDLE", turn_target_group="solid")
+    window.last_output = main_window.PipelineOutput(
+        frame=FramePacket(frame_id=1, ts_cam_ns=1, camera_id="fake", image=np.zeros((8, 8, 3), dtype=np.uint8)),
+        detections=DetectionsFrame(frame_id=1, ts_cam_ns=1),
+        tracks=TracksFrame(frame_id=1, ts_cam_ns=1),
+        state=state,
+        plan=ShotPlan(plan_id="old", frame_id=1, ts_cam_ns=1),
+        overlay=ProjectionOverlay(overlay_id="old", frame_id=1, projector_size=(1000, 500)),
+    )
+
+    main_window.OperatorWindow._refresh_current_plan(window)
+
+    assert seen == [("stripe", "stripe")]
+    assert window.last_output.state.turn_target_group == "stripe"

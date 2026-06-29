@@ -8,7 +8,8 @@ import numpy as np
 from ..calibration.service import CalibrationService
 from ..config import PlannerConfig
 from ..schemas import MatchStateFrame, ShotCandidate, TrackObservation
-from ..utils import angle_deg, point_segment_distance, unit
+from ..utils import angle_deg, unit
+from .cue_aim import CueStickAimDetector
 
 
 OBJECT_GROUPS = {"solid", "stripe", "black"}
@@ -42,6 +43,7 @@ class CueSectorCorrection:
         self._held_target_id: Optional[int] = None
         self._pending_target_id: Optional[int] = None
         self._pending_frames = 0
+        self.aim_detector = CueStickAimDetector()
 
     def reset(self) -> None:
         self.last_status = "off"
@@ -52,7 +54,7 @@ class CueSectorCorrection:
     def enabled(self) -> bool:
         return bool(getattr(self.config, "cue_sector_correction_enabled", True))
 
-    def detect_aim(self, state: MatchStateFrame, cue_ball) -> Optional[CueSectorAim]:
+    def detect_aim(self, state: MatchStateFrame, cue_ball, frame_bgr: Optional[np.ndarray] = None) -> Optional[CueSectorAim]:
         if not self.enabled():
             self.last_status = "disabled"
             self._reset_stability()
@@ -69,50 +71,26 @@ class CueSectorCorrection:
 
         cue_center_px = np.asarray(cue_track.center_px, dtype=np.float32).reshape((2,))
         cue_radius_px = max(2.0, float(cue_track.radius_px))
-        line_limit = max(18.0, 4.5 * cue_radius_px)
-        near_limit = max(line_limit, 8.0 * cue_radius_px)
         min_quality = float(getattr(self.config, "cue_sector_min_stick_quality", 0.25))
-        best: Optional[tuple[float, np.ndarray, np.ndarray, np.ndarray]] = None
-
-        for stick in state.layout:
-            if str(stick.group).strip().lower() != "cue_stick":
-                continue
-            if str(getattr(stick, "visibility", "visible")).strip().lower() != "visible":
-                continue
-            if float(getattr(stick, "quality", 0.0)) < min_quality:
-                continue
-            endpoints = self._stick_axis_endpoints(stick)
-            if endpoints is None:
-                continue
-            p1, p2 = endpoints
-            seg_len = float(np.linalg.norm(p2 - p1))
-            if seg_len < max(24.0, 1.6 * cue_radius_px):
-                continue
-            line_dist = point_segment_distance(cue_center_px, p1, p2)
-            near, far = (p1, p2) if float(np.linalg.norm(p1 - cue_center_px)) <= float(np.linalg.norm(p2 - cue_center_px)) else (p2, p1)
-            near_dist = float(np.linalg.norm(near - cue_center_px))
-            if line_dist > line_limit and near_dist > near_limit:
-                continue
-            direction_px = unit(cue_center_px - near)
-            align_axis = abs(float(np.dot(unit(p2 - p1), direction_px)))
-            if align_axis < 0.42:
-                continue
-            score = float(seg_len + 70.0 * float(stick.confidence) - 1.4 * line_dist - 0.28 * near_dist)
-            if best is None or score > best[0]:
-                best = (score, near.astype(np.float32), far.astype(np.float32), direction_px.astype(np.float32))
-
-        if best is None:
+        aim_px = self.aim_detector.detect(
+            frame_bgr=frame_bgr,
+            tracks=state.layout,
+            cue_center_px=cue_center_px,
+            cue_radius_px=cue_radius_px,
+            inner_polygon_px=self._inner_polygon_px(frame_bgr.shape if frame_bgr is not None else None),
+            min_stick_quality=min_quality,
+        )
+        if aim_px is None:
             self.last_status = "no_valid_cue_stick"
             self._reset_stability()
             return None
 
-        _score, tip_px, tail_px, direction_px = best
-        aim = self._to_table_aim(cue_center_px, tip_px, tail_px, direction_px, int(cue_ball.track_id))
+        aim = self._to_table_aim(cue_center_px, aim_px.tip_px, aim_px.tail_px, aim_px.direction_px, int(cue_ball.track_id))
         if aim is None:
             self.last_status = "invalid_cue_direction"
             self._reset_stability()
             return None
-        self.last_status = "aim_active"
+        self.last_status = f"aim_active:{aim_px.source}"
         return aim
 
     def apply(
@@ -212,20 +190,20 @@ class CueSectorCorrection:
                     return False
         return True
 
-    @staticmethod
-    def _stick_axis_endpoints(track: TrackObservation) -> Optional[tuple[np.ndarray, np.ndarray]]:
-        x1, y1, x2, y2 = [float(v) for v in track.bbox]
-        w = x2 - x1
-        h = y2 - y1
-        if w <= 1.0 or h <= 1.0:
-            return None
-        if abs(w) >= abs(h):
-            p1 = np.asarray([x1, (y1 + y2) * 0.5], dtype=np.float32)
-            p2 = np.asarray([x2, (y1 + y2) * 0.5], dtype=np.float32)
-        else:
-            p1 = np.asarray([(x1 + x2) * 0.5, y1], dtype=np.float32)
-            p2 = np.asarray([(x1 + x2) * 0.5, y2], dtype=np.float32)
-        return p1, p2
+    def _inner_polygon_px(self, frame_shape: Optional[tuple[int, ...]]) -> Optional[np.ndarray]:
+        base_polygon = self.calibration.table.center_playable_polygon_mm or self.calibration.table.inner_polygon_mm
+        poly_mm = np.asarray(base_polygon, dtype=np.float32).reshape((-1, 2))
+        if poly_mm.shape[0] >= 3:
+            try:
+                poly_px = self.calibration.table_mm_to_camera_px(poly_mm).astype(np.float32)
+                if np.all(np.isfinite(poly_px)):
+                    return poly_px
+            except Exception:
+                pass
+        if frame_shape is not None and len(frame_shape) >= 2:
+            h, w = frame_shape[:2]
+            return np.asarray([(0.0, 0.0), (float(w), 0.0), (float(w), float(h)), (0.0, float(h))], dtype=np.float32)
+        return None
 
     def _to_table_aim(
         self,

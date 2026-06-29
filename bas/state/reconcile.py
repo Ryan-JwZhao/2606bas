@@ -40,6 +40,20 @@ class ObservationReconciler:
     def last_result(self) -> ObservationReconcileResult:
         return self._last_result
 
+    def current_observation_result(self, ledger: InventoryLedger | None = None) -> ObservationReconcileResult:
+        effective = (
+            {group: int(ledger.remaining.get(group, 0)) for group in GROUPS}
+            if ledger is not None
+            else {group: int(self._last_result.effective_remaining.get(group, 0)) for group in GROUPS}
+        )
+        return ObservationReconcileResult(
+            visible_counts={group: int(self._counts.get(group, 0)) for group in GROUPS},
+            stable_frames={group: int(self._stable_frames.get(group, 0)) for group in GROUPS},
+            effective_remaining=effective,
+            mismatches=list(self._last_result.mismatches),
+            review_required=bool(self._last_result.review_required),
+        )
+
     def update_observation(self, frame: TracksFrame) -> None:
         counts = empty_group_counts()
         min_quality = float(getattr(self.config, "observation_reconcile_min_quality", 0.45))

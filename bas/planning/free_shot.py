@@ -10,7 +10,8 @@ import numpy as np
 from ..calibration.service import CalibrationService
 from ..config import PlannerConfig
 from ..schemas import FreeRouteSuggestion, MatchStateFrame, TrackObservation
-from ..utils import clamp, point_segment_distance, unit
+from ..utils import clamp, unit
+from .cue_aim import CueStickAimDetector
 
 
 @dataclass
@@ -34,6 +35,11 @@ class FreeShotPlanner:
         self.ray_eps_px = 1.5
         self.ball_collision_padding_px = 1.2
         self.last_status = "idle"
+        self.aim_detector = CueStickAimDetector(
+            min_line_length_px=self.min_line_length_px,
+            cue_tip_near_factor=self.cue_tip_near_factor,
+            cue_line_near_factor=self.cue_line_near_factor,
+        )
 
     def plan(self, state: MatchStateFrame, frame_bgr: Optional[np.ndarray] = None) -> Optional[FreeRouteSuggestion]:
         balls = self._extract_balls(state.layout)
@@ -127,143 +133,17 @@ class FreeShotPlanner:
         cue_ball: _Ball,
         inner_polygon: np.ndarray,
     ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        if frame_bgr is not None:
-            found = self._detect_cue_stick_from_edges(frame_bgr, cue_ball.center_px, cue_ball.radius_px, inner_polygon)
-            if found is not None:
-                return found
-        return self._detect_cue_stick_from_tracks(tracks, cue_ball)
-
-    def _detect_cue_stick_from_tracks(
-        self,
-        tracks: Sequence[TrackObservation],
-        cue_ball: _Ball,
-    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        best: Optional[Tuple[float, np.ndarray, np.ndarray, np.ndarray]] = None
-        cue_center = cue_ball.center_px
-        cue_radius = max(2.0, cue_ball.radius_px)
-        line_limit = max(18.0, 4.5 * cue_radius)
-        for tr in tracks:
-            if tr.group != "cue_stick":
-                continue
-            x1, y1, x2, y2 = [float(v) for v in tr.bbox]
-            w = max(1.0, x2 - x1)
-            h = max(1.0, y2 - y1)
-            if w >= h:
-                p1 = np.asarray([x1, (y1 + y2) * 0.5], dtype=np.float32)
-                p2 = np.asarray([x2, (y1 + y2) * 0.5], dtype=np.float32)
-            else:
-                p1 = np.asarray([(x1 + x2) * 0.5, y1], dtype=np.float32)
-                p2 = np.asarray([(x1 + x2) * 0.5, y2], dtype=np.float32)
-            seg_len = float(np.linalg.norm(p2 - p1))
-            if seg_len < 24.0:
-                continue
-            line_dist = point_segment_distance(cue_center, p1, p2)
-            near, far = (p1, p2) if float(np.linalg.norm(p1 - cue_center)) <= float(np.linalg.norm(p2 - cue_center)) else (p2, p1)
-            near_dist = float(np.linalg.norm(near - cue_center))
-            if line_dist > line_limit and near_dist > max(line_limit, 8.0 * cue_radius):
-                continue
-            direction = unit(cue_center - near)
-            score = float(seg_len + 60.0 * float(tr.confidence) - 1.5 * line_dist - 0.25 * near_dist)
-            if best is None or score > best[0]:
-                best = (score, near.astype(np.float32), far.astype(np.float32), direction.astype(np.float32))
-        if best is None:
+        aim = self.aim_detector.detect(
+            frame_bgr=frame_bgr,
+            tracks=tracks,
+            cue_center_px=cue_ball.center_px,
+            cue_radius_px=cue_ball.radius_px,
+            inner_polygon_px=inner_polygon,
+            min_stick_quality=0.0,
+        )
+        if aim is None:
             return None
-        _score, tip, tail, direction = best
-        return tip, tail, direction
-
-    def _detect_cue_stick_from_edges(
-        self,
-        frame_bgr: np.ndarray,
-        cue_center: np.ndarray,
-        cue_radius: float,
-        cue_search_polygon: np.ndarray,
-    ) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        h, w = frame_bgr.shape[:2]
-        diag = float(math.hypot(w, h))
-        if cue_search_polygon.size >= 6:
-            x_min = float(np.min(cue_search_polygon[:, 0]))
-            x_max = float(np.max(cue_search_polygon[:, 0]))
-            y_min = float(np.min(cue_search_polygon[:, 1]))
-            y_max = float(np.max(cue_search_polygon[:, 1]))
-            diag = max(120.0, float(math.hypot(x_max - x_min, y_max - y_min)))
-
-        roi_half = int(clamp(0.28 * diag, 220.0, 560.0))
-        cx = int(round(float(cue_center[0])))
-        cy = int(round(float(cue_center[1])))
-        x1 = max(0, cx - roi_half)
-        y1 = max(0, cy - roi_half)
-        x2 = min(w, cx + roi_half)
-        y2 = min(h, cy + roi_half)
-        if (x2 - x1) < 24 or (y2 - y1) < 24:
-            return None
-
-        roi = frame_bgr[y1:y2, x1:x2]
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0.0)
-        edges = cv2.Canny(gray, 55, 150)
-        if int(np.count_nonzero(edges)) < 16:
-            return None
-
-        line_blocks = []
-        for threshold, min_len_factor, max_gap in ((36, 0.60, 14), (26, 0.45, 20), (18, 0.35, 28)):
-            lines = cv2.HoughLinesP(
-                edges,
-                rho=1.0,
-                theta=float(np.pi / 180.0),
-                threshold=int(threshold),
-                minLineLength=int(max(24.0, self.min_line_length_px * float(min_len_factor))),
-                maxLineGap=int(max_gap),
-            )
-            if lines is not None and lines.size > 0:
-                line_blocks.append(lines.reshape((-1, 4)))
-        if not line_blocks:
-            return None
-
-        tip_limit = max(26.0, float(self.cue_tip_near_factor) * float(cue_radius) + 10.0)
-        line_limit = max(14.0, float(self.cue_line_near_factor) * float(cue_radius) + 8.0)
-        best: Optional[Tuple[float, np.ndarray, np.ndarray, np.ndarray]] = None
-        for line_block in line_blocks:
-            for ln in line_block:
-                p1 = np.asarray([float(ln[0] + x1), float(ln[1] + y1)], dtype=np.float32)
-                p2 = np.asarray([float(ln[2] + x1), float(ln[3] + y1)], dtype=np.float32)
-                seg = p2 - p1
-                seg_len = float(np.linalg.norm(seg))
-                if seg_len < self.min_line_length_px:
-                    continue
-                line_dist = point_segment_distance(cue_center, p1, p2)
-                if line_dist > line_limit:
-                    continue
-                d1 = float(np.linalg.norm(p1 - cue_center))
-                d2 = float(np.linalg.norm(p2 - cue_center))
-                near = p1 if d1 <= d2 else p2
-                far = p2 if d1 <= d2 else p1
-
-                denom = float(np.dot(seg, seg))
-                if denom <= 1e-9:
-                    continue
-                t = clamp(float(np.dot(cue_center - p1, seg) / denom), 0.0, 1.0)
-                projected = p1 + seg * t
-                tip = projected if float(np.linalg.norm(projected - cue_center)) >= max(3.0, 0.22 * cue_radius) else near
-                tip_dist = float(np.linalg.norm(tip - cue_center))
-                if tip_dist > tip_limit:
-                    tip = near
-                    tip_dist = float(np.linalg.norm(tip - cue_center))
-                    if tip_dist > tip_limit:
-                        continue
-
-                axis = unit(tip - far)
-                cue_to_tip = unit(cue_center - tip)
-                align = abs(float(np.dot(axis, cue_to_tip)))
-                if align < 0.42:
-                    continue
-                direction = axis if float(np.dot(axis, cue_to_tip)) >= 0.0 else -axis
-                score = float(seg_len + 70.0 * align - 1.2 * line_dist - 0.9 * tip_dist + 0.1 * max(d1, d2))
-                if best is None or score > best[0]:
-                    best = (score, tip.astype(np.float32), far.astype(np.float32), direction.astype(np.float32))
-        if best is None:
-            return None
-        _score, tip, tail, direction = best
-        return tip, tail, direction
+        return aim.tip_px, aim.tail_px, aim.direction_px
 
     def _simulate_collision_path(
         self,

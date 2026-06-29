@@ -228,3 +228,19 @@ def test_observation_reconciler_can_lower_count_with_event_support() -> None:
     assert result.effective_remaining["solid"] == 0
     assert result.review_required is True
     assert result.mismatches[0]["mode"] == "event_supported_visible_below_ledger"
+
+
+def test_modern_outputs_black_target_when_current_group_is_visibly_cleared() -> None:
+    cfg = StateConfig(engine="modern", observation_reconcile_stable_frames=2)
+    sm = ModernMatchStateMachine(cfg)
+    sm.set_turn_target_group("stripe")
+
+    layout = [
+        _ball(1, "cue", 100, 250),
+        _ball(2, "solid", 430, 250),
+        _ball(8, "black", 650, 250),
+    ]
+    sm.update(TracksFrame(frame_id=1, ts_cam_ns=1, tracks=layout))
+    out = sm.update(TracksFrame(frame_id=2, ts_cam_ns=2, tracks=layout))
+
+    assert out.turn_target_group == "black"

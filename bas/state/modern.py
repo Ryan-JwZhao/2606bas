@@ -12,6 +12,7 @@ from .phase import PhaseSignals, ShotPhaseMachine
 from .pocket import PerBallPocketFSM
 from .reconcile import ObservationReconciler
 from .referee import RefereeAdapter, ShotContextAggregator, shot_context_payload
+from .targeting import TargetGroupResolution, resolve_turn_target_group
 
 
 class ModernMatchStateMachine:
@@ -57,7 +58,7 @@ class ModernMatchStateMachine:
 
     @property
     def turn_target_group(self) -> Optional[str]:
-        return self._normalized_turn_target_group()
+        return self._target_resolution().target_group
 
     def reset(self) -> None:
         self.phase_machine.reset()
@@ -261,12 +262,14 @@ class ModernMatchStateMachine:
             self.ledger,
             supporting_events=[*self._recent_events, *events],
         )
+        target_resolution = self._target_resolution(reconcile_result=reconcile_result)
         review_reasons = [str(item.get("mode", "")) for item in reconcile_result.mismatches if item.get("mode")]
+        review_reasons.extend(target_resolution.reasons)
         intent = self.referee.evaluate(
             shot_ctx,
             self.ledger,
             self.rule_state,
-            effective_remaining=reconcile_result.effective_remaining,
+            effective_remaining=target_resolution.effective_remaining,
             review_reasons=review_reasons,
         )
         self.rule_state.table_state = intent.table_state_after
@@ -403,7 +406,7 @@ class ModernMatchStateMachine:
             phase=self.phase_machine.phase.value,
             events=events,
             layout=layout,
-            turn_target_group=self._turn_target_group,
+            turn_target_group=self._target_resolution().target_group,
             confidence=float(confidence),
             state_version=f"{self.version}{suffix}",
         )
@@ -626,13 +629,16 @@ class ModernMatchStateMachine:
         operator_override_short_circuit: bool = False,
     ) -> Dict[str, object]:
         visible_tracks = [track for track in tracks_frame.tracks if track.visibility == "visible" and track.quality > 0.25]
+        target_resolution = self._target_resolution()
         return {
             "frame_id": int(tracks_frame.frame_id),
             "ts_cam_ns": int(tracks_frame.ts_cam_ns),
             "phase": str(state.phase),
             "state_version": str(state.state_version),
             "operator_hold": bool(self._operator_hold),
-            "turn_target_group": self._normalized_turn_target_group(),
+            "turn_target_group": target_resolution.target_group,
+            "raw_turn_target_group": self._normalized_turn_target_group(),
+            "target_resolution": target_resolution.to_payload(),
             "signals": {
                 "moving": bool(signals.moving),
                 "stable": bool(signals.stable),
@@ -663,6 +669,19 @@ class ModernMatchStateMachine:
     def _normalized_turn_target_group(self) -> Optional[str]:
         group = str(self._turn_target_group or "").strip().lower()
         return group if group in {"solid", "stripe", "black"} else None
+
+    def _target_resolution(self, *, reconcile_result: object | None = None) -> TargetGroupResolution:
+        result = reconcile_result if reconcile_result is not None else self.reconciler.current_observation_result(self.ledger)
+        return resolve_turn_target_group(
+            self._normalized_turn_target_group(),
+            actor_group=self.rule_state.actor_group,
+            ledger_remaining=self.ledger.remaining,
+            observation_effective_remaining=getattr(result, "effective_remaining", {}),
+            visible_counts=getattr(result, "visible_counts", {}),
+            stable_frames=getattr(result, "stable_frames", {}),
+            stable_frames_required=int(getattr(self.config, "observation_reconcile_stable_frames", 12)),
+            observation_review_required=bool(getattr(result, "review_required", False)),
+        )
 
     @staticmethod
     def _ts_ms(ts_cam_ns: int) -> int:

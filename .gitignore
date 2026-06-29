@@ -36,7 +36,7 @@ temp/
 *.tmp
 
 # Local analysis notes
-状态机.md
+状态机*.md
 
 # Learning samples and training outputs
 rl/data/*

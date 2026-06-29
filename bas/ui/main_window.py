@@ -1781,26 +1781,30 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if self.pipeline is None or self.last_output is None:
             self._refresh_projection()
             return
+        state_for_plan = self.last_output.state
+        live_turn_group = getattr(self.pipeline.state_machine, "turn_target_group", state_for_plan.turn_target_group)
+        if live_turn_group != state_for_plan.turn_target_group:
+            state_for_plan = replace(state_for_plan, turn_target_group=live_turn_group)
         effective_shot_mode = self.control_state.effective_shot_mode(self.config.planner.shot_mode)
         effective_turn_target_group = self.control_state.effective_turn_target_group(
-            self.last_output.state.turn_target_group,
+            state_for_plan.turn_target_group,
             effective_shot_mode,
         )
         plan = self.pipeline.planner.plan(
-            self.last_output.state,
+            state_for_plan,
             frame_bgr=self.last_output.frame.image,
             forced_shot_mode=effective_shot_mode,
             forced_turn_target_group=effective_turn_target_group,
         )
         secondary_correction = getattr(self.pipeline, "secondary_correction", None)
         if secondary_correction is not None:
-            secondary_correction.arm_from_plan(self.last_output.state, plan)
+            secondary_correction.arm_from_plan(state_for_plan, plan)
         overlay = self.pipeline.overlay_builder.from_plan(plan)
         self.last_output = self._apply_route_display_filters(
-            replace(self.last_output, plan=plan, overlay=overlay),
+            replace(self.last_output, state=state_for_plan, plan=plan, overlay=overlay),
             force_raw=True,
         )
-        self.pipeline._last_state = self.last_output.state
+        self.pipeline._last_state = state_for_plan
         self.pipeline._last_plan = plan
         self.pipeline._last_overlay = overlay
         self._update_plan(self.last_output)

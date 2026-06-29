@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 from bas.calibration.camera import CameraCalibration
@@ -270,6 +271,33 @@ def test_cue_sector_correction_does_not_require_stationary_cue_stick() -> None:
     )
 
     plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert plan.best.target_group == "stripe"
+    assert plan.best.explanation["cue_sector_policy"] == "opponent_confirmation"
+
+
+def test_cue_sector_correction_prefers_frame_line_over_stick_bbox_axis() -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=1, cue_sector_angle_deg=30.0),
+        _service(),
+    )
+    frame = np.zeros((500, 1000, 3), dtype=np.uint8)
+    cv2.line(frame, (20, 250), (114, 250), (255, 255, 255), 4)
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _stick(9, 80, 200, 100, 240),
+            _obs(2, "solid", 620, 380),
+            _obs(3, "stripe", 620, 250),
+        ],
+    )
+
+    plan = planner.plan(state, frame_bgr=frame)
 
     assert plan.best is not None
     assert plan.best.target_group == "stripe"
