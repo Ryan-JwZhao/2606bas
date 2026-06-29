@@ -55,6 +55,7 @@ from ..schemas import MatchPhase, OverlayCircle, OverlayLine, ProjectionOverlay,
 from ..state import normalize_state_machine_engine
 from ..state_debug import StateDebugSession, StateDebugSessionResult
 from ..utils import unit
+from .cue_sector_preview import draw_cue_sector_candidate_box
 from .engineered_ball_compensation_wizard import EngineeredBallCompensationWizardDialog
 from .geometry_reference import draw_geometry_reference_lines
 from .projection_debug import append_projected_ball_overlays, append_projected_boundary_overlays
@@ -1220,6 +1221,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
         self._instant_replay_start_failed = False
         self._projection_debug_enabled = False
+        self._cue_sector_preview_enabled = False
         self.control_state = RuntimeControlState()
         self._route_freeze = MotionRouteFreezeController(self.config.planner)
         self._recording_frame_corrector = RecordingFrameCorrector(self._recording_calibration_paths())
@@ -1320,6 +1322,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.projection_debug_check.setChecked(False)
         self.projection_debug_check.toggled.connect(self._projection_debug_toggled)
         self.side_layout.addWidget(self.projection_debug_check)
+        self.cue_sector_preview_check = QtWidgets.QCheckBox("鏄剧ず鐞冩潌鐭╁舰鍊欓€夋")
+        self.cue_sector_preview_check.setChecked(False)
+        self.cue_sector_preview_check.toggled.connect(self._cue_sector_preview_toggled)
+        self.side_layout.addWidget(self.cue_sector_preview_check)
         self.shot_mode_combo = QtWidgets.QComboBox()
         self.shot_mode_combo.addItem("规则模式", "rule")
         self.shot_mode_combo.addItem("自由模式", "free")
@@ -1634,6 +1640,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.geometry_reference_check.blockSignals(True)
         self.geometry_reference_check.setChecked(bool(self.config.projection.geometry_reference_enabled))
         self.geometry_reference_check.blockSignals(False)
+        self.cue_sector_preview_check.blockSignals(True)
+        self.cue_sector_preview_check.setChecked(bool(self._cue_sector_preview_enabled))
+        self.cue_sector_preview_check.blockSignals(False)
         self.projection_debug_check.blockSignals(True)
         self.projection_debug_check.setChecked(bool(self._projection_debug_enabled))
         self.projection_debug_check.blockSignals(False)
@@ -1682,6 +1691,13 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self._append_log("投影调试模式已开启，打开投影窗口后生效")
         else:
             self._append_log("投影调试模式已开启" if checked else "投影调试模式已关闭")
+
+    @QtCore.pyqtSlot(bool)
+    def _cue_sector_preview_toggled(self, checked: bool) -> None:
+        self._cue_sector_preview_enabled = bool(checked)
+        if self.last_output is not None:
+            self._update_preview(self.last_output)
+        self._append_log("鐞冩潌鐭╁舰鍊欓€夋宸插紑鍚?" if checked else "鐞冩潌鐭╁舰鍊欓€夋宸插叧闂?")
 
     def _apply_projection_tuning_preview(self) -> None:
         calibration = create_calibration_service(
@@ -2513,6 +2529,16 @@ class OperatorWindow(QtWidgets.QMainWindow):
             enabled=bool(self.config.projection.geometry_reference_enabled),
         )
 
+    def _draw_cue_sector_preview(self, image: np.ndarray) -> None:
+        if self.pipeline is None or not self._cue_sector_preview_enabled:
+            return
+        draw_cue_sector_candidate_box(
+            image,
+            getattr(self.pipeline.planner.cue_sector, "last_debug_view", None),
+            enabled=True,
+            ui_scale=float(self._ui_scale),
+        )
+
     def _route_preview_stroke_style(self):
         return projection_route_stroke_style(
             (int(self.config.projection.projector_width), int(self.config.projection.projector_height)),
@@ -3300,6 +3326,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             cv2.circle(img, (cx, cy), max(4, int(round(tr.radius_px))), (250, 250, 250), 2, cv2.LINE_AA)
             cv2.putText(img, f"#{tr.track_id} {tr.group}", (cx + 8, cy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55 * self._ui_scale, (230, 230, 230), 1, cv2.LINE_AA)
         self._draw_geometry_reference_preview(img)
+        self._draw_cue_sector_preview(img)
         self._draw_plan_preview(img, out)
         self._set_preview_image(img)
 

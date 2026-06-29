@@ -7,6 +7,7 @@ from bas.calibration.camera import CameraCalibration
 from bas.calibration.projector import ProjectionCalibration
 from bas.calibration.service import CalibrationService
 from bas.config import PlannerConfig
+from bas.planning.cue_aim import CueStickAimPx
 from bas.projection.star_formula import StarFormulaConfig
 from bas.planning import GeometryPhysicsPlanner
 from bas.projection.overlay import OverlayBuilder, projection_route_stroke_style
@@ -383,6 +384,62 @@ def test_cue_sector_correction_switches_after_confirmation_frames() -> None:
     assert confirmed.best is not None
     assert confirmed.best.target_group == "stripe"
     assert confirmed.best.explanation["cue_sector_policy"] == "opponent_confirmation"
+
+
+def test_cue_sector_correction_keeps_forward_target_when_detector_direction_flips(monkeypatch) -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=1, cue_sector_corridor_width_px=220.0),
+        _service(),
+    )
+    raw_aims = iter(
+        [
+            CueStickAimPx(
+                tip_px=np.asarray([430.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([360.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([1.0, 0.0], dtype=np.float32),
+                source="test",
+                score=1.0,
+            ),
+            CueStickAimPx(
+                tip_px=np.asarray([560.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([630.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([-1.0, 0.0], dtype=np.float32),
+                source="test_backstroke",
+                score=1.0,
+            ),
+        ]
+    )
+    monkeypatch.setattr(planner.cue_sector.aim_detector, "detect", lambda **_kwargs: next(raw_aims))
+    layout = [
+        _obs(1, "cue", 500, 250),
+        _obs(2, "solid", 820, 250),
+        _obs(3, "stripe", 260, 250),
+    ]
+    first = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=layout,
+    )
+    backstroke = MatchStateFrame(
+        frame_id=2,
+        ts_cam_ns=2,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=layout,
+    )
+
+    stable = planner.plan(first)
+    during_backstroke = planner.plan(backstroke)
+
+    assert stable.best is not None
+    assert stable.best.target_track_id == 2
+    assert stable.best.target_group == "solid"
+    assert during_backstroke.best is not None
+    assert during_backstroke.best.target_track_id == 2
+    assert during_backstroke.best.target_group == "solid"
+    assert during_backstroke.best.explanation["cue_sector_policy"] == "own_group"
 
 
 def test_planner_uses_center_playable_boundary_for_edge_rejection() -> None:
