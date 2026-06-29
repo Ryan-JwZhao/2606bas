@@ -309,6 +309,139 @@ def test_cue_sector_correction_prefers_frame_line_over_stick_bbox_axis() -> None
     assert plan.best.explanation["cue_sector_policy"] == "opponent_confirmation"
 
 
+def test_cue_sector_correction_holds_locked_target_when_strict_corridor_temporarily_loses_it(monkeypatch) -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            cue_sector_corridor_width_px=140.0,
+            cue_sector_switch_confirm_frames=1,
+            cue_sector_lock_margin_px=18.0,
+            cue_sector_lock_release_frames=3,
+        ),
+        _service(),
+    )
+    raw_aims = iter(
+        [
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 258.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 248.0], dtype=np.float32),
+                direction_px=np.asarray([0.9878, 0.1560], dtype=np.float32),
+                source="test_lock_seed",
+                score=1.0,
+            ),
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([1.0, 0.0], dtype=np.float32),
+                source="test_lock_hold",
+                score=1.0,
+            ),
+        ]
+    )
+    monkeypatch.setattr(planner.cue_sector.aim_detector, "detect", lambda **_kwargs: next(raw_aims))
+    layout = [
+        _obs(1, "cue", 120, 250),
+        _obs(2, "solid", 620, 329),
+    ]
+    locked = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=layout,
+    )
+    jitter = MatchStateFrame(
+        frame_id=2,
+        ts_cam_ns=2,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=layout,
+    )
+
+    seeded = planner.plan(locked)
+    held = planner.plan(jitter)
+
+    assert seeded.best is not None
+    assert seeded.best.target_track_id == 2
+    assert held.best is not None
+    assert held.best.target_track_id == 2
+    assert held.best.explanation["cue_sector_policy"] == "locked_hold"
+    assert held.best.explanation["cue_sector_target_ids"] == [2]
+
+
+def test_cue_sector_lock_releases_after_consecutive_misses(monkeypatch) -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            cue_sector_corridor_width_px=140.0,
+            cue_sector_switch_confirm_frames=1,
+            cue_sector_lock_margin_px=18.0,
+            cue_sector_lock_release_frames=2,
+        ),
+        _service(),
+    )
+    raw_aims = iter(
+        [
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 260.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 248.0], dtype=np.float32),
+                direction_px=np.asarray([0.9824, 0.1867], dtype=np.float32),
+                source="test_lock_seed",
+                score=1.0,
+            ),
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([1.0, 0.0], dtype=np.float32),
+                source="test_lock_miss_1",
+                score=1.0,
+            ),
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([1.0, 0.0], dtype=np.float32),
+                source="test_lock_miss_2",
+                score=1.0,
+            ),
+        ]
+    )
+    monkeypatch.setattr(planner.cue_sector.aim_detector, "detect", lambda **_kwargs: next(raw_aims))
+    layout = [
+        _obs(1, "cue", 120, 250),
+        _obs(2, "solid", 620, 345),
+    ]
+    seeded = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=layout,
+    )
+    miss_1 = MatchStateFrame(
+        frame_id=2,
+        ts_cam_ns=2,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=layout,
+    )
+    miss_2 = MatchStateFrame(
+        frame_id=3,
+        ts_cam_ns=3,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=layout,
+    )
+
+    planner.plan(seeded)
+    first_miss = planner.plan(miss_1)
+    assert first_miss.best is None
+    assert planner.cue_sector._held_target_id == 2
+
+    second_miss = planner.plan(miss_2)
+    assert second_miss.best is None
+    assert planner.cue_sector._held_target_id is None
+
+
 def test_cue_sector_correction_holds_previous_target_when_jitter_points_at_opponent(monkeypatch) -> None:
     planner = GeometryPhysicsPlanner(
         PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=3, cue_sector_corridor_width_px=240.0),

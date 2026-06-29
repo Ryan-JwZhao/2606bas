@@ -81,6 +81,9 @@ class UserSettings:
     planner_cue_sector_corridor_width_px: Optional[float] = None
     planner_cue_sector_switch_confirm_frames: Optional[int] = None
     planner_cue_sector_switch_min_score_delta: Optional[float] = None
+    planner_cue_sector_lock_margin_px: Optional[float] = None
+    planner_cue_sector_lock_forward_tolerance_px: Optional[float] = None
+    planner_cue_sector_lock_release_frames: Optional[int] = None
     planner_cue_sector_min_stick_quality: Optional[float] = None
     planner_cue_sector_require_balls_stationary: Optional[bool] = None
     planner_cue_sector_stationary_speed_mm_s: Optional[float] = None
@@ -272,6 +275,12 @@ class UserSettings:
             config.planner.cue_sector_switch_confirm_frames = max(1, int(self.planner_cue_sector_switch_confirm_frames))
         if self.planner_cue_sector_switch_min_score_delta is not None:
             config.planner.cue_sector_switch_min_score_delta = max(0.0, float(self.planner_cue_sector_switch_min_score_delta))
+        if self.planner_cue_sector_lock_margin_px is not None:
+            config.planner.cue_sector_lock_margin_px = max(0.0, float(self.planner_cue_sector_lock_margin_px))
+        if self.planner_cue_sector_lock_forward_tolerance_px is not None:
+            config.planner.cue_sector_lock_forward_tolerance_px = max(0.0, float(self.planner_cue_sector_lock_forward_tolerance_px))
+        if self.planner_cue_sector_lock_release_frames is not None:
+            config.planner.cue_sector_lock_release_frames = max(1, int(self.planner_cue_sector_lock_release_frames))
         if self.planner_cue_sector_min_stick_quality is not None:
             config.planner.cue_sector_min_stick_quality = max(0.0, min(1.0, float(self.planner_cue_sector_min_stick_quality)))
         if self.planner_cue_sector_require_balls_stationary is not None:
@@ -366,6 +375,9 @@ class UserSettings:
             planner_cue_sector_corridor_width_px=config.planner.cue_sector_corridor_width_px,
             planner_cue_sector_switch_confirm_frames=config.planner.cue_sector_switch_confirm_frames,
             planner_cue_sector_switch_min_score_delta=config.planner.cue_sector_switch_min_score_delta,
+            planner_cue_sector_lock_margin_px=config.planner.cue_sector_lock_margin_px,
+            planner_cue_sector_lock_forward_tolerance_px=config.planner.cue_sector_lock_forward_tolerance_px,
+            planner_cue_sector_lock_release_frames=config.planner.cue_sector_lock_release_frames,
             planner_cue_sector_min_stick_quality=config.planner.cue_sector_min_stick_quality,
             planner_cue_sector_require_balls_stationary=config.planner.cue_sector_require_balls_stationary,
             planner_cue_sector_stationary_speed_mm_s=config.planner.cue_sector_stationary_speed_mm_s,

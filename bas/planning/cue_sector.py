@@ -59,6 +59,7 @@ class CueSectorCorrection:
         self._held_target_id: Optional[int] = None
         self._pending_target_id: Optional[int] = None
         self._pending_frames = 0
+        self._lock_miss_frames = 0
         self.aim_detector = CueStickAimDetector()
         self.direction_stabilizer = CueDirectionStabilizer(config)
         self.last_debug_view: Optional[CueSectorDebugView] = None
@@ -68,6 +69,7 @@ class CueSectorCorrection:
         self._held_target_id = None
         self._pending_target_id = None
         self._pending_frames = 0
+        self._lock_miss_frames = 0
         self.direction_stabilizer.reset()
         self.last_debug_view = None
 
@@ -133,51 +135,52 @@ class CueSectorCorrection:
         sector_balls = self._sector_balls(cue_ball, balls, aim)
         cue_center_px = np.asarray(getattr(cue_ball, "center_px"), dtype=np.float32).reshape((2,))
         self._store_debug_view(cue_center_px, aim, sector_balls, "sector_ready")
-        if not sector_balls:
-            self.last_status = "empty_sector"
-            self._reset_target_stability()
-            return []
-
         sector_ids = {ball.track_id for ball in sector_balls}
         sector_candidates = [candidate for candidate in candidates if int(candidate.target_track_id) in sector_ids]
-        if not sector_candidates:
-            self.last_status = "sector_no_route"
-            self._store_debug_view(cue_center_px, aim, sector_balls, self.last_status)
-            self._reset_target_stability()
-            return []
-
         allowed_groups, policy = self._allowed_groups(sector_candidates, turn_target_group)
         selected = [candidate for candidate in sector_candidates if str(candidate.target_group) in allowed_groups]
-        if not selected:
-            self.last_status = f"{policy}_no_route"
-            self._store_debug_view(cue_center_px, aim, sector_balls, self.last_status)
-            self._reset_target_stability()
-            return []
 
-        selected = sorted(selected, key=lambda candidate: candidate.score, reverse=True)
-        selected, policy = self._stabilize(selected, list(candidates), policy)
-        if not selected:
-            self.last_status = "stabilizer_empty"
-            self._store_debug_view(cue_center_px, aim, sector_balls, self.last_status)
-            return []
+        failure_status = None
+        if not sector_balls:
+            failure_status = "empty_sector"
+        elif not sector_candidates:
+            failure_status = "sector_no_route"
+        elif not selected:
+            failure_status = f"{policy}_no_route"
+        else:
+            selected = sorted(selected, key=lambda candidate: candidate.score, reverse=True)
+            selected, policy = self._stabilize(selected, list(candidates), policy)
+            if selected:
+                return self._finalize_selection(
+                    cue_center_px=cue_center_px,
+                    aim=aim,
+                    sector_balls=sector_balls,
+                    selected=selected,
+                    policy=policy,
+                )
+            failure_status = "stabilizer_empty"
 
-        requires_confirmation = policy == "opponent_confirmation"
-        confirmation_target_id = int(selected[0].target_track_id) if requires_confirmation else None
-        confirmation_target_group = str(selected[0].target_group) if requires_confirmation else None
-        self.last_status = policy
-        self._store_debug_view(cue_center_px, aim, sector_balls, policy)
-        return [
-            self._annotate_candidate(
-                candidate,
+        recovered = self._recover_locked_selection(
+            cue_ball=cue_ball,
+            balls=balls,
+            candidates=list(candidates),
+            aim=aim,
+            turn_target_group=turn_target_group,
+        )
+        if recovered is not None:
+            recovered_balls, recovered_selected, recovered_policy = recovered
+            return self._finalize_selection(
+                cue_center_px=cue_center_px,
                 aim=aim,
-                policy=policy,
-                sector_balls=sector_balls,
-                requires_confirmation=requires_confirmation,
-                confirmation_target_id=confirmation_target_id,
-                confirmation_target_group=confirmation_target_group,
+                sector_balls=recovered_balls,
+                selected=recovered_selected,
+                policy=recovered_policy,
             )
-            for candidate in selected
-        ]
+
+        self.last_status = str(failure_status or "sector_no_route")
+        self._store_debug_view(cue_center_px, aim, sector_balls, self.last_status)
+        self._clear_pending_switch()
+        return []
 
     def all_object_targets(self, balls: Sequence[object]) -> list[object]:
         return [
@@ -271,39 +274,51 @@ class CueSectorCorrection:
         )
 
     def _sector_balls(self, cue_ball, balls: Sequence[object], aim: CueSectorAim) -> list[SectorBall]:
-        direction = unit(np.asarray(aim.direction_px, dtype=np.float32))
-        cue_center = np.asarray(getattr(cue_ball, "center_px"), dtype=np.float32)
-        half_width = max(0.5, float(aim.half_width_px))
-        if half_width <= 0.0:
-            return []
-        normal = np.asarray([-float(direction[1]), float(direction[0])], dtype=np.float32)
         sector: list[SectorBall] = []
         for ball in balls:
-            group = str(getattr(ball, "group", "")).strip().lower()
-            if group not in OBJECT_GROUPS:
-                continue
-            if int(getattr(ball, "track_id", -1)) == int(getattr(cue_ball, "track_id", -2)):
-                continue
-            if float(getattr(ball, "quality", 0.0)) <= 0.25:
-                continue
-            center = np.asarray(getattr(ball, "center_px"), dtype=np.float32)
-            vec = center - cue_center
-            forward = float(np.dot(vec, direction))
-            if forward <= 0.0:
-                continue
-            lateral = float(np.dot(vec, normal))
-            if abs(lateral) <= half_width:
-                sector.append(
-                    SectorBall(
-                        track_id=int(getattr(ball, "track_id")),
-                        group=group,
-                        center_px=(float(center[0]), float(center[1])),
-                        lateral_px=float(lateral),
-                        forward_px=float(forward),
-                        distance_px=float(np.linalg.norm(vec)),
-                    )
-                )
+            sector_ball = self._corridor_ball(cue_ball, ball, aim)
+            if sector_ball is not None:
+                sector.append(sector_ball)
         return sector
+
+    def _corridor_ball(
+        self,
+        cue_ball,
+        ball: object,
+        aim: CueSectorAim,
+        *,
+        lateral_margin_px: float = 0.0,
+        forward_tolerance_px: float = 0.0,
+    ) -> Optional[SectorBall]:
+        group = str(getattr(ball, "group", "")).strip().lower()
+        if group not in OBJECT_GROUPS:
+            return None
+        if int(getattr(ball, "track_id", -1)) == int(getattr(cue_ball, "track_id", -2)):
+            return None
+        if float(getattr(ball, "quality", 0.0)) <= 0.25:
+            return None
+        direction = unit(np.asarray(aim.direction_px, dtype=np.float32))
+        cue_center = np.asarray(getattr(cue_ball, "center_px"), dtype=np.float32)
+        half_width = max(0.5, float(aim.half_width_px) + float(max(0.0, lateral_margin_px)))
+        if half_width <= 0.0:
+            return None
+        normal = np.asarray([-float(direction[1]), float(direction[0])], dtype=np.float32)
+        center = np.asarray(getattr(ball, "center_px"), dtype=np.float32)
+        vec = center - cue_center
+        forward = float(np.dot(vec, direction))
+        if forward <= -float(max(0.0, forward_tolerance_px)):
+            return None
+        lateral = float(np.dot(vec, normal))
+        if abs(lateral) > half_width:
+            return None
+        return SectorBall(
+            track_id=int(getattr(ball, "track_id")),
+            group=group,
+            center_px=(float(center[0]), float(center[1])),
+            lateral_px=float(lateral),
+            forward_px=float(forward),
+            distance_px=float(np.linalg.norm(vec)),
+        )
 
     def _allowed_groups(
         self,
@@ -342,8 +357,8 @@ class CueSectorCorrection:
         confirm_frames = max(1, int(getattr(self.config, "cue_sector_switch_confirm_frames", 2)))
         if confirm_frames <= 1 or self._held_target_id is None:
             self._held_target_id = int(candidates[0].target_track_id)
-            self._pending_target_id = None
-            self._pending_frames = 0
+            self._mark_lock_confirmed()
+            self._clear_pending_switch()
             return candidates, policy
 
         held_target_id = int(self._held_target_id)
@@ -353,22 +368,22 @@ class CueSectorCorrection:
         ]
         best = candidates[0]
         if int(best.target_track_id) == held_target_id:
-            self._pending_target_id = None
-            self._pending_frames = 0
+            self._mark_lock_confirmed()
+            self._clear_pending_switch()
             return candidates, policy
 
         if not held_candidates_anywhere:
             self._held_target_id = int(best.target_track_id)
-            self._pending_target_id = None
-            self._pending_frames = 0
+            self._mark_lock_confirmed()
+            self._clear_pending_switch()
             return candidates, policy
 
         held_best = max(held_candidates_anywhere, key=lambda candidate: candidate.score)
         score_delta = float(best.score) - float(held_best.score)
         min_delta = float(getattr(self.config, "cue_sector_switch_min_score_delta", 0.10))
         if score_delta < min_delta:
-            self._pending_target_id = None
-            self._pending_frames = 0
+            self._mark_lock_confirmed()
+            self._clear_pending_switch()
             return sorted(held_candidates_anywhere, key=lambda candidate: candidate.score, reverse=True), "stable_hold"
 
         next_target_id = int(best.target_track_id)
@@ -378,11 +393,12 @@ class CueSectorCorrection:
             self._pending_target_id = next_target_id
             self._pending_frames = 1
         if self._pending_frames < confirm_frames:
+            self._mark_lock_confirmed()
             return sorted(held_candidates_anywhere, key=lambda candidate: candidate.score, reverse=True), "stable_hold"
 
         self._held_target_id = next_target_id
-        self._pending_target_id = None
-        self._pending_frames = 0
+        self._mark_lock_confirmed()
+        self._clear_pending_switch()
         return candidates, policy
 
     def _annotate_candidate(
@@ -417,13 +433,109 @@ class CueSectorCorrection:
 
     def _reset_target_stability(self) -> None:
         self._held_target_id = None
-        self._pending_target_id = None
-        self._pending_frames = 0
+        self._lock_miss_frames = 0
+        self._clear_pending_switch()
 
     def _reset_aim_state(self) -> None:
         self._reset_target_stability()
         self.direction_stabilizer.reset()
         self.last_debug_view = None
+
+    def _recover_locked_selection(
+        self,
+        *,
+        cue_ball,
+        balls: Sequence[object],
+        candidates: list[ShotCandidate],
+        aim: CueSectorAim,
+        turn_target_group: Optional[str],
+    ) -> Optional[tuple[list[SectorBall], list[ShotCandidate], str]]:
+        if self._held_target_id is None:
+            return None
+        held_ball_obj = next(
+            (
+                ball
+                for ball in balls
+                if int(getattr(ball, "track_id", -1)) == int(self._held_target_id)
+            ),
+            None,
+        )
+        if held_ball_obj is None:
+            self._mark_lock_gap()
+            return None
+        held_sector_ball = self._corridor_ball(
+            cue_ball,
+            held_ball_obj,
+            aim,
+            lateral_margin_px=float(getattr(self.config, "cue_sector_lock_margin_px", 18.0)),
+            forward_tolerance_px=float(getattr(self.config, "cue_sector_lock_forward_tolerance_px", 12.0)),
+        )
+        if held_sector_ball is None:
+            self._mark_lock_gap()
+            return None
+        held_candidates = [
+            candidate
+            for candidate in candidates
+            if int(candidate.target_track_id) == int(self._held_target_id)
+        ]
+        if not held_candidates:
+            self._mark_lock_gap()
+            return None
+        allowed_groups, _policy = self._allowed_groups(held_candidates, turn_target_group)
+        selected = [
+            candidate
+            for candidate in held_candidates
+            if str(candidate.target_group).strip().lower() in allowed_groups
+        ]
+        if not selected:
+            self._mark_lock_gap()
+            return None
+        self._mark_lock_confirmed()
+        self._clear_pending_switch()
+        return [held_sector_ball], sorted(selected, key=lambda candidate: candidate.score, reverse=True), "locked_hold"
+
+    def _clear_pending_switch(self) -> None:
+        self._pending_target_id = None
+        self._pending_frames = 0
+
+    def _mark_lock_confirmed(self) -> None:
+        self._lock_miss_frames = 0
+
+    def _mark_lock_gap(self) -> None:
+        if self._held_target_id is None:
+            return
+        self._lock_miss_frames += 1
+        self._clear_pending_switch()
+        release_frames = max(1, int(getattr(self.config, "cue_sector_lock_release_frames", 3)))
+        if self._lock_miss_frames >= release_frames:
+            self._reset_target_stability()
+
+    def _finalize_selection(
+        self,
+        *,
+        cue_center_px: np.ndarray,
+        aim: CueSectorAim,
+        sector_balls: Sequence[SectorBall],
+        selected: Sequence[ShotCandidate],
+        policy: str,
+    ) -> list[ShotCandidate]:
+        requires_confirmation = policy == "opponent_confirmation"
+        confirmation_target_id = int(selected[0].target_track_id) if requires_confirmation else None
+        confirmation_target_group = str(selected[0].target_group) if requires_confirmation else None
+        self.last_status = policy
+        self._store_debug_view(cue_center_px, aim, sector_balls, policy)
+        return [
+            self._annotate_candidate(
+                candidate,
+                aim=aim,
+                policy=policy,
+                sector_balls=sector_balls,
+                requires_confirmation=requires_confirmation,
+                confirmation_target_id=confirmation_target_id,
+                confirmation_target_group=confirmation_target_group,
+            )
+            for candidate in selected
+        ]
 
     def _store_debug_view(
         self,
