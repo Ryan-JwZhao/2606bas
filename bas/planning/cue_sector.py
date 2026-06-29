@@ -124,7 +124,7 @@ class CueSectorCorrection:
             return []
 
         selected = sorted(selected, key=lambda candidate: candidate.score, reverse=True)
-        selected = self._stabilize(selected)
+        selected, policy = self._stabilize(selected, list(candidates), policy)
         if not selected:
             self.last_status = "stabilizer_empty"
             return []
@@ -288,37 +288,46 @@ class CueSectorCorrection:
             return {"black"}, "black_only"
         return set(), "no_group"
 
-    def _stabilize(self, candidates: list[ShotCandidate]) -> list[ShotCandidate]:
+    def _stabilize(
+        self,
+        candidates: list[ShotCandidate],
+        all_candidates: list[ShotCandidate],
+        policy: str,
+    ) -> tuple[list[ShotCandidate], str]:
         if not candidates:
             self._reset_stability()
-            return []
+            return [], policy
         confirm_frames = max(1, int(getattr(self.config, "cue_sector_switch_confirm_frames", 2)))
         if confirm_frames <= 1 or self._held_target_id is None:
             self._held_target_id = int(candidates[0].target_track_id)
             self._pending_target_id = None
             self._pending_frames = 0
-            return candidates
+            return candidates, policy
 
-        held_candidates = [candidate for candidate in candidates if int(candidate.target_track_id) == int(self._held_target_id)]
-        if not held_candidates:
-            self._held_target_id = int(candidates[0].target_track_id)
-            self._pending_target_id = None
-            self._pending_frames = 0
-            return candidates
-
+        held_target_id = int(self._held_target_id)
+        held_candidates = [candidate for candidate in candidates if int(candidate.target_track_id) == held_target_id]
+        held_candidates_anywhere = held_candidates or [
+            candidate for candidate in all_candidates if int(candidate.target_track_id) == held_target_id
+        ]
         best = candidates[0]
-        if int(best.target_track_id) == int(self._held_target_id):
+        if int(best.target_track_id) == held_target_id:
             self._pending_target_id = None
             self._pending_frames = 0
-            return candidates
+            return candidates, policy
 
-        held_best = max(held_candidates, key=lambda candidate: candidate.score)
+        if not held_candidates_anywhere:
+            self._held_target_id = int(best.target_track_id)
+            self._pending_target_id = None
+            self._pending_frames = 0
+            return candidates, policy
+
+        held_best = max(held_candidates_anywhere, key=lambda candidate: candidate.score)
         score_delta = float(best.score) - float(held_best.score)
         min_delta = float(getattr(self.config, "cue_sector_switch_min_score_delta", 0.10))
         if score_delta < min_delta:
             self._pending_target_id = None
             self._pending_frames = 0
-            return self._promote_target(candidates, self._held_target_id)
+            return sorted(held_candidates_anywhere, key=lambda candidate: candidate.score, reverse=True), "stable_hold"
 
         next_target_id = int(best.target_track_id)
         if self._pending_target_id == next_target_id:
@@ -327,22 +336,12 @@ class CueSectorCorrection:
             self._pending_target_id = next_target_id
             self._pending_frames = 1
         if self._pending_frames < confirm_frames:
-            return self._promote_target(candidates, self._held_target_id)
+            return sorted(held_candidates_anywhere, key=lambda candidate: candidate.score, reverse=True), "stable_hold"
 
         self._held_target_id = next_target_id
         self._pending_target_id = None
         self._pending_frames = 0
-        return candidates
-
-    @staticmethod
-    def _promote_target(candidates: list[ShotCandidate], target_id: int) -> list[ShotCandidate]:
-        return sorted(
-            candidates,
-            key=lambda candidate: (
-                0 if int(candidate.target_track_id) == int(target_id) else 1,
-                -float(candidate.score),
-            ),
-        )
+        return candidates, policy
 
     def _annotate_candidate(
         self,

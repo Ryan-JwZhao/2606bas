@@ -304,6 +304,83 @@ def test_cue_sector_correction_prefers_frame_line_over_stick_bbox_axis() -> None
     assert plan.best.explanation["cue_sector_policy"] == "opponent_confirmation"
 
 
+def test_cue_sector_correction_holds_previous_target_when_jitter_points_at_opponent() -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=3, cue_sector_angle_deg=30.0),
+        _service(),
+    )
+    base_layout = [
+        _obs(1, "cue", 120, 250),
+        _obs(2, "solid", 620, 250),
+        _obs(3, "stripe", 620, 380),
+    ]
+    solid_aim = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=[base_layout[0], _stick(9, 20, 240, 90, 260), base_layout[1], base_layout[2]],
+    )
+    stripe_jitter = MatchStateFrame(
+        frame_id=2,
+        ts_cam_ns=2,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=[base_layout[0], _stick(9, 50, 230, 100, 250), base_layout[1], base_layout[2]],
+    )
+
+    first = planner.plan(solid_aim)
+    second = planner.plan(stripe_jitter)
+
+    assert first.best is not None
+    assert first.best.target_group == "solid"
+    assert second.best is not None
+    assert second.best.target_group == "solid"
+    assert second.best.explanation["cue_sector_policy"] == "stable_hold"
+
+
+def test_cue_sector_correction_switches_after_confirmation_frames() -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=3, cue_sector_angle_deg=30.0),
+        _service(),
+    )
+    layout = [
+        _obs(1, "cue", 120, 250),
+        _obs(2, "solid", 620, 250),
+        _obs(3, "stripe", 620, 380),
+    ]
+    solid_aim = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=[layout[0], _stick(9, 20, 240, 90, 260), layout[1], layout[2]],
+    )
+    stripe_aim = [
+        MatchStateFrame(
+            frame_id=frame_id,
+            ts_cam_ns=frame_id,
+            phase="PRE_SHOT_ARMED",
+            turn_target_group="solid",
+            layout=[layout[0], _stick(9, 50, 230, 100, 250), layout[1], layout[2]],
+        )
+        for frame_id in (2, 3, 4)
+    ]
+
+    planner.plan(solid_aim)
+    first_pending = planner.plan(stripe_aim[0])
+    second_pending = planner.plan(stripe_aim[1])
+    confirmed = planner.plan(stripe_aim[2])
+
+    assert first_pending.best is not None
+    assert first_pending.best.target_group == "solid"
+    assert second_pending.best is not None
+    assert second_pending.best.target_group == "solid"
+    assert confirmed.best is not None
+    assert confirmed.best.target_group == "stripe"
+    assert confirmed.best.explanation["cue_sector_policy"] == "opponent_confirmation"
+
+
 def test_planner_uses_center_playable_boundary_for_edge_rejection() -> None:
     service = _service()
     service.table.inner_polygon_mm = [(0, 0), (1000, 0), (1000, 500), (0, 500)]
