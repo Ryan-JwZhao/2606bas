@@ -241,3 +241,36 @@ def test_refresh_current_plan_uses_live_state_machine_turn_group() -> None:
 
     assert seen == [("stripe", "stripe")]
     assert window.last_output.state.turn_target_group == "stripe"
+
+
+def test_refresh_projection_uses_composed_interaction_frame() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    captured: list[np.ndarray] = []
+    overlay = ProjectionOverlay(overlay_id="overlay", frame_id=3, projector_size=(6, 4))
+
+    class _ProjectionWindow:
+        def set_image(self, image: np.ndarray) -> None:
+            captured.append(image.copy())
+
+    window.projection_window = _ProjectionWindow()
+    window._projection_calibration_mode = False
+    window.pipeline = None
+    window.last_output = main_window.PipelineOutput(
+        frame=FramePacket(frame_id=3, ts_cam_ns=3, camera_id="fake"),
+        detections=DetectionsFrame(frame_id=3, ts_cam_ns=3),
+        tracks=TracksFrame(frame_id=3, ts_cam_ns=3),
+        state=MatchStateFrame(frame_id=3, ts_cam_ns=3, phase="STABLE_IDLE"),
+        plan=ShotPlan(plan_id="p3", frame_id=3, ts_cam_ns=3),
+        overlay=overlay,
+    )
+    window.star_formula = main_window.StarFormulaConfig(enabled=False)
+    window._projection_overlay_for_output = lambda out: overlay
+    window._projection_interaction = SimpleNamespace(
+        compose_frame=lambda overlay, *, star_formula, calibration=None: np.full((4, 6, 3), 77, dtype=np.uint8)
+    )
+
+    main_window.OperatorWindow._refresh_projection(window)
+
+    assert len(captured) == 1
+    assert captured[0].shape == (4, 6, 3)
+    assert int(captured[0][0, 0, 0]) == 77

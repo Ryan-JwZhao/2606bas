@@ -43,6 +43,7 @@ from ..media_capture import FfmpegH264Recorder
 from ..operator_controls import RuntimeControlState, normalize_shot_mode, toggled_object_group
 from ..perception import create_detector
 from ..paths import PROJECT_ROOT
+from ..projection.interaction import ProjectionInteractionController
 from ..projection.overlay import projection_route_stroke_style
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
@@ -1257,6 +1258,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._instant_replay_start_failed = False
         self._projection_debug_enabled = False
         self._cue_sector_preview_enabled = False
+        self._projection_interaction = ProjectionInteractionController()
         self.control_state = RuntimeControlState()
         self._route_freeze = MotionRouteFreezeController(self.config.planner)
         self._recording_frame_corrector = RecordingFrameCorrector(self._recording_calibration_paths())
@@ -1273,6 +1275,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._remote_timer.setInterval(180)
         self._remote_timer.timeout.connect(self._process_remote_commands)
         self._remote_timer.start()
+        self._projection_effect_timer = QtCore.QTimer(self)
+        self._projection_effect_timer.setInterval(50)
+        self._projection_effect_timer.timeout.connect(self._advance_projection_effects)
 
         self.setWindowTitle("BAS Control Console")
         self.resize(self.BASE_WIDTH, self.BASE_HEIGHT)
@@ -1383,6 +1388,32 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.route_video_btn.clicked.connect(self.toggle_route_video_recording)
         for btn in [self.raw_photo_btn, self.instant_replay_export_btn, self.raw_video_btn, self.route_video_btn]:
             self.side_layout.addWidget(btn)
+        self.side_layout.addWidget(self._section_label("交互调试"))
+        interaction_debug = QtWidgets.QWidget()
+        interaction_debug_grid = QtWidgets.QGridLayout(interaction_debug)
+        interaction_debug_grid.setContentsMargins(0, 0, 0, 0)
+        interaction_debug_grid.setHorizontalSpacing(6)
+        interaction_debug_grid.setVerticalSpacing(6)
+        self.interaction_test_buttons: dict[str, QtWidgets.QPushButton] = {}
+        pocket_layout = (
+            ("pocket0", "P0", 0, 0),
+            ("pocket1", "P1", 0, 1),
+            ("pocket2", "P2", 0, 2),
+            ("pocket5", "P5", 2, 0),
+            ("pocket4", "P4", 2, 1),
+            ("pocket3", "P3", 2, 2),
+        )
+        for key, text, row, col in pocket_layout:
+            btn = self._button(text)
+            pocket_index = int(key.replace("pocket", ""))
+            btn.clicked.connect(lambda _checked=False, idx=pocket_index: self._trigger_interaction_test_pocket(idx))
+            interaction_debug_grid.addWidget(btn, row, col)
+            self.interaction_test_buttons[key] = btn
+        victory_btn = self._button("结算")
+        victory_btn.clicked.connect(self._trigger_interaction_test_victory)
+        interaction_debug_grid.addWidget(victory_btn, 1, 1)
+        self.interaction_test_buttons["victory"] = victory_btn
+        self.side_layout.addWidget(interaction_debug)
         self.side_layout.addStretch(1)
         self.config_label = QtWidgets.QLabel("设置保存在 local_settings/user_settings.json")
         self.config_label.setObjectName("muted")
@@ -1773,6 +1804,54 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def _save_user_settings(self) -> None:
         UserSettings.from_config(self.config, self.star_formula.to_dict()).save()
 
+    def _projection_effect_fps_hint(self) -> float:
+        if self.pipeline is not None:
+            try:
+                info = self.pipeline.capture.info()
+                fps = float(getattr(info, "fps", 0.0) or 0.0)
+                if fps > 0.0:
+                    return fps
+            except Exception:
+                pass
+        return float(getattr(self.config.camera, "fps", 0) or 0.0)
+
+    def _queue_projection_notice(self, text: str) -> None:
+        if self._projection_interaction.notify(text):
+            self._arm_projection_effect_timer()
+            self._refresh_projection()
+
+    def _arm_projection_effect_timer(self) -> None:
+        if self.projection_window is None:
+            return
+        if not self._projection_interaction.has_active_content():
+            return
+        if not self._projection_effect_timer.isActive():
+            self._projection_effect_timer.start()
+
+    def _advance_projection_effects(self) -> None:
+        if self.projection_window is None or self._projection_calibration_mode:
+            self._projection_effect_timer.stop()
+            return
+        self._refresh_projection()
+        if not self._projection_interaction.has_active_content():
+            self._projection_effect_timer.stop()
+
+    def _trigger_interaction_test_pocket(self, pocket_index: int) -> None:
+        if self.projection_window is None:
+            self._projection_calibration_mode = False
+            self._ensure_projection_window()
+            self.projection_btn.setText("停止投影")
+        if self._projection_interaction.trigger_pocket_animation(pocket_index, fps_hint=self._projection_effect_fps_hint()):
+            self._queue_projection_notice(f"测试袋口 P{int(pocket_index)}")
+
+    def _trigger_interaction_test_victory(self) -> None:
+        if self.projection_window is None:
+            self._projection_calibration_mode = False
+            self._ensure_projection_window()
+            self.projection_btn.setText("停止投影")
+        if self._projection_interaction.trigger_victory_animation(fps_hint=self._projection_effect_fps_hint()):
+            self._queue_projection_notice("测试结算动画")
+
     def _current_turn_target_group(self) -> Optional[str]:
         if self.pipeline is not None:
             return self.pipeline.state_machine.turn_target_group
@@ -1803,6 +1882,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._save_user_settings()
         label = "自由模式" if normalized == "free" else "规则模式"
         self._append_log(f"画线模式已切换为 {label} ({source})")
+        self._queue_projection_notice("自由模式" if normalized == "free" else "规则模式")
         self._refresh_current_plan()
         self._update_module_status(self.last_output)
 
@@ -1832,6 +1912,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.projection_window.set_star_formula(self.star_formula)
         self._save_user_settings()
         self._refresh_projection()
+        self._queue_projection_notice("颗星公式开启" if self.star_formula.enabled else "颗星公式关闭")
         self._append_log(f"颗星公式已{'开启' if self.star_formula.enabled else '关闭'} ({source})")
 
     def _refresh_current_plan(self) -> None:
@@ -1900,6 +1981,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._update_module_status(self.last_output)
         self._append_log(f"已启用单杆自由击球 ({source})")
 
+        self._queue_projection_notice("下一杆自由")
+
     def _arm_black_shot_once(self, *, source: str) -> None:
         if normalize_shot_mode(self.config.planner.shot_mode) != "rule":
             self._append_log(f"当前为自由模式，黑球单杆指令未生效 ({source})")
@@ -1911,6 +1994,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._refresh_current_plan()
         self._update_module_status(self.last_output)
         self._append_log(f"已启用单杆黑球击打 ({source})")
+
+        self._queue_projection_notice("下一杆黑球")
 
     def _process_remote_commands(self) -> None:
         try:
@@ -2171,6 +2256,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
             return
         result = self._instant_replay.request_export(trigger_ts_ns=self.last_output.frame.ts_cam_ns)
         self._append_log(f"{result.message} ({source})")
+        if result.accepted:
+            self._queue_projection_notice("精彩时刻已触发")
         self._flush_instant_replay_events()
         self._update_module_status(self.last_output)
 
@@ -2202,6 +2289,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def _flush_instant_replay_events(self) -> None:
         for message in self._instant_replay.drain_events():
             self._append_log(message)
+            if "已导出" in str(message):
+                self._queue_projection_notice("精彩时刻已导出")
 
     def _recording_calibration_paths(self) -> tuple[str, ...]:
         paths: list[str] = []
@@ -3030,6 +3119,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             )
             self._set_module_status("检测", "已加载", getattr(detector, "version", "unknown"))
             self._set_module_status("标定", "有效" if calibration.projection.is_valid else "缺失", f"{camera_state} / {projection_state}")
+            self._queue_projection_notice("系统初始化成功")
             if self.config.projection.geometry_reference_enabled and not geometry.is_empty:
                 self._append_log("几何参考线将在前端实时画面中显示，不会输出到投影仪")
         except Exception as exc:
@@ -3229,6 +3319,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.projection_window.close()
             self.projection_window = None
             self._projection_calibration_mode = False
+            self._projection_effect_timer.stop()
             self.projection_btn.setText("开始投影")
             self._append_log("投影已停止")
         self._update_module_status(self.last_output)
@@ -3239,6 +3330,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.projection_window = ProjectionWindow(self.config.projection)
         self.projection_window.set_star_formula(self.star_formula)
         self.projection_window.show_on_configured_screen()
+        self._projection_interaction.notify_boot_ready()
+        self._arm_projection_effect_timer()
         self._refresh_projection()
 
     def _refresh_projection(self) -> None:
@@ -3247,14 +3340,20 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if self._projection_calibration_mode:
             return
         if self.last_output is not None:
-            self.projection_window.set_overlay(self._projection_overlay_for_output(self.last_output))
+            overlay = self._projection_overlay_for_output(self.last_output)
         else:
             overlay = ProjectionOverlay(
                 overlay_id="blank",
                 frame_id=0,
                 projector_size=(self.config.projection.projector_width, self.config.projection.projector_height),
             )
-            self.projection_window.set_overlay(overlay)
+        calibration = self.pipeline.calibration if self.pipeline is not None else None
+        image = self._projection_interaction.compose_frame(
+            overlay,
+            star_formula=self.star_formula,
+            calibration=calibration,
+        )
+        self.projection_window.set_image(image)
 
     def _projection_overlay_for_output(self, out: PipelineOutput) -> ProjectionOverlay:
         base = out.overlay
@@ -3334,6 +3433,12 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self._pending_turn_target_group = self.pipeline.state_machine.turn_target_group
             self.frame_count += 1
             now = time.perf_counter()
+            if self._projection_interaction.observe_output(
+                state=out.state,
+                plan=out.plan,
+                fps_hint=self._projection_effect_fps_hint(),
+            ):
+                self._arm_projection_effect_timer()
             self._record_media_frames(out)
             self._record_deep_debug_frame(raw_out=raw_out, display_out=out)
             if now - self._last_preview_update_ts >= 1.0 / max(1.0, self._preview_fps_limit):
@@ -3545,6 +3650,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         super().resizeEvent(event)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._projection_effect_timer.stop()
         self.stop_pipeline()
         if self.projection_window is not None:
             self.projection_window.close()
