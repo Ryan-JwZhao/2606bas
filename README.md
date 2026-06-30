@@ -22,6 +22,41 @@ python -m bas
 4. 如需落地投影，再点击“开始投影”。
 5. 根据现场需要切换 `规则模式` / `自由模式`。
 
+## 2026-06-30 本次更新
+
+### 用户意图级目标球锁定
+
+规则模式现在新增 `target_lock` 用户意图锁定层。它位于球杆方向识别和路线规划之间，优先级高于普通候选评分和球杆走廊纠正。
+
+核心行为：
+
+- 球杆连续指向同一颗目标球后，系统会把这颗球作为用户意图目标锁定。
+- 锁定后，伸缩球杆、短暂无球杆、瞄准抖动、出杆运动阶段都不会切换到其他球。
+- 只有球杆连续、明确指向另一颗距离足够远的球，才会提交换锁。
+- 锁定目标会写入 `ShotPlan.locked_target_id` 和 `ShotPlan.target_lock_status`，便于前端和调试回放确认状态。
+
+相关实现：
+
+- `bas/planning/target_lock.py`
+- `bas/planning/planner.py`
+- `bas/schemas.py`
+- `bas/state_debug.py`
+
+主要参数：
+
+- `planner.target_lock_enabled`
+  - 是否启用用户意图级锁定，默认启用。
+- `planner.target_lock_confirm_frames`
+  - 首次锁定同一目标需要连续确认多少帧，默认 3。
+- `planner.target_lock_switch_confirm_frames`
+  - 从已锁定目标切换到另一颗球需要连续确认多少帧，默认 8。
+- `planner.target_lock_missing_release_frames`
+  - 锁定球在非运动阶段连续丢失多少帧后释放，默认 45。
+- `planner.target_lock_corridor_width_px`
+  - 用于选球入锁的球杆走廊宽度，默认 140。
+- `planner.target_lock_switch_min_distance_px`
+  - 允许换锁的新目标与旧目标锚点的最小距离，默认 70。
+
 ## 2026-06-29 本次更新
 
 ### 1. 白球锚定的球杆方向解析
@@ -103,6 +138,8 @@ python -m bas
 本次修改已通过以下检查：
 
 ```powershell
+.\.venv\Scripts\python.exe -m py_compile bas\planning\target_lock.py bas\planning\planner.py bas\schemas.py bas\state_debug.py bas\ui\main_window.py
+.\.venv\Scripts\python.exe -m pytest tests\test_planner.py tests\test_route_freeze.py tests\test_ui_runtime.py tests\test_state_debug.py -q --basetemp=pytest_tmp_codex\target_lock
 .\.venv\Scripts\python.exe -m py_compile bas\planning\cue_sector.py bas\config.py bas\user_settings.py tests\test_planner.py
 .\.venv\Scripts\python.exe -m pytest tests\test_planner.py tests\test_cue_aim.py tests\test_cue_sector_preview.py tests\test_ui_runtime.py -q --basetemp=pytest_tmp_codex\cue_lock
 ```

@@ -182,6 +182,13 @@ class PlannerConfig:
     cue_sector_require_balls_stationary: bool = True
     cue_sector_stationary_speed_mm_s: float = 8.0
     cue_sector_stationary_speed_px_s: float = 25.0
+    target_lock_enabled: bool = True
+    target_lock_confirm_frames: int = 3
+    target_lock_switch_confirm_frames: int = 8
+    target_lock_missing_release_frames: int = 45
+    target_lock_corridor_width_px: float = 140.0
+    target_lock_switch_min_distance_px: float = 70.0
+    target_lock_reacquire_radius_px: float = 90.0
 
 
 @dataclass

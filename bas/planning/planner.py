@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
@@ -14,6 +14,7 @@ from ..utils import angle_deg, clamp, point_segment_distance, unit, wall_time_id
 from .cue_sector import CueSectorCorrection
 from .free_shot import FreeShotPlanner
 from .learning import create_learning_ranker
+from .target_lock import TargetLockController, TargetLockDecision
 
 
 @dataclass
@@ -23,6 +24,7 @@ class _Ball:
     center_px: np.ndarray
     center_mm: np.ndarray
     radius_mm: float
+    radius_px: float
     quality: float
 
 
@@ -39,6 +41,7 @@ class GeometryPhysicsPlanner:
         )
         self.free_planner = FreeShotPlanner(config, calibration)
         self.cue_sector = CueSectorCorrection(config, calibration)
+        self.target_lock = TargetLockController(config)
 
     def plan(
         self,
@@ -53,6 +56,8 @@ class GeometryPhysicsPlanner:
             return self._empty_plan(state, shot_mode=shot_mode, free_status="disabled")
         if shot_mode == "free":
             free_route = self.free_planner.plan(state, frame_bgr=frame_bgr)
+            self.target_lock.reset()
+            target_lock = TargetLockDecision(None, None, "free_mode")
             return ShotPlan(
                 plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
                 frame_id=state.frame_id,
@@ -61,6 +66,8 @@ class GeometryPhysicsPlanner:
                 free_route=free_route,
                 free_status=self.free_planner.last_status,
                 planner_version=f"{self.version}+{self.free_planner.version}",
+                locked_target_id=target_lock.locked_target_id,
+                target_lock_status=target_lock.status,
         )
         balls = self._extract_balls(state.layout)
         cue = next((b for b in balls if b.group == "cue"), None)
@@ -68,12 +75,24 @@ class GeometryPhysicsPlanner:
             return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
         turn_target_group = forced_turn_target_group if forced_turn_target_group is not None else getattr(state, "turn_target_group", None)
         cue_sector_aim = self.cue_sector.detect_aim(state, cue, frame_bgr=frame_bgr)
-        targets = self.cue_sector.all_object_targets(balls) if cue_sector_aim is not None else self._eligible_targets(
-            balls,
-            turn_target_group=turn_target_group,
-        )
+        target_lock = self.target_lock.update(state=state, cue_ball=cue, balls=balls, aim=cue_sector_aim)
+        locked_target = self._locked_target(balls, target_lock)
+        if locked_target is not None:
+            targets = [locked_target]
+        elif cue_sector_aim is not None:
+            targets = self.cue_sector.all_object_targets(balls)
+        else:
+            targets = self._eligible_targets(
+                balls,
+                turn_target_group=turn_target_group,
+            )
         if not targets:
-            return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
+            return self._empty_plan(
+                state,
+                shot_mode=shot_mode,
+                free_status=self.free_planner.last_status,
+                target_lock=target_lock,
+            )
         candidates: List[ShotCandidate] = []
         pockets = [np.asarray(p, dtype=np.float32) for p in self.calibration.table.pockets_mm]
         center_polygon = self.calibration.table.center_playable_polygon_mm or self.calibration.table.inner_polygon_mm
@@ -84,7 +103,9 @@ class GeometryPhysicsPlanner:
                 if candidate is not None:
                     candidates.append(candidate)
         candidates = self.learning_ranker.rerank(candidates, state)
-        if cue_sector_aim is not None:
+        if locked_target is not None:
+            candidates = self._apply_target_lock(candidates, target_lock)
+        elif cue_sector_aim is not None:
             candidates = self.cue_sector.apply(
                 state=state,
                 cue_ball=cue,
@@ -104,13 +125,22 @@ class GeometryPhysicsPlanner:
             shot_mode="rule",
             free_status=self.free_planner.last_status,
             planner_version=self.version,
+            locked_target_id=target_lock.locked_target_id,
+            target_lock_status=target_lock.status,
         )
 
     def _shot_mode(self, *, forced_shot_mode: Optional[str] = None) -> str:
         mode = str(forced_shot_mode if forced_shot_mode is not None else getattr(self.config, "shot_mode", "rule") or "rule").strip().lower()
         return "free" if mode in {"free", "free_shot"} else "rule"
 
-    def _empty_plan(self, state: MatchStateFrame, *, shot_mode: str, free_status: str = "idle") -> ShotPlan:
+    def _empty_plan(
+        self,
+        state: MatchStateFrame,
+        *,
+        shot_mode: str,
+        free_status: str = "idle",
+        target_lock: TargetLockDecision | None = None,
+    ) -> ShotPlan:
         return ShotPlan(
             plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
             frame_id=state.frame_id,
@@ -118,6 +148,8 @@ class GeometryPhysicsPlanner:
             shot_mode=shot_mode,
             free_status=free_status,
             planner_version=self.version if shot_mode == "rule" else f"{self.version}+{self.free_planner.version}",
+            locked_target_id=target_lock.locked_target_id if target_lock is not None else None,
+            target_lock_status=target_lock.status if target_lock is not None else "off",
         )
 
     def _extract_balls(self, tracks: Sequence[TrackObservation]) -> List[_Ball]:
@@ -136,10 +168,42 @@ class GeometryPhysicsPlanner:
                     center_px=np.asarray(tr.center_px, dtype=np.float32).reshape((2,)),
                     center_mm=center.astype(np.float32),
                     radius_mm=float(radius_mm),
+                    radius_px=float(max(2.0, tr.radius_px)),
                     quality=float(tr.quality),
                 )
             )
         return balls
+
+    def _locked_target(self, balls: Sequence[_Ball], target_lock: TargetLockDecision) -> Optional[_Ball]:
+        if target_lock.locked_target_id is None:
+            return None
+        for ball in balls:
+            if int(ball.track_id) == int(target_lock.locked_target_id) and ball.group in {"solid", "stripe", "black"} and ball.quality > 0.25:
+                return ball
+        return None
+
+    def _apply_target_lock(self, candidates: List[ShotCandidate], target_lock: TargetLockDecision) -> List[ShotCandidate]:
+        if target_lock.locked_target_id is None:
+            return candidates
+        locked = [
+            candidate
+            for candidate in candidates
+            if int(candidate.target_track_id) == int(target_lock.locked_target_id)
+        ]
+        return [self._annotate_target_lock(candidate, target_lock) for candidate in locked]
+
+    def _annotate_target_lock(self, candidate: ShotCandidate, target_lock: TargetLockDecision) -> ShotCandidate:
+        explanation = dict(candidate.explanation)
+        explanation.update(
+            {
+                "target_lock": True,
+                "target_lock_version": self.target_lock.version,
+                "target_lock_status": target_lock.status,
+                "target_lock_target_id": target_lock.locked_target_id,
+                "target_lock_group": target_lock.locked_group,
+            }
+        )
+        return replace(candidate, explanation=explanation)
 
     def _eligible_targets(self, balls: Sequence[_Ball], turn_target_group: Optional[str] = None) -> List[_Ball]:
         targets = [b for b in balls if b.group in {"solid", "stripe", "black"} and b.quality > 0.25]

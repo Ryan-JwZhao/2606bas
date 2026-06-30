@@ -2929,6 +2929,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
             plan_detail = f"free / {collision_count} collisions / {out.plan.free_status}"
         else:
             plan_detail = f"rule / {len(out.plan.candidates)} candidates / {ranker_version}"
+            if out.plan.locked_target_id is not None:
+                plan_detail += f" / lock #{out.plan.locked_target_id} {out.plan.target_lock_status}"
         if self.config.planner.route_freeze_enabled:
             plan_detail += f" / freeze {self._route_freeze.last_status_text}"
         self._set_module_status("规划", "运行中" if self.config.planner.enabled else "关闭", plan_detail)
@@ -3375,10 +3377,15 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self.candidates.setRowCount(0)
             return
         best = out.plan.best
+        lock_text = ""
+        if out.plan.locked_target_id is not None:
+            lock_text = f"\nlock #{out.plan.locked_target_id} {out.plan.target_lock_status}"
         if best is None:
             self.best_label.setText("无")
         else:
             self.best_label.setText(f"目标 #{best.target_track_id}\n袋口 {best.pocket_index}\n评分 {best.score:.2f}  风险 {best.risk:.2f}\n切角 {best.cut_angle_deg:.1f}°")
+        if lock_text:
+            self.best_label.setText(self.best_label.text() + lock_text)
         self.candidates.setRowCount(len(out.plan.candidates))
         for row, cand in enumerate(out.plan.candidates):
             for col, value in enumerate([cand.candidate_id, str(cand.pocket_index), f"{cand.score:.2f}", f"{cand.risk:.2f}"]):

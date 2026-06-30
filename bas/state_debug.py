@@ -180,6 +180,8 @@ def _plan_summary(plan: ShotPlan) -> dict[str, Any]:
         "shot_mode": str(plan.shot_mode),
         "free_status": str(plan.free_status),
         "planner_version": str(plan.planner_version),
+        "locked_target_id": plan.locked_target_id,
+        "target_lock_status": str(plan.target_lock_status),
         "best": _candidate_summary(plan.best),
         "candidates": [_candidate_summary(candidate) for candidate in list(plan.candidates or [])],
     }
@@ -261,15 +263,18 @@ def _compact_plan(plan: dict[str, Any]) -> str:
     candidates = list(plan.get("candidates") or [])
     if shot_mode == "free":
         return f"free status={plan.get('free_status')}"
+    lock = ""
+    if plan.get("locked_target_id") is not None:
+        lock = f" lock=t{plan.get('locked_target_id')}:{plan.get('target_lock_status')}"
     if best is None:
-        return f"rule best=none cand={len(candidates)}"
+        return f"rule best=none cand={len(candidates)}{lock}"
     best_id = best.get("candidate_id")
     target = best.get("target_track_id")
     pocket = best.get("pocket_index")
     score = float(best.get("score") or 0.0)
     risk = float(best.get("risk") or 0.0)
     tops = ",".join(str(item.get("candidate_id")) for item in candidates[:3]) or "none"
-    return f"rule best={best_id}/t{target}/p{pocket} s={score:.2f} r={risk:.2f} cand={len(candidates)} top={tops}"
+    return f"rule best={best_id}/t{target}/p{pocket} s={score:.2f} r={risk:.2f} cand={len(candidates)} top={tops}{lock}"
 
 
 def _bit(value: Any) -> int:
