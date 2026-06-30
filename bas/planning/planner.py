@@ -14,6 +14,7 @@ from ..utils import angle_deg, clamp, point_segment_distance, unit, wall_time_id
 from .cue_sector import CueSectorCorrection
 from .free_shot import FreeShotPlanner
 from .learning import create_learning_ranker
+from .target_shot import TargetShotDecision, TargetShotModeController, TargetShotPlanner
 from .target_lock import TargetLockController, TargetLockDecision
 
 
@@ -42,6 +43,8 @@ class GeometryPhysicsPlanner:
         self.free_planner = FreeShotPlanner(config, calibration)
         self.cue_sector = CueSectorCorrection(config, calibration)
         self.target_lock = TargetLockController(config)
+        self.target_shot_mode = TargetShotModeController(config)
+        self.target_shot_planner = TargetShotPlanner(config, calibration)
 
     def plan(
         self,
@@ -57,6 +60,7 @@ class GeometryPhysicsPlanner:
         if shot_mode == "free":
             free_route = self.free_planner.plan(state, frame_bgr=frame_bgr)
             self.target_lock.reset()
+            self.target_shot_mode.reset()
             target_lock = TargetLockDecision(None, None, "free_mode")
             return ShotPlan(
                 plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
@@ -68,11 +72,15 @@ class GeometryPhysicsPlanner:
                 planner_version=f"{self.version}+{self.free_planner.version}",
                 locked_target_id=target_lock.locked_target_id,
                 target_lock_status=target_lock.status,
+                target_shot_status="free_mode",
         )
         balls = self._extract_balls(state.layout)
         cue = next((b for b in balls if b.group == "cue"), None)
         if cue is None:
             return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
+        target_shot = self.target_shot_mode.update(state=state, balls=balls, tracks=state.layout, frame_bgr=frame_bgr)
+        if target_shot.active:
+            return self._target_shot_plan(state, cue, balls, target_shot)
         turn_target_group = forced_turn_target_group if forced_turn_target_group is not None else getattr(state, "turn_target_group", None)
         cue_sector_aim = self.cue_sector.detect_aim(state, cue, frame_bgr=frame_bgr)
         target_lock = self.target_lock.update(state=state, cue_ball=cue, balls=balls, aim=cue_sector_aim)
@@ -127,6 +135,7 @@ class GeometryPhysicsPlanner:
             planner_version=self.version,
             locked_target_id=target_lock.locked_target_id,
             target_lock_status=target_lock.status,
+            target_shot_status=target_shot.status,
         )
 
     def _shot_mode(self, *, forced_shot_mode: Optional[str] = None) -> str:
@@ -150,6 +159,7 @@ class GeometryPhysicsPlanner:
             planner_version=self.version if shot_mode == "rule" else f"{self.version}+{self.free_planner.version}",
             locked_target_id=target_lock.locked_target_id if target_lock is not None else None,
             target_lock_status=target_lock.status if target_lock is not None else "off",
+            target_shot_status="off",
         )
 
     def _extract_balls(self, tracks: Sequence[TrackObservation]) -> List[_Ball]:
@@ -179,6 +189,47 @@ class GeometryPhysicsPlanner:
             return None
         for ball in balls:
             if int(ball.track_id) == int(target_lock.locked_target_id) and ball.group in {"solid", "stripe", "black"} and ball.quality > 0.25:
+                return ball
+        return None
+
+    def _target_shot_plan(
+        self,
+        state: MatchStateFrame,
+        cue: _Ball,
+        balls: Sequence[_Ball],
+        target_shot: TargetShotDecision,
+    ) -> ShotPlan:
+        target = self._target_shot_target(balls, target_shot)
+        best = None
+        candidates: List[ShotCandidate] = []
+        status = target_shot.status
+        if target is None:
+            status = f"{status}:target_missing"
+            self.target_shot_planner.last_status = "target_missing"
+        else:
+            best = self.target_shot_planner.plan(cue_ball=cue, target=target, balls=balls, decision=target_shot)
+            if best is not None:
+                candidates = [best]
+            status = f"{status}:{self.target_shot_planner.last_status}"
+        return ShotPlan(
+            plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
+            frame_id=state.frame_id,
+            ts_cam_ns=state.ts_cam_ns,
+            candidates=candidates,
+            best=best,
+            shot_mode="target",
+            free_status=self.free_planner.last_status,
+            planner_version=f"{self.version}+{self.target_shot_planner.version}",
+            locked_target_id=target_shot.active_target_id,
+            target_lock_status=f"target_shot:{target_shot.status}",
+            target_shot_status=status,
+        )
+
+    def _target_shot_target(self, balls: Sequence[_Ball], target_shot: TargetShotDecision) -> Optional[_Ball]:
+        if target_shot.active_target_id is None:
+            return None
+        for ball in balls:
+            if int(ball.track_id) == int(target_shot.active_target_id) and ball.group in {"solid", "stripe", "black"} and ball.quality > 0.25:
                 return ball
         return None
 

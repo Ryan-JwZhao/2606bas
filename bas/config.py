@@ -189,6 +189,11 @@ class PlannerConfig:
     target_lock_corridor_width_px: float = 140.0
     target_lock_switch_min_distance_px: float = 70.0
     target_lock_reacquire_radius_px: float = 90.0
+    target_shot_enabled: bool = True
+    target_shot_trigger_frames: int = 15
+    target_shot_max_rebounds: int = 2
+    target_shot_pocket_tolerance_mm: float = 42.0
+    target_shot_min_stick_quality: float = 0.25
 
 
 @dataclass

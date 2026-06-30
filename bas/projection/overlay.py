@@ -81,14 +81,18 @@ class OverlayBuilder:
         if float(np.linalg.norm(guide_start - cue)) >= 1.0:
             self._append_line_mm(overlay, [guide_start, cue], width=style.solid_line_width, trim_end_mm=ball_radius, label="cue_guide")
         self._append_line_mm(overlay, [cue, ghost], width=style.solid_line_width, trim_start_mm=ball_radius, trim_end_mm=ball_radius, label="aim")
-        self._append_line_mm(
-            overlay,
-            [target, pocket],
-            width=style.dashed_line_width,
-            style="dashed",
-            trim_start_mm=ball_radius,
-            label="object",
-        )
+        object_nodes = [np.asarray(point, dtype=np.float32) for point in (candidate.object_line or [])]
+        if len(object_nodes) < 2:
+            object_nodes = [target, pocket]
+        for idx in range(len(object_nodes) - 1):
+            self._append_line_mm(
+                overlay,
+                [object_nodes[idx], object_nodes[idx + 1]],
+                width=style.dashed_line_width,
+                style="dashed",
+                trim_start_mm=ball_radius if idx == 0 else 0.0,
+                label="object",
+            )
         cue_sep_end = rule_cue_separation_end(
             cue,
             ghost,
@@ -105,9 +109,10 @@ class OverlayBuilder:
                 trim_start_mm=ball_radius,
                 label="cue_separation",
             )
-        circles = self.calibration.table_mm_to_projector_px(
-            np.asarray([candidate.ghost_ball, candidate.object_ball, candidate.pocket_point], dtype=np.float32)
-        )
+        circle_points = [candidate.ghost_ball, candidate.object_ball, candidate.pocket_point]
+        if len(object_nodes) > 2:
+            circle_points.extend((float(point[0]), float(point[1])) for point in object_nodes[1:-1])
+        circles = self.calibration.table_mm_to_projector_px(np.asarray(circle_points, dtype=np.float32))
         radius_px = self._projector_radius_px(candidate.ghost_ball, ball_radius)
         overlay.circles.append(OverlayCircle(center=(float(circles[0, 0]), float(circles[0, 1])), radius=radius_px, color=ROUTE_COLOR, width=style.circle_width))
         overlay.circles.append(OverlayCircle(center=(float(circles[1, 0]), float(circles[1, 1])), radius=radius_px, color=ROUTE_COLOR, width=style.circle_width))
@@ -119,6 +124,15 @@ class OverlayBuilder:
                 width=style.circle_width,
             )
         )
+        for rail_circle in circles[3:]:
+            overlay.circles.append(
+                OverlayCircle(
+                    center=(float(rail_circle[0]), float(rail_circle[1])),
+                    radius=max(6.0, radius_px * 0.35),
+                    color=ROUTE_COLOR,
+                    width=style.circle_width,
+                )
+            )
         label_pos = (float(circles[0, 0] + 14), float(circles[0, 1] - 14))
         overlay.labels.append((label_pos, f"{candidate.score:.2f}", ROUTE_COLOR))
 

@@ -14,6 +14,9 @@ def _plan(
     *,
     target_track_id: int | None,
     pocket_index: int | None,
+    shot_mode: str = "rule",
+    locked_target_id: int | None = None,
+    target_shot_status: str = "off",
     cue_ball: tuple[float, float] = (100.0, 100.0),
     object_ball: tuple[float, float] = (200.0, 100.0),
     ghost_ball: tuple[float, float] = (180.0, 100.0),
@@ -42,7 +45,16 @@ def _plan(
             risk=0.2,
         )
         candidates = [best]
-    return ShotPlan(plan_id=f"plan_{frame_id}", frame_id=frame_id, ts_cam_ns=frame_id, best=best, candidates=candidates)
+    return ShotPlan(
+        plan_id=f"plan_{frame_id}",
+        frame_id=frame_id,
+        ts_cam_ns=frame_id,
+        best=best,
+        candidates=candidates,
+        shot_mode=shot_mode,
+        locked_target_id=locked_target_id,
+        target_shot_status=target_shot_status,
+    )
 
 
 def _overlay(frame_id: int) -> ProjectionOverlay:
@@ -164,3 +176,38 @@ def test_route_switch_requires_confirmation_and_significant_change() -> None:
     )
     assert committed.plan.best is not None
     assert committed.plan.best.target_track_id == 3
+
+
+def test_target_no_route_clears_previous_route_without_switch_delay() -> None:
+    config = PlannerConfig(route_freeze_enabled=True, route_freeze_switch_confirm_frames=8)
+    controller = MotionRouteFreezeController(config)
+
+    first = controller.update(
+        _state(1, "STABLE_IDLE"),
+        _plan(
+            1,
+            target_track_id=2,
+            pocket_index=1,
+            shot_mode="target",
+            locked_target_id=2,
+            target_shot_status="active_new:ok:0_rebounds",
+        ),
+        _overlay(1),
+    )
+    cleared = controller.update(
+        _state(2, "STABLE_IDLE"),
+        _plan(
+            2,
+            target_track_id=None,
+            pocket_index=None,
+            shot_mode="target",
+            locked_target_id=2,
+            target_shot_status="active_hold_same:no_theoretical_route",
+        ),
+        _overlay(2),
+    )
+
+    assert first.plan.best is not None
+    assert cleared.plan.best is None
+    assert cleared.frozen is False
+    assert cleared.status_text == "target_no_route_clear"

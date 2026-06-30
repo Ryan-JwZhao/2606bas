@@ -471,6 +471,121 @@ def test_target_lock_ignores_new_aim_during_shot_motion(monkeypatch) -> None:
     assert moving_2.target_lock_status == "locked_hold_motion"
 
 
+def test_target_shot_mode_activates_after_pointing_object_for_threshold() -> None:
+    service = _service()
+    service.table.pockets_mm = [(500, 0)]
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_lock_enabled=False,
+            target_shot_trigger_frames=2,
+        ),
+        service,
+    )
+    layout = [
+        _obs(1, "cue", 100, 400),
+        _obs(2, "solid", 500, 250),
+        _stick(9, 490, 320, 510, 390),
+    ]
+
+    pending = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="PRE_SHOT_ARMED", layout=layout))
+    active = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=2, phase="PRE_SHOT_ARMED", layout=layout))
+
+    assert pending.shot_mode == "rule"
+    assert pending.target_shot_status == "activate_pending 1/2"
+    assert active.shot_mode == "target"
+    assert active.locked_target_id == 2
+    assert active.best is not None
+    assert active.best.target_track_id == 2
+    assert active.best.explanation["target_shot"] is True
+    assert active.best.explanation["target_shot_independent_of_cue_stick"] is True
+
+
+def test_target_shot_mode_holds_without_cue_stick_and_keeps_route_independent_of_direction() -> None:
+    service = _service()
+    service.table.pockets_mm = [(500, 0)]
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_lock_enabled=False,
+            target_shot_trigger_frames=1,
+        ),
+        service,
+    )
+    locked_layout = [
+        _obs(1, "cue", 100, 400),
+        _obs(2, "solid", 500, 250),
+        _stick(9, 490, 320, 510, 390),
+    ]
+    no_stick_layout = [
+        _obs(1, "cue", 100, 400),
+        _obs(2, "solid", 500, 250),
+    ]
+
+    locked = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="PRE_SHOT_ARMED", layout=locked_layout))
+    held = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=2, phase="PRE_SHOT_ARMED", layout=no_stick_layout))
+
+    assert locked.shot_mode == "target"
+    assert held.shot_mode == "target"
+    assert held.locked_target_id == 2
+    assert held.target_shot_status.startswith("active_hold_no_aim")
+    assert locked.best is not None
+    assert held.best is not None
+    assert held.best.object_line == locked.best.object_line
+
+
+def test_target_shot_mode_releases_when_cue_ball_is_hit() -> None:
+    service = _service()
+    service.table.pockets_mm = [(500, 0)]
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_lock_enabled=False,
+            target_shot_trigger_frames=1,
+        ),
+        service,
+    )
+    layout = [
+        _obs(1, "cue", 100, 400),
+        _obs(2, "solid", 500, 250),
+        _stick(9, 490, 320, 510, 390),
+    ]
+
+    locked = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="PRE_SHOT_ARMED", layout=layout))
+    moving = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=2, phase="SHOT_ACTIVE", layout=layout))
+
+    assert locked.shot_mode == "target"
+    assert moving.shot_mode != "target"
+    assert moving.locked_target_id is None
+
+
+def test_target_shot_mode_can_choose_bank_route_when_direct_route_is_not_possible() -> None:
+    service = _service()
+    service.table.pockets_mm = [(500, 0)]
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_lock_enabled=False,
+            target_shot_trigger_frames=1,
+            target_shot_max_rebounds=1,
+        ),
+        service,
+    )
+    layout = [
+        _obs(1, "cue", 700, 300),
+        _obs(2, "solid", 500, 250),
+        _obs(3, "stripe", 500, 130),
+        _stick(9, 490, 320, 510, 390),
+    ]
+
+    plan = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="PRE_SHOT_ARMED", layout=layout))
+
+    assert plan.shot_mode == "target"
+    assert plan.best is not None
+    assert plan.best.explanation["target_shot_rebounds"] == 1
+    assert len(plan.best.object_line) == 3
+
+
 def test_cue_sector_correction_holds_locked_target_when_strict_corridor_temporarily_loses_it(monkeypatch) -> None:
     planner = GeometryPhysicsPlanner(
         PlannerConfig(

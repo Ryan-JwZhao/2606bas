@@ -274,6 +274,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self.target_lock_enabled.setChecked(bool(config.planner.target_lock_enabled))
         self.target_lock_confirm_frames = self._spin(int(config.planner.target_lock_confirm_frames), 1, 60)
         self.target_lock_switch_confirm_frames = self._spin(int(config.planner.target_lock_switch_confirm_frames), 1, 120)
+        self.target_shot_enabled = QtWidgets.QCheckBox("启用目标击球模式")
+        self.target_shot_enabled.setChecked(bool(config.planner.target_shot_enabled))
+        self.target_shot_trigger_frames = self._spin(int(config.planner.target_shot_trigger_frames), 1, 180)
         route_freeze_box = QtWidgets.QGroupBox("路线防闪烁")
         route_freeze_grid = QtWidgets.QGridLayout(route_freeze_box)
         route_freeze_grid.addWidget(self.route_freeze_enabled, 0, 0, 1, 4)
@@ -344,6 +347,11 @@ class SettingsDialog(QtWidgets.QDialog):
             1,
             4,
         )
+        target_shot_box = QtWidgets.QGroupBox("目标击球模式")
+        target_shot_grid = QtWidgets.QGridLayout(target_shot_box)
+        target_shot_grid.addWidget(self.target_shot_enabled, 0, 0, 1, 4)
+        target_shot_grid.addWidget(QtWidgets.QLabel("非白球连续指向帧"), 1, 0)
+        target_shot_grid.addWidget(self.target_shot_trigger_frames, 1, 1)
         self._add_form_tab(
             tabs,
             "相机采集",
@@ -388,7 +396,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 ("默认投影分辨率", proj_size),
             ],
         )
-        self._add_widget_tab(tabs, "路线策略", [target_lock_box, route_freeze_box, cue_sector_box])
+        self._add_widget_tab(tabs, "路线策略", [target_shot_box, target_lock_box, route_freeze_box, cue_sector_box])
         self._add_form_tab(
             tabs,
             "学习数据",
@@ -612,6 +620,8 @@ class SettingsDialog(QtWidgets.QDialog):
         config.planner.target_lock_enabled = self.target_lock_enabled.isChecked()
         config.planner.target_lock_confirm_frames = int(self.target_lock_confirm_frames.value())
         config.planner.target_lock_switch_confirm_frames = int(self.target_lock_switch_confirm_frames.value())
+        config.planner.target_shot_enabled = self.target_shot_enabled.isChecked()
+        config.planner.target_shot_trigger_frames = int(self.target_shot_trigger_frames.value())
         self._apply_projection_tuning_to_config(config)
 
     def _apply_projection_tuning_to_config(self, config: AppConfig) -> None:
@@ -2598,7 +2608,19 @@ class OperatorWindow(QtWidgets.QMainWindow):
         )
         self._draw_segment_trimmed(image, guide_start, cue, route_color, style.solid_line_width, 0.0, radius_mm)
         self._draw_segment_trimmed(image, cue, ghost, route_color, style.solid_line_width, radius_mm, radius_mm)
-        self._draw_dashed_segment_trimmed(image, target, pocket, route_color, style.dashed_line_width, radius_mm, 0.0)
+        object_nodes = [np.asarray(point, dtype=np.float32) for point in (getattr(candidate, "object_line", None) or [])]
+        if len(object_nodes) < 2:
+            object_nodes = [target, pocket]
+        for idx in range(len(object_nodes) - 1):
+            self._draw_dashed_segment_trimmed(
+                image,
+                object_nodes[idx],
+                object_nodes[idx + 1],
+                route_color,
+                style.dashed_line_width,
+                radius_mm if idx == 0 else 0.0,
+                0.0,
+            )
         cue_sep_end = rule_cue_separation_end(
             cue,
             ghost,
@@ -2617,7 +2639,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 0.0,
             )
 
-        for point in (ghost, target):
+        for point in (ghost, target, *object_nodes[1:-1]):
             cam = self._table_mm_to_camera_px([point])
             if cam.shape[0] >= 1:
                 cv2.circle(image, _point_int(cam[0]), radius_px, route_color, style.circle_width, cv2.LINE_AA)
@@ -2952,6 +2974,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
         elif out.plan.shot_mode == "free":
             collision_count = len(out.plan.free_route.collision_points) if out.plan.free_route is not None else 0
             plan_detail = f"free / {collision_count} collisions / {out.plan.free_status}"
+        elif out.plan.shot_mode == "target":
+            plan_detail = f"target / {len(out.plan.candidates)} candidates / {out.plan.target_shot_status}"
+            if out.plan.locked_target_id is not None:
+                plan_detail += f" / lock #{out.plan.locked_target_id}"
         else:
             plan_detail = f"rule / {len(out.plan.candidates)} candidates / {ranker_version}"
             if out.plan.locked_target_id is not None:
@@ -3399,6 +3425,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if out.plan.shot_mode == "free":
             collision_count = len(out.plan.free_route.collision_points) if out.plan.free_route is not None else 0
             self.best_label.setText(f"自由模式\n状态 {out.plan.free_status}\n碰撞 {collision_count}")
+            self.candidates.setRowCount(0)
+            return
+        if out.plan.shot_mode == "target" and out.plan.best is None:
+            lock_id = f" #{out.plan.locked_target_id}" if out.plan.locked_target_id is not None else ""
+            self.best_label.setText(f"目标击球模式{lock_id}\n状态 {out.plan.target_shot_status}\n无理论进球路线")
             self.candidates.setRowCount(0)
             return
         best = out.plan.best

@@ -182,6 +182,7 @@ def _plan_summary(plan: ShotPlan) -> dict[str, Any]:
         "planner_version": str(plan.planner_version),
         "locked_target_id": plan.locked_target_id,
         "target_lock_status": str(plan.target_lock_status),
+        "target_shot_status": str(plan.target_shot_status),
         "best": _candidate_summary(plan.best),
         "candidates": [_candidate_summary(candidate) for candidate in list(plan.candidates or [])],
     }
@@ -190,7 +191,8 @@ def _plan_summary(plan: ShotPlan) -> dict[str, Any]:
 def _candidate_summary(candidate: Optional[ShotCandidate]) -> Optional[dict[str, Any]]:
     if candidate is None:
         return None
-    return {
+    explanation = dict(candidate.explanation or {})
+    summary = {
         "candidate_id": str(candidate.candidate_id),
         "target_track_id": int(candidate.target_track_id),
         "target_group": str(candidate.target_group),
@@ -199,6 +201,9 @@ def _candidate_summary(candidate: Optional[ShotCandidate]) -> Optional[dict[str,
         "risk": float(candidate.risk),
         "cut_angle_deg": float(candidate.cut_angle_deg),
     }
+    if "target_shot_rebounds" in explanation:
+        summary["target_shot_rebounds"] = int(explanation["target_shot_rebounds"])
+    return summary
 
 
 def _subtitle_text(record: dict[str, Any]) -> str:
@@ -266,6 +271,12 @@ def _compact_plan(plan: dict[str, Any]) -> str:
     lock = ""
     if plan.get("locked_target_id") is not None:
         lock = f" lock=t{plan.get('locked_target_id')}:{plan.get('target_lock_status')}"
+    if shot_mode == "target":
+        status = str(plan.get("target_shot_status") or "off")
+        if best is None:
+            return f"target best=none cand={len(candidates)} status={status}{lock}"
+        rebounds = best.get("target_shot_rebounds", "?")
+        return f"target t{best.get('target_track_id')}/p{best.get('pocket_index')} r={rebounds} s={float(best.get('score') or 0.0):.2f} cand={len(candidates)} status={status}{lock}"
     if best is None:
         return f"rule best=none cand={len(candidates)}{lock}"
     best_id = best.get("candidate_id")

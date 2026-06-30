@@ -103,6 +103,14 @@ class MotionRouteFreezeController:
         plan: ShotPlan,
         overlay: ProjectionOverlay,
     ) -> RouteDisplayDecision:
+        if _is_target_no_route(plan):
+            self._remember(plan, overlay)
+            self._frozen = False
+            self._pending_signature = None
+            self._pending_frames = 0
+            self.last_status_text = "target_no_route_clear"
+            return RouteDisplayDecision(plan=plan, overlay=overlay, frozen=False, status_text=self.last_status_text)
+
         release_frames = max(1, int(getattr(self.config, "route_freeze_release_frames", 1)))
         if self._frozen and self._stable_frames < release_frames and self._display is not None:
             self.last_status_text = f"release_pending {self._stable_frames}/{release_frames}"
@@ -214,6 +222,17 @@ def _plan_signature(plan: ShotPlan) -> tuple:
             tuple(str(v) for v in getattr(route, "collision_types", []) or []),
             len(getattr(route, "path_points", []) or []),
         )
+    if shot_mode == "target":
+        best = getattr(plan, "best", None)
+        if best is None:
+            return ("target", getattr(plan, "locked_target_id", None), None, 0)
+        return (
+            "target",
+            int(getattr(best, "target_track_id", -1)),
+            int(getattr(best, "pocket_index", -1)),
+            len(getattr(best, "object_line", []) or []),
+            int(dict(getattr(best, "explanation", {}) or {}).get("target_shot_rebounds", 0)),
+        )
     best = getattr(plan, "best", None)
     if best is None:
         return ("rule", None, None, None)
@@ -223,6 +242,11 @@ def _plan_signature(plan: ShotPlan) -> tuple:
         int(getattr(best, "pocket_index", -1)),
         str(getattr(best, "target_group", "")),
     )
+
+
+def _is_target_no_route(plan: ShotPlan) -> bool:
+    shot_mode = str(getattr(plan, "shot_mode", "rule") or "rule").strip().lower()
+    return shot_mode == "target" and getattr(plan, "best", None) is None
 
 
 def _plan_score(plan: ShotPlan) -> float:
@@ -245,6 +269,8 @@ def _route_delta_mm(first: ShotPlan, second: ShotPlan) -> float:
         return float("inf")
     if first_mode == "free":
         return _free_route_delta_mm(getattr(first, "free_route", None), getattr(second, "free_route", None))
+    if first_mode == "target":
+        return _target_route_delta_mm(getattr(first, "best", None), getattr(second, "best", None))
     return _rule_route_delta_mm(getattr(first, "best", None), getattr(second, "best", None))
 
 
@@ -259,6 +285,26 @@ def _rule_route_delta_mm(first: Optional[ShotCandidate], second: Optional[ShotCa
         _point_delta_mm(first.ghost_ball, second.ghost_ball),
         _point_delta_mm(first.pocket_point, second.pocket_point),
     ]
+    return max(distances)
+
+
+def _target_route_delta_mm(first: Optional[ShotCandidate], second: Optional[ShotCandidate]) -> float:
+    if first is None and second is None:
+        return 0.0
+    if first is None or second is None:
+        return float("inf")
+    first_points = list(getattr(first, "object_line", []) or [])
+    second_points = list(getattr(second, "object_line", []) or [])
+    if len(first_points) != len(second_points):
+        return float("inf")
+    distances = [
+        _point_delta_mm(first.cue_ball, second.cue_ball),
+        _point_delta_mm(first.object_ball, second.object_ball),
+        _point_delta_mm(first.ghost_ball, second.ghost_ball),
+        _point_delta_mm(first.pocket_point, second.pocket_point),
+    ]
+    for first_point, second_point in zip(first_points, second_points):
+        distances.append(_point_delta_mm(first_point, second_point))
     return max(distances)
 
 

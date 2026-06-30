@@ -176,6 +176,7 @@ class ShotPlan:
     planner_version: str = "geometry_physics_mvp_v1"
     locked_target_id: Optional[int] = None
     target_lock_status: str = "off"
+    target_shot_status: str = "off"
 
 
 @dataclass

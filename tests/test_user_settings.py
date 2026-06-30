@@ -275,3 +275,34 @@ def test_user_settings_exports_target_lock_parameters() -> None:
     assert settings.planner_target_lock_enabled is False
     assert settings.planner_target_lock_confirm_frames == 4
     assert settings.planner_target_lock_switch_confirm_frames == 10
+
+
+def test_user_settings_applies_target_shot_parameters(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "planner_target_shot_enabled": False,
+                "planner_target_shot_trigger_frames": 17,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig()
+
+    UserSettings.load(path).apply_to_config(cfg)
+
+    assert cfg.planner.target_shot_enabled is False
+    assert cfg.planner.target_shot_trigger_frames == 17
+
+
+def test_user_settings_exports_target_shot_parameters() -> None:
+    cfg = AppConfig()
+    cfg.planner.target_shot_enabled = False
+    cfg.planner.target_shot_trigger_frames = 19
+
+    settings = UserSettings.from_config(cfg)
+
+    assert settings.planner_target_shot_enabled is False
+    assert settings.planner_target_shot_trigger_frames == 19

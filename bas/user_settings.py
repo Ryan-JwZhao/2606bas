@@ -91,6 +91,8 @@ class UserSettings:
     planner_target_lock_enabled: Optional[bool] = None
     planner_target_lock_confirm_frames: Optional[int] = None
     planner_target_lock_switch_confirm_frames: Optional[int] = None
+    planner_target_shot_enabled: Optional[bool] = None
+    planner_target_shot_trigger_frames: Optional[int] = None
     learning_ranker_enabled: Optional[bool] = None
     learning_ranker_model_path: Optional[str] = None
     learning_score_blend: Optional[float] = None
@@ -298,6 +300,10 @@ class UserSettings:
             config.planner.target_lock_confirm_frames = max(1, int(self.planner_target_lock_confirm_frames))
         if self.planner_target_lock_switch_confirm_frames is not None:
             config.planner.target_lock_switch_confirm_frames = max(1, int(self.planner_target_lock_switch_confirm_frames))
+        if self.planner_target_shot_enabled is not None:
+            config.planner.target_shot_enabled = bool(self.planner_target_shot_enabled)
+        if self.planner_target_shot_trigger_frames is not None:
+            config.planner.target_shot_trigger_frames = max(1, int(self.planner_target_shot_trigger_frames))
         if self.learning_ranker_enabled is not None:
             config.learning.ranker_enabled = bool(self.learning_ranker_enabled)
         if self._has("learning_ranker_model_path"):
@@ -394,6 +400,8 @@ class UserSettings:
             planner_target_lock_enabled=config.planner.target_lock_enabled,
             planner_target_lock_confirm_frames=config.planner.target_lock_confirm_frames,
             planner_target_lock_switch_confirm_frames=config.planner.target_lock_switch_confirm_frames,
+            planner_target_shot_enabled=config.planner.target_shot_enabled,
+            planner_target_shot_trigger_frames=config.planner.target_shot_trigger_frames,
             learning_ranker_enabled=config.learning.ranker_enabled,
             learning_ranker_model_path=config.learning.ranker_model_path,
             learning_score_blend=config.learning.score_blend,
