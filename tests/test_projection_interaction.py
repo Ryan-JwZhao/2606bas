@@ -76,6 +76,31 @@ def test_projection_interaction_deduplicates_pocket_events_and_notices_target_ac
     assert int(np.count_nonzero(image)) > 0
 
 
+def test_projection_interaction_falls_back_to_pot_probable_when_confirmed_event_is_absent(tmp_path: Path) -> None:
+    pocket_dir = tmp_path / "Goal" / "pocket0"
+    frame = np.zeros((8, 8, 4), dtype=np.uint8)
+    frame[:, :, 1] = 255
+    frame[:, :, 3] = 255
+    _write_bgra_png(pocket_dir / "frame_000.png", frame)
+
+    now = [0.0]
+    controller = ProjectionInteractionController(asset_root=tmp_path, time_source=lambda: now[0])
+    state = MatchStateFrame(
+        frame_id=13,
+        ts_cam_ns=13,
+        phase="SHOT_ACTIVE",
+        events=[Event(name="POT_PROBABLE", ts_cam_ns=13, frame_id=13, payload={"track_id": 9, "pocket_index": 0})],
+    )
+    plan = ShotPlan(plan_id="p-pot", frame_id=13, ts_cam_ns=13)
+
+    assert controller.observe_output(state=state, plan=plan, fps_hint=30.0) is True
+    image = controller.compose_frame(
+        ProjectionOverlay(overlay_id="blank", frame_id=13, projector_size=(220, 120)),
+        star_formula=StarFormulaConfig(enabled=False),
+    )
+    assert int(np.count_nonzero(image)) > 0
+
+
 def test_projection_interaction_triggers_victory_animation_once(tmp_path: Path) -> None:
     victory_dir = tmp_path / "Win"
     frame = np.zeros((4, 4, 4), dtype=np.uint8)
@@ -96,6 +121,31 @@ def test_projection_interaction_triggers_victory_animation_once(tmp_path: Path) 
     assert controller.observe_output(state=state, plan=plan, fps_hint=30.0) is True
     image = controller.compose_frame(
         ProjectionOverlay(overlay_id="blank", frame_id=99, projector_size=(4, 4)),
+        star_formula=StarFormulaConfig(enabled=False),
+    )
+    assert tuple(int(v) for v in image[1, 1]) == (0, 0, 255)
+
+
+def test_projection_interaction_falls_back_to_referee_intent_for_victory(tmp_path: Path) -> None:
+    victory_dir = tmp_path / "Win"
+    frame = np.zeros((4, 4, 4), dtype=np.uint8)
+    frame[:, :, 2] = 255
+    frame[:, :, 3] = 255
+    _write_bgra_png(victory_dir / "frame_000.png", frame)
+
+    now = [0.0]
+    controller = ProjectionInteractionController(asset_root=tmp_path, time_source=lambda: now[0])
+    state = MatchStateFrame(
+        frame_id=100,
+        ts_cam_ns=100,
+        phase="TURN_RESOLVE",
+        events=[Event(name="REFEREE_INTENT", ts_cam_ns=100, frame_id=100, payload={"game_status": "won"})],
+    )
+    plan = ShotPlan(plan_id="p3", frame_id=100, ts_cam_ns=100)
+
+    assert controller.observe_output(state=state, plan=plan, fps_hint=30.0) is True
+    image = controller.compose_frame(
+        ProjectionOverlay(overlay_id="blank", frame_id=100, projector_size=(4, 4)),
         star_formula=StarFormulaConfig(enabled=False),
     )
     assert tuple(int(v) for v in image[1, 1]) == (0, 0, 255)

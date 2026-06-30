@@ -101,7 +101,6 @@ class CueSectorCorrection:
             cue_radius_px=cue_radius_px,
             inner_polygon_px=self._inner_polygon_px(frame_bgr.shape if frame_bgr is not None else None),
             min_stick_quality=min_quality,
-            prefer_tracks=True,
         )
         if aim_px is None:
             self.last_status = "no_valid_cue_stick"

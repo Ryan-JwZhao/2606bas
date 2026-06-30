@@ -501,7 +501,7 @@ def test_target_shot_mode_activates_after_pointing_object_for_threshold() -> Non
     assert active.best.explanation["target_shot_independent_of_cue_stick"] is True
 
 
-def test_target_shot_mode_prefers_track_based_aim_when_scanning_candidates(monkeypatch) -> None:
+def test_target_shot_mode_keeps_edge_detection_available_when_scanning_candidates(monkeypatch) -> None:
     service = _service()
     service.table.pockets_mm = [(500, 0)]
     planner = GeometryPhysicsPlanner(
@@ -516,7 +516,7 @@ def test_target_shot_mode_prefers_track_based_aim_when_scanning_candidates(monke
     detect_kwargs_seen: list[tuple[object, object]] = []
 
     def _wrapped_detect(**kwargs):
-        detect_kwargs_seen.append((kwargs.get("prefer_tracks"), kwargs.get("allow_edge_detection")))
+        detect_kwargs_seen.append((kwargs.get("prefer_tracks", False), kwargs.get("allow_edge_detection", True)))
         return original_detect(**kwargs)
 
     monkeypatch.setattr(planner.target_shot_mode.aim_detector, "detect", _wrapped_detect)
@@ -529,33 +529,8 @@ def test_target_shot_mode_prefers_track_based_aim_when_scanning_candidates(monke
     plan = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="PRE_SHOT_ARMED", layout=layout))
 
     assert detect_kwargs_seen
-    assert all(prefer_tracks is True and allow_edges is False for prefer_tracks, allow_edges in detect_kwargs_seen)
+    assert all(prefer_tracks is False and allow_edges is True for prefer_tracks, allow_edges in detect_kwargs_seen)
     assert plan.shot_mode == "target"
-
-
-def test_cue_sector_prefers_track_based_aim_before_edge_scan(monkeypatch) -> None:
-    planner = GeometryPhysicsPlanner(
-        PlannerConfig(top_k=20),
-        _service(),
-    )
-    detect_kwargs_seen: list[tuple[object, object]] = []
-    original_detect = planner.cue_sector.aim_detector.detect
-
-    def _wrapped_detect(**kwargs):
-        detect_kwargs_seen.append((kwargs.get("prefer_tracks"), kwargs.get("allow_edge_detection", True)))
-        return original_detect(**kwargs)
-
-    monkeypatch.setattr(planner.cue_sector.aim_detector, "detect", _wrapped_detect)
-    layout = [
-        _obs(1, "cue", 120, 250),
-        _obs(2, "solid", 620, 250),
-        _stick(9, 70, 240, 110, 260),
-    ]
-
-    planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="PRE_SHOT_ARMED", layout=layout))
-
-    assert detect_kwargs_seen
-    assert all(prefer_tracks is True and allow_edges is True for prefer_tracks, allow_edges in detect_kwargs_seen)
 
 
 def test_target_shot_mode_holds_without_cue_stick_and_keeps_route_independent_of_direction() -> None:

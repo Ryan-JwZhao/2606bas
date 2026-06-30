@@ -159,8 +159,6 @@ class TargetShotModeController:
                 cue_radius_px=radius,
                 inner_polygon_px=None,
                 min_stick_quality=min_quality,
-                prefer_tracks=True,
-                allow_edge_detection=False,
             )
             if aim is None:
                 continue
