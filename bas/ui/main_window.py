@@ -270,6 +270,10 @@ class SettingsDialog(QtWidgets.QDialog):
         self.cue_sector_require_balls_stationary.setChecked(bool(config.planner.cue_sector_require_balls_stationary))
         self.cue_sector_stationary_speed_mm = self._dspin(float(config.planner.cue_sector_stationary_speed_mm_s), 0.0, 120.0, 0.5)
         self.cue_sector_stationary_speed_px = self._dspin(float(config.planner.cue_sector_stationary_speed_px_s), 0.0, 300.0, 1.0)
+        self.target_lock_enabled = QtWidgets.QCheckBox("启用用户意图目标锁定")
+        self.target_lock_enabled.setChecked(bool(config.planner.target_lock_enabled))
+        self.target_lock_confirm_frames = self._spin(int(config.planner.target_lock_confirm_frames), 1, 60)
+        self.target_lock_switch_confirm_frames = self._spin(int(config.planner.target_lock_switch_confirm_frames), 1, 120)
         route_freeze_box = QtWidgets.QGroupBox("路线防闪烁")
         route_freeze_grid = QtWidgets.QGridLayout(route_freeze_box)
         route_freeze_grid.addWidget(self.route_freeze_enabled, 0, 0, 1, 4)
@@ -322,6 +326,24 @@ class SettingsDialog(QtWidgets.QDialog):
             1,
             4,
         )
+        target_lock_box = QtWidgets.QGroupBox("用户意图目标锁定")
+        target_lock_grid = QtWidgets.QGridLayout(target_lock_box)
+        target_lock_grid.addWidget(self.target_lock_enabled, 0, 0, 1, 4)
+        self._grid_pair(
+            target_lock_grid,
+            1,
+            "首次锁定连续帧",
+            self.target_lock_confirm_frames,
+            "切换锁定连续帧",
+            self.target_lock_switch_confirm_frames,
+        )
+        target_lock_grid.addWidget(
+            QtWidgets.QLabel("锁定后，伸缩球杆、短暂无球杆和出杆运动阶段不会切换目标球；只有连续明确指向另一颗球才换锁。"),
+            2,
+            0,
+            1,
+            4,
+        )
         self._add_form_tab(
             tabs,
             "相机采集",
@@ -366,7 +388,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 ("默认投影分辨率", proj_size),
             ],
         )
-        self._add_widget_tab(tabs, "路线策略", [route_freeze_box, cue_sector_box])
+        self._add_widget_tab(tabs, "路线策略", [target_lock_box, route_freeze_box, cue_sector_box])
         self._add_form_tab(
             tabs,
             "学习数据",
@@ -587,6 +609,9 @@ class SettingsDialog(QtWidgets.QDialog):
         config.planner.cue_sector_require_balls_stationary = self.cue_sector_require_balls_stationary.isChecked()
         config.planner.cue_sector_stationary_speed_mm_s = float(self.cue_sector_stationary_speed_mm.value())
         config.planner.cue_sector_stationary_speed_px_s = float(self.cue_sector_stationary_speed_px.value())
+        config.planner.target_lock_enabled = self.target_lock_enabled.isChecked()
+        config.planner.target_lock_confirm_frames = int(self.target_lock_confirm_frames.value())
+        config.planner.target_lock_switch_confirm_frames = int(self.target_lock_switch_confirm_frames.value())
         self._apply_projection_tuning_to_config(config)
 
     def _apply_projection_tuning_to_config(self, config: AppConfig) -> None:

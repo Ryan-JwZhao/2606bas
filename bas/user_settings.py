@@ -88,6 +88,9 @@ class UserSettings:
     planner_cue_sector_require_balls_stationary: Optional[bool] = None
     planner_cue_sector_stationary_speed_mm_s: Optional[float] = None
     planner_cue_sector_stationary_speed_px_s: Optional[float] = None
+    planner_target_lock_enabled: Optional[bool] = None
+    planner_target_lock_confirm_frames: Optional[int] = None
+    planner_target_lock_switch_confirm_frames: Optional[int] = None
     learning_ranker_enabled: Optional[bool] = None
     learning_ranker_model_path: Optional[str] = None
     learning_score_blend: Optional[float] = None
@@ -289,6 +292,12 @@ class UserSettings:
             config.planner.cue_sector_stationary_speed_mm_s = max(0.0, float(self.planner_cue_sector_stationary_speed_mm_s))
         if self.planner_cue_sector_stationary_speed_px_s is not None:
             config.planner.cue_sector_stationary_speed_px_s = max(0.0, float(self.planner_cue_sector_stationary_speed_px_s))
+        if self.planner_target_lock_enabled is not None:
+            config.planner.target_lock_enabled = bool(self.planner_target_lock_enabled)
+        if self.planner_target_lock_confirm_frames is not None:
+            config.planner.target_lock_confirm_frames = max(1, int(self.planner_target_lock_confirm_frames))
+        if self.planner_target_lock_switch_confirm_frames is not None:
+            config.planner.target_lock_switch_confirm_frames = max(1, int(self.planner_target_lock_switch_confirm_frames))
         if self.learning_ranker_enabled is not None:
             config.learning.ranker_enabled = bool(self.learning_ranker_enabled)
         if self._has("learning_ranker_model_path"):
@@ -382,6 +391,9 @@ class UserSettings:
             planner_cue_sector_require_balls_stationary=config.planner.cue_sector_require_balls_stationary,
             planner_cue_sector_stationary_speed_mm_s=config.planner.cue_sector_stationary_speed_mm_s,
             planner_cue_sector_stationary_speed_px_s=config.planner.cue_sector_stationary_speed_px_s,
+            planner_target_lock_enabled=config.planner.target_lock_enabled,
+            planner_target_lock_confirm_frames=config.planner.target_lock_confirm_frames,
+            planner_target_lock_switch_confirm_frames=config.planner.target_lock_switch_confirm_frames,
             learning_ranker_enabled=config.learning.ranker_enabled,
             learning_ranker_model_path=config.learning.ranker_model_path,
             learning_score_blend=config.learning.score_blend,

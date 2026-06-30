@@ -240,3 +240,38 @@ def test_user_settings_applies_cue_sector_correction_parameters(tmp_path) -> Non
     assert cfg.planner.cue_sector_require_balls_stationary is False
     assert cfg.planner.cue_sector_stationary_speed_mm_s == 11.0
     assert cfg.planner.cue_sector_stationary_speed_px_s == 33.0
+
+
+def test_user_settings_applies_target_lock_parameters(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "planner_target_lock_enabled": False,
+                "planner_target_lock_confirm_frames": 5,
+                "planner_target_lock_switch_confirm_frames": 12,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig()
+
+    UserSettings.load(path).apply_to_config(cfg)
+
+    assert cfg.planner.target_lock_enabled is False
+    assert cfg.planner.target_lock_confirm_frames == 5
+    assert cfg.planner.target_lock_switch_confirm_frames == 12
+
+
+def test_user_settings_exports_target_lock_parameters() -> None:
+    cfg = AppConfig()
+    cfg.planner.target_lock_enabled = False
+    cfg.planner.target_lock_confirm_frames = 4
+    cfg.planner.target_lock_switch_confirm_frames = 10
+
+    settings = UserSettings.from_config(cfg)
+
+    assert settings.planner_target_lock_enabled is False
+    assert settings.planner_target_lock_confirm_frames == 4
+    assert settings.planner_target_lock_switch_confirm_frames == 10

@@ -45,11 +45,11 @@ python -m bas
 主要参数：
 
 - `planner.target_lock_enabled`
-  - 是否启用用户意图级锁定，默认启用。
+  - 是否启用用户意图级锁定，默认启用；可在“设置 / 路线策略 / 用户意图目标锁定”调整。
 - `planner.target_lock_confirm_frames`
-  - 首次锁定同一目标需要连续确认多少帧，默认 3。
+  - 首次锁定同一目标需要连续确认多少帧，默认 3；可在设置窗口调整。
 - `planner.target_lock_switch_confirm_frames`
-  - 从已锁定目标切换到另一颗球需要连续确认多少帧，默认 8。
+  - 从已锁定目标切换到另一颗球需要连续确认多少帧，默认 8；可在设置窗口调整。
 - `planner.target_lock_missing_release_frames`
   - 锁定球在非运动阶段连续丢失多少帧后释放，默认 45。
 - `planner.target_lock_corridor_width_px`
