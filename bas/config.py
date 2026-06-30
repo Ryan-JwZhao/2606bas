@@ -214,6 +214,8 @@ class ProjectionConfig:
     screen_index: int = 1
     fullscreen: bool = True
     geometry_reference_enabled: bool = True
+    auto_pocket_animation_enabled: bool = True
+    auto_victory_animation_enabled: bool = True
 
 
 @dataclass

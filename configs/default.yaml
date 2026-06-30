@@ -139,6 +139,8 @@ projection:
   projector_height: 800
   screen_index: 1
   fullscreen: true
+  auto_pocket_animation_enabled: true
+  auto_victory_animation_enabled: true
 
 replay:
   enabled: true

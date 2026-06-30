@@ -235,6 +235,16 @@ class SettingsDialog(QtWidgets.QDialog):
         proj_size.addWidget(self.proj_w)
         proj_size.addWidget(QtWidgets.QLabel("x"))
         proj_size.addWidget(self.proj_h)
+        self.auto_pocket_animation_enabled = QtWidgets.QCheckBox("开启击球特效")
+        self.auto_pocket_animation_enabled.setChecked(bool(config.projection.auto_pocket_animation_enabled))
+        self.auto_victory_animation_enabled = QtWidgets.QCheckBox("开启胜利动画")
+        self.auto_victory_animation_enabled.setChecked(bool(config.projection.auto_victory_animation_enabled))
+        projection_effects_box = QtWidgets.QWidget()
+        projection_effects_layout = QtWidgets.QVBoxLayout(projection_effects_box)
+        projection_effects_layout.setContentsMargins(0, 0, 0, 0)
+        projection_effects_layout.addWidget(self.auto_pocket_animation_enabled)
+        projection_effects_layout.addWidget(self.auto_victory_animation_enabled)
+        projection_effects_layout.addStretch(1)
         self.route_freeze_enabled = QtWidgets.QCheckBox("运动时冻结路线")
         self.route_freeze_enabled.setChecked(bool(config.planner.route_freeze_enabled))
         self.route_freeze_enter_frames = self._spin(int(config.planner.route_freeze_enter_frames), 1, 30)
@@ -395,6 +405,7 @@ class SettingsDialog(QtWidgets.QDialog):
             [
                 ("默认投影设备", self.proj_screen),
                 ("默认投影分辨率", proj_size),
+                ("自动投影动效", projection_effects_box),
             ],
         )
         self._add_widget_tab(tabs, "路线策略", [target_shot_box, target_lock_box, route_freeze_box, cue_sector_box])
@@ -603,6 +614,8 @@ class SettingsDialog(QtWidgets.QDialog):
         config.projection.screen_index = int(self.proj_screen.currentData() or 0)
         config.projection.projector_width = int(self.proj_w.value())
         config.projection.projector_height = int(self.proj_h.value())
+        config.projection.auto_pocket_animation_enabled = self.auto_pocket_animation_enabled.isChecked()
+        config.projection.auto_victory_animation_enabled = self.auto_victory_animation_enabled.isChecked()
         config.planner.route_freeze_enabled = self.route_freeze_enabled.isChecked()
         config.planner.route_freeze_enter_frames = int(self.route_freeze_enter_frames.value())
         config.planner.route_freeze_release_frames = int(self.route_freeze_release_frames.value())
@@ -1258,7 +1271,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._instant_replay_start_failed = False
         self._projection_debug_enabled = False
         self._cue_sector_preview_enabled = False
-        self._projection_interaction = ProjectionInteractionController()
+        self._projection_interaction = ProjectionInteractionController(
+            auto_pocket_animation_enabled=bool(self.config.projection.auto_pocket_animation_enabled),
+            auto_victory_animation_enabled=bool(self.config.projection.auto_victory_animation_enabled),
+        )
         self.control_state = RuntimeControlState()
         self._route_freeze = MotionRouteFreezeController(self.config.planner)
         self._recording_frame_corrector = RecordingFrameCorrector(self._recording_calibration_paths())
@@ -1713,6 +1729,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.projection_debug_check.blockSignals(True)
         self.projection_debug_check.setChecked(bool(self._projection_debug_enabled))
         self.projection_debug_check.blockSignals(False)
+        self._sync_projection_interaction_settings()
 
     def _sync_config_from_controls(self) -> None:
         self.config.camera.backend = self.backend_combo.currentText()
@@ -1803,6 +1820,12 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     def _save_user_settings(self) -> None:
         UserSettings.from_config(self.config, self.star_formula.to_dict()).save()
+
+    def _sync_projection_interaction_settings(self) -> None:
+        self._projection_interaction.set_auto_triggers(
+            pocket_enabled=bool(self.config.projection.auto_pocket_animation_enabled),
+            victory_enabled=bool(self.config.projection.auto_victory_animation_enabled),
+        )
 
     def _projection_effect_fps_hint(self) -> float:
         if self.pipeline is not None:

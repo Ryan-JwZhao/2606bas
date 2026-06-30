@@ -149,3 +149,59 @@ def test_projection_interaction_falls_back_to_referee_intent_for_victory(tmp_pat
         star_formula=StarFormulaConfig(enabled=False),
     )
     assert tuple(int(v) for v in image[1, 1]) == (0, 0, 255)
+
+
+def test_projection_interaction_can_disable_auto_pocket_animation_without_affecting_manual_trigger(tmp_path: Path) -> None:
+    pocket_dir = tmp_path / "Goal" / "pocket0"
+    frame = np.zeros((8, 8, 4), dtype=np.uint8)
+    frame[:, :, 1] = 255
+    frame[:, :, 3] = 255
+    _write_bgra_png(pocket_dir / "frame_000.png", frame)
+
+    controller = ProjectionInteractionController(
+        asset_root=tmp_path,
+        time_source=lambda: 0.0,
+        auto_pocket_animation_enabled=False,
+    )
+    state = MatchStateFrame(
+        frame_id=14,
+        ts_cam_ns=14,
+        phase="SHOT_ACTIVE",
+        events=[Event(name="POT_PROBABLE", ts_cam_ns=14, frame_id=14, payload={"track_id": 10, "pocket_index": 0})],
+    )
+    plan = ShotPlan(plan_id="p-pocket-off", frame_id=14, ts_cam_ns=14)
+    overlay = ProjectionOverlay(overlay_id="blank", frame_id=14, projector_size=(220, 120))
+
+    assert controller.observe_output(state=state, plan=plan, fps_hint=30.0) is False
+    assert int(np.count_nonzero(controller.compose_frame(overlay, star_formula=StarFormulaConfig(enabled=False)))) == 0
+
+    assert controller.trigger_pocket_animation(0, fps_hint=30.0) is True
+    assert int(np.count_nonzero(controller.compose_frame(overlay, star_formula=StarFormulaConfig(enabled=False)))) > 0
+
+
+def test_projection_interaction_can_disable_auto_victory_animation_without_affecting_manual_trigger(tmp_path: Path) -> None:
+    victory_dir = tmp_path / "Win"
+    frame = np.zeros((4, 4, 4), dtype=np.uint8)
+    frame[:, :, 2] = 255
+    frame[:, :, 3] = 255
+    _write_bgra_png(victory_dir / "frame_000.png", frame)
+
+    controller = ProjectionInteractionController(
+        asset_root=tmp_path,
+        time_source=lambda: 0.0,
+        auto_victory_animation_enabled=False,
+    )
+    state = MatchStateFrame(
+        frame_id=101,
+        ts_cam_ns=101,
+        phase="TURN_RESOLVE",
+        events=[Event(name="GAME_OVER_CANDIDATE", ts_cam_ns=101, frame_id=101, payload={"reason": "black_confirmed"})],
+    )
+    plan = ShotPlan(plan_id="p-victory-off", frame_id=101, ts_cam_ns=101)
+    overlay = ProjectionOverlay(overlay_id="blank", frame_id=101, projector_size=(4, 4))
+
+    assert controller.observe_output(state=state, plan=plan, fps_hint=30.0) is False
+    assert int(np.count_nonzero(controller.compose_frame(overlay, star_formula=StarFormulaConfig(enabled=False)))) == 0
+
+    assert controller.trigger_victory_animation(fps_hint=30.0) is True
+    assert tuple(int(v) for v in controller.compose_frame(overlay, star_formula=StarFormulaConfig(enabled=False))[1, 1]) == (0, 0, 255)

@@ -49,6 +49,8 @@ class ProjectionInteractionController:
         *,
         asset_root: Path | None = None,
         time_source: Callable[[], float] = time.monotonic,
+        auto_pocket_animation_enabled: bool = True,
+        auto_victory_animation_enabled: bool = True,
     ) -> None:
         self.asset_root = Path(asset_root or (PROJECT_ROOT / "example" / "motion"))
         self._time = time_source
@@ -59,6 +61,19 @@ class ProjectionInteractionController:
         self._seen_event_key_set: set[tuple[object, ...]] = set()
         self._active_target_shot_id: Optional[int] = None
         self._boot_notice_sent = False
+        self._auto_pocket_animation_enabled = bool(auto_pocket_animation_enabled)
+        self._auto_victory_animation_enabled = bool(auto_victory_animation_enabled)
+
+    def set_auto_triggers(
+        self,
+        *,
+        pocket_enabled: Optional[bool] = None,
+        victory_enabled: Optional[bool] = None,
+    ) -> None:
+        if pocket_enabled is not None:
+            self._auto_pocket_animation_enabled = bool(pocket_enabled)
+        if victory_enabled is not None:
+            self._auto_victory_animation_enabled = bool(victory_enabled)
 
     def notify(self, text: str, *, duration_s: float = DEFAULT_NOTICE_DURATION_S) -> bool:
         message = str(text or "").strip()
@@ -134,13 +149,14 @@ class ProjectionInteractionController:
                 if not self._remember_event_key(key):
                     continue
                 pocket_index = self._safe_int(payload.get("pocket_index"))
-                if pocket_index is not None:
+                if pocket_index is not None and self._auto_pocket_animation_enabled:
                     changed = self.trigger_pocket_animation(pocket_index, fps_hint=fps_hint) or changed
             elif event.name in {"GAME_OVER_CANDIDATE", "REFEREE_INTENT"}:
                 key = ("GAME_OVER_EVENT", int(event.frame_id), payload.get("reason"), payload.get("game_status"))
                 if not self._remember_event_key(key):
                     continue
-                changed = self.trigger_victory_animation(fps_hint=fps_hint) or changed
+                if self._auto_victory_animation_enabled:
+                    changed = self.trigger_victory_animation(fps_hint=fps_hint) or changed
 
         active_target_id = int(plan.locked_target_id) if plan.shot_mode == "target" and plan.locked_target_id is not None else None
         if active_target_id is not None and active_target_id != self._active_target_shot_id:

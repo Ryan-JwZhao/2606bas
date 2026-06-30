@@ -306,3 +306,34 @@ def test_user_settings_exports_target_shot_parameters() -> None:
 
     assert settings.planner_target_shot_enabled is False
     assert settings.planner_target_shot_trigger_frames == 19
+
+
+def test_user_settings_applies_projection_interaction_toggles(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "projection_auto_pocket_animation_enabled": False,
+                "projection_auto_victory_animation_enabled": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig()
+
+    UserSettings.load(path).apply_to_config(cfg)
+
+    assert cfg.projection.auto_pocket_animation_enabled is False
+    assert cfg.projection.auto_victory_animation_enabled is False
+
+
+def test_user_settings_exports_projection_interaction_toggles() -> None:
+    cfg = AppConfig()
+    cfg.projection.auto_pocket_animation_enabled = False
+    cfg.projection.auto_victory_animation_enabled = False
+
+    settings = UserSettings.from_config(cfg)
+
+    assert settings.projection_auto_pocket_animation_enabled is False
+    assert settings.projection_auto_victory_animation_enabled is False

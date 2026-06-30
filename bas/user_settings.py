@@ -64,6 +64,8 @@ class UserSettings:
     ball_center_compensation_scale_y_pct: Optional[float] = None
     projection_geometry_reference_enabled: Optional[bool] = None
     ui_geometry_reference_enabled: Optional[bool] = None
+    projection_auto_pocket_animation_enabled: Optional[bool] = None
+    projection_auto_victory_animation_enabled: Optional[bool] = None
     replay_enabled: Optional[bool] = None
     state_machine_engine: Optional[str] = None
     shot_mode: Optional[str] = None
@@ -241,6 +243,10 @@ class UserSettings:
             config.projection.geometry_reference_enabled = bool(self.ui_geometry_reference_enabled)
         elif self.projection_geometry_reference_enabled is not None:
             config.projection.geometry_reference_enabled = bool(self.projection_geometry_reference_enabled)
+        if self.projection_auto_pocket_animation_enabled is not None:
+            config.projection.auto_pocket_animation_enabled = bool(self.projection_auto_pocket_animation_enabled)
+        if self.projection_auto_victory_animation_enabled is not None:
+            config.projection.auto_victory_animation_enabled = bool(self.projection_auto_victory_animation_enabled)
         if self.replay_enabled is not None:
             config.replay.enabled = bool(self.replay_enabled)
         if self._has("state_machine_engine") and self.state_machine_engine:
@@ -373,6 +379,8 @@ class UserSettings:
             ball_center_compensation_scale_x_pct=config.calibration.ball_center_compensation_scale_x_pct,
             ball_center_compensation_scale_y_pct=config.calibration.ball_center_compensation_scale_y_pct,
             ui_geometry_reference_enabled=config.projection.geometry_reference_enabled,
+            projection_auto_pocket_animation_enabled=config.projection.auto_pocket_animation_enabled,
+            projection_auto_victory_animation_enabled=config.projection.auto_victory_animation_enabled,
             replay_enabled=config.replay.enabled,
             state_machine_engine=config.state.engine,
             shot_mode=config.planner.shot_mode,
