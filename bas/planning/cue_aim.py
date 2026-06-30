@@ -50,14 +50,33 @@ class CueStickAimDetector:
         cue_radius_px: float,
         inner_polygon_px: Optional[np.ndarray] = None,
         min_stick_quality: float = 0.25,
+        prefer_tracks: bool = False,
+        allow_edge_detection: bool = True,
     ) -> Optional[CueStickAimPx]:
         cue_center = np.asarray(cue_center_px, dtype=np.float32).reshape((2,))
         cue_radius = max(2.0, float(cue_radius_px))
-        if frame_bgr is not None:
+        track_aim: Optional[CueStickAimPx] = None
+        if prefer_tracks:
+            track_aim = self._detect_from_tracks(
+                tracks,
+                cue_center,
+                cue_radius,
+                min_stick_quality=min_stick_quality,
+            )
+            if track_aim is not None:
+                return track_aim
+        if allow_edge_detection and frame_bgr is not None:
             edge_aim = self._detect_from_edges(frame_bgr, cue_center, cue_radius, inner_polygon_px)
             if edge_aim is not None:
                 return edge_aim
-        return self._detect_from_tracks(tracks, cue_center, cue_radius, min_stick_quality=min_stick_quality)
+        if track_aim is None:
+            track_aim = self._detect_from_tracks(
+                tracks,
+                cue_center,
+                cue_radius,
+                min_stick_quality=min_stick_quality,
+            )
+        return track_aim
 
     def _detect_from_tracks(
         self,

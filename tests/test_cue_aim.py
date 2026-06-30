@@ -54,3 +54,24 @@ def test_track_fallback_uses_body_majority_when_segment_crosses_cue_ball() -> No
 
     assert direction[0] < -0.99
     assert 500.0 <= float(tip[0]) <= 520.0
+
+
+def test_prefer_tracks_skips_edge_detection_when_track_is_available(monkeypatch) -> None:
+    detector = CueStickAimDetector()
+
+    def _fail_edges(*_args, **_kwargs):
+        raise AssertionError("edge detector should not run when prefer_tracks succeeds")
+
+    monkeypatch.setattr(detector, "_detect_from_edges", _fail_edges)
+
+    aim = detector.detect(
+        frame_bgr=np.zeros((600, 800, 3), dtype=np.uint8),
+        tracks=[_stick(1, 360.0, 245.0, 430.0, 255.0)],
+        cue_center_px=np.asarray([500.0, 250.0], dtype=np.float32),
+        cue_radius_px=15.0,
+        inner_polygon_px=None,
+        min_stick_quality=0.0,
+        prefer_tracks=True,
+    )
+
+    assert aim is not None
