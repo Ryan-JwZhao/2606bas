@@ -277,12 +277,13 @@ def test_user_settings_exports_target_lock_parameters() -> None:
     assert settings.planner_target_lock_switch_confirm_frames == 10
 
 
-def test_user_settings_applies_target_shot_parameters(tmp_path) -> None:
+def test_user_settings_migrates_legacy_target_shot_frames_to_hold_ms(tmp_path) -> None:
     path = tmp_path / "user_settings.json"
     path.write_text(
         json.dumps(
             {
                 "planner_target_shot_enabled": False,
+                "detect_fps_limit_hz": 15.0,
                 "planner_target_shot_trigger_frames": 17,
             }
         ),
@@ -294,18 +295,54 @@ def test_user_settings_applies_target_shot_parameters(tmp_path) -> None:
     UserSettings.load(path).apply_to_config(cfg)
 
     assert cfg.planner.target_shot_enabled is False
-    assert cfg.planner.target_shot_trigger_frames == 17
+    assert cfg.detector.detect_fps_limit_hz == 15.0
+    assert cfg.planner.target_shot_trigger_frames is None
+    assert cfg.planner.target_shot_activate_hold_ms == 1133
 
 
-def test_user_settings_exports_target_shot_parameters() -> None:
+def test_user_settings_applies_target_shot_time_parameters(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "planner_target_shot_enabled": False,
+                "planner_target_shot_activate_hold_ms": 900,
+                "planner_target_shot_switch_hold_ms": 1600,
+                "planner_target_shot_miss_grace_ms": 250,
+                "planner_target_shot_release_confirm_ms": 350,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = AppConfig()
+
+    UserSettings.load(path).apply_to_config(cfg)
+
+    assert cfg.planner.target_shot_enabled is False
+    assert cfg.planner.target_shot_activate_hold_ms == 900
+    assert cfg.planner.target_shot_switch_hold_ms == 1600
+    assert cfg.planner.target_shot_miss_grace_ms == 250
+    assert cfg.planner.target_shot_release_confirm_ms == 350
+
+
+def test_user_settings_exports_target_shot_time_parameters() -> None:
     cfg = AppConfig()
     cfg.planner.target_shot_enabled = False
-    cfg.planner.target_shot_trigger_frames = 19
+    cfg.planner.target_shot_trigger_frames = None
+    cfg.planner.target_shot_activate_hold_ms = 900
+    cfg.planner.target_shot_switch_hold_ms = 1600
+    cfg.planner.target_shot_miss_grace_ms = 250
+    cfg.planner.target_shot_release_confirm_ms = 350
 
     settings = UserSettings.from_config(cfg)
 
     assert settings.planner_target_shot_enabled is False
-    assert settings.planner_target_shot_trigger_frames == 19
+    assert settings.planner_target_shot_trigger_frames is None
+    assert settings.planner_target_shot_activate_hold_ms == 900
+    assert settings.planner_target_shot_switch_hold_ms == 1600
+    assert settings.planner_target_shot_miss_grace_ms == 250
+    assert settings.planner_target_shot_release_confirm_ms == 350
 
 
 def test_user_settings_applies_projection_interaction_toggles(tmp_path) -> None:

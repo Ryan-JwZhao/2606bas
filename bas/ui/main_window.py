@@ -287,7 +287,34 @@ class SettingsDialog(QtWidgets.QDialog):
         self.target_lock_switch_confirm_frames = self._spin(int(config.planner.target_lock_switch_confirm_frames), 1, 120)
         self.target_shot_enabled = QtWidgets.QCheckBox("启用目标击球模式")
         self.target_shot_enabled.setChecked(bool(config.planner.target_shot_enabled))
-        self.target_shot_trigger_frames = self._spin(int(config.planner.target_shot_trigger_frames), 1, 180)
+        self.target_shot_activate_hold_seconds = self._dspin(
+            float((config.planner.target_shot_activate_hold_ms or 1000) / 1000.0),
+            0.1,
+            30.0,
+            0.1,
+            decimals=2,
+        )
+        self.target_shot_switch_hold_seconds = self._dspin(
+            float((config.planner.target_shot_switch_hold_ms or 1500) / 1000.0),
+            0.1,
+            30.0,
+            0.1,
+            decimals=2,
+        )
+        self.target_shot_miss_grace_seconds = self._dspin(
+            float((config.planner.target_shot_miss_grace_ms or 200) / 1000.0),
+            0.0,
+            5.0,
+            0.05,
+            decimals=2,
+        )
+        self.target_shot_release_confirm_seconds = self._dspin(
+            float((config.planner.target_shot_release_confirm_ms or 300) / 1000.0),
+            0.0,
+            5.0,
+            0.05,
+            decimals=2,
+        )
         route_freeze_box = QtWidgets.QGroupBox("路线防闪烁")
         route_freeze_grid = QtWidgets.QGridLayout(route_freeze_box)
         route_freeze_grid.addWidget(self.route_freeze_enabled, 0, 0, 1, 4)
@@ -361,8 +388,29 @@ class SettingsDialog(QtWidgets.QDialog):
         target_shot_box = QtWidgets.QGroupBox("目标击球模式")
         target_shot_grid = QtWidgets.QGridLayout(target_shot_box)
         target_shot_grid.addWidget(self.target_shot_enabled, 0, 0, 1, 4)
-        target_shot_grid.addWidget(QtWidgets.QLabel("非白球连续指向帧"), 1, 0)
-        target_shot_grid.addWidget(self.target_shot_trigger_frames, 1, 1)
+        self._grid_pair(
+            target_shot_grid,
+            1,
+            "首次激活保持(秒)",
+            self.target_shot_activate_hold_seconds,
+            "改锁保持(秒)",
+            self.target_shot_switch_hold_seconds,
+        )
+        self._grid_pair(
+            target_shot_grid,
+            2,
+            "短暂丢帧容忍(秒)",
+            self.target_shot_miss_grace_seconds,
+            "释放确认(秒)",
+            self.target_shot_release_confirm_seconds,
+        )
+        target_shot_grid.addWidget(
+            QtWidgets.QLabel("目标击球模式按真实时间累计，不再直接按帧计数；状态文本会显示毫秒进度，便于判断是未累计够还是中途被重置。"),
+            3,
+            0,
+            1,
+            4,
+        )
         self._add_form_tab(
             tabs,
             "相机采集",
@@ -635,7 +683,12 @@ class SettingsDialog(QtWidgets.QDialog):
         config.planner.target_lock_confirm_frames = int(self.target_lock_confirm_frames.value())
         config.planner.target_lock_switch_confirm_frames = int(self.target_lock_switch_confirm_frames.value())
         config.planner.target_shot_enabled = self.target_shot_enabled.isChecked()
-        config.planner.target_shot_trigger_frames = int(self.target_shot_trigger_frames.value())
+        config.planner.target_shot_trigger_frames = None
+        config.planner.target_shot_activate_hold_ms = max(1, int(round(float(self.target_shot_activate_hold_seconds.value()) * 1000.0)))
+        config.planner.target_shot_switch_hold_ms = max(1, int(round(float(self.target_shot_switch_hold_seconds.value()) * 1000.0)))
+        config.planner.target_shot_miss_grace_ms = max(0, int(round(float(self.target_shot_miss_grace_seconds.value()) * 1000.0)))
+        config.planner.target_shot_release_confirm_ms = max(0, int(round(float(self.target_shot_release_confirm_seconds.value()) * 1000.0)))
+        config.normalize_compat_settings()
         self._apply_projection_tuning_to_config(config)
 
     def _apply_projection_tuning_to_config(self, config: AppConfig) -> None:

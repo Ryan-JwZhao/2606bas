@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import cv2
+from types import SimpleNamespace
+
 import numpy as np
 
 from bas.calibration.camera import CameraCalibration
@@ -59,6 +61,10 @@ def _stick(track_id: int, x1: float, y1: float, x2: float, y2: float) -> TrackOb
         confidence=0.9,
         quality=0.9,
     )
+
+
+def _ts_ms(value: int) -> int:
+    return int(value) * 1_000_000
 
 
 def test_planner_generates_candidate() -> None:
@@ -478,7 +484,7 @@ def test_target_shot_mode_activates_after_pointing_object_for_threshold() -> Non
         PlannerConfig(
             top_k=20,
             target_lock_enabled=False,
-            target_shot_trigger_frames=2,
+            target_shot_activate_hold_ms=1000,
         ),
         service,
     )
@@ -488,11 +494,14 @@ def test_target_shot_mode_activates_after_pointing_object_for_threshold() -> Non
         _stick(9, 490, 320, 510, 390),
     ]
 
-    pending = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="PRE_SHOT_ARMED", layout=layout))
-    active = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=2, phase="PRE_SHOT_ARMED", layout=layout))
+    pending = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=layout))
+    almost = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(600), phase="PRE_SHOT_ARMED", layout=layout))
+    active = planner.plan(MatchStateFrame(frame_id=3, ts_cam_ns=_ts_ms(1000), phase="PRE_SHOT_ARMED", layout=layout))
 
     assert pending.shot_mode == "rule"
-    assert pending.target_shot_status == "activate_pending 1/2"
+    assert pending.target_shot_status == "activate_pending 0/1000ms"
+    assert almost.shot_mode == "rule"
+    assert almost.target_shot_status == "activate_pending 600/1000ms"
     assert active.shot_mode == "target"
     assert active.locked_target_id == 2
     assert active.best is not None
@@ -508,7 +517,7 @@ def test_target_shot_mode_keeps_edge_detection_available_when_scanning_candidate
         PlannerConfig(
             top_k=20,
             target_lock_enabled=False,
-            target_shot_trigger_frames=1,
+            target_shot_activate_hold_ms=100,
         ),
         service,
     )
@@ -526,7 +535,8 @@ def test_target_shot_mode_keeps_edge_detection_available_when_scanning_candidate
         _stick(9, 490, 320, 510, 390),
     ]
 
-    plan = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="PRE_SHOT_ARMED", layout=layout))
+    planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=layout))
+    plan = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(100), phase="PRE_SHOT_ARMED", layout=layout))
 
     assert detect_kwargs_seen
     assert all(prefer_tracks is False and allow_edges is True for prefer_tracks, allow_edges in detect_kwargs_seen)
@@ -540,7 +550,8 @@ def test_target_shot_mode_holds_without_cue_stick_and_keeps_route_independent_of
         PlannerConfig(
             top_k=20,
             target_lock_enabled=False,
-            target_shot_trigger_frames=1,
+            target_shot_activate_hold_ms=100,
+            target_shot_miss_grace_ms=200,
         ),
         service,
     )
@@ -554,8 +565,9 @@ def test_target_shot_mode_holds_without_cue_stick_and_keeps_route_independent_of
         _obs(2, "solid", 500, 250),
     ]
 
-    locked = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="PRE_SHOT_ARMED", layout=locked_layout))
-    held = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=2, phase="PRE_SHOT_ARMED", layout=no_stick_layout))
+    planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=locked_layout))
+    locked = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(100), phase="PRE_SHOT_ARMED", layout=locked_layout))
+    held = planner.plan(MatchStateFrame(frame_id=3, ts_cam_ns=_ts_ms(180), phase="PRE_SHOT_ARMED", layout=no_stick_layout))
 
     assert locked.shot_mode == "target"
     assert held.shot_mode == "target"
@@ -566,14 +578,15 @@ def test_target_shot_mode_holds_without_cue_stick_and_keeps_route_independent_of
     assert held.best.object_line == locked.best.object_line
 
 
-def test_target_shot_mode_releases_when_cue_ball_is_hit() -> None:
+def test_target_shot_mode_releases_after_release_confirmation_window() -> None:
     service = _service()
     service.table.pockets_mm = [(500, 0)]
     planner = GeometryPhysicsPlanner(
         PlannerConfig(
             top_k=20,
             target_lock_enabled=False,
-            target_shot_trigger_frames=1,
+            target_shot_activate_hold_ms=100,
+            target_shot_release_confirm_ms=300,
         ),
         service,
     )
@@ -583,12 +596,138 @@ def test_target_shot_mode_releases_when_cue_ball_is_hit() -> None:
         _stick(9, 490, 320, 510, 390),
     ]
 
-    locked = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="PRE_SHOT_ARMED", layout=layout))
-    moving = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=2, phase="SHOT_ACTIVE", layout=layout))
+    planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=layout))
+    locked = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(100), phase="PRE_SHOT_ARMED", layout=layout))
+    still_locked = planner.plan(MatchStateFrame(frame_id=3, ts_cam_ns=_ts_ms(250), phase="SHOT_ACTIVE", layout=layout))
+    moving = planner.plan(MatchStateFrame(frame_id=4, ts_cam_ns=_ts_ms(450), phase="SHOT_ACTIVE", layout=layout))
 
     assert locked.shot_mode == "target"
+    assert still_locked.shot_mode == "target"
+    assert still_locked.target_shot_status.startswith("release_pending 150/300ms")
     assert moving.shot_mode != "target"
     assert moving.locked_target_id is None
+
+
+def test_target_shot_mode_keeps_activation_progress_during_short_no_aim_gap(monkeypatch) -> None:
+    service = _service()
+    service.table.pockets_mm = [(500, 0)]
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_lock_enabled=False,
+            target_shot_activate_hold_ms=1000,
+            target_shot_miss_grace_ms=250,
+        ),
+        service,
+    )
+    layout = [
+        _obs(1, "cue", 100, 400),
+        _obs(2, "solid", 500, 250),
+    ]
+    pointed = iter(
+        [
+            SimpleNamespace(track_id=2, group="solid", score=1.0),
+            None,
+            SimpleNamespace(track_id=2, group="solid", score=1.0),
+            SimpleNamespace(track_id=2, group="solid", score=1.0),
+        ]
+    )
+    monkeypatch.setattr(planner.target_shot_mode, "_pointed_ball", lambda *args, **kwargs: next(pointed))
+
+    planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=layout))
+    grace = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(100), phase="PRE_SHOT_ARMED", layout=layout))
+    regain = planner.plan(MatchStateFrame(frame_id=3, ts_cam_ns=_ts_ms(700), phase="PRE_SHOT_ARMED", layout=layout))
+    active = planner.plan(MatchStateFrame(frame_id=4, ts_cam_ns=_ts_ms(1100), phase="PRE_SHOT_ARMED", layout=layout))
+
+    assert grace.shot_mode == "rule"
+    assert grace.target_shot_status == "activate_pending 0/1000ms grace 100/250ms"
+    assert regain.shot_mode == "rule"
+    assert regain.target_shot_status == "activate_pending 600/1000ms"
+    assert active.shot_mode == "target"
+    assert active.locked_target_id == 2
+
+
+def test_target_shot_mode_resets_activation_after_miss_exceeds_grace(monkeypatch) -> None:
+    service = _service()
+    service.table.pockets_mm = [(500, 0)]
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_lock_enabled=False,
+            target_shot_activate_hold_ms=1000,
+            target_shot_miss_grace_ms=200,
+        ),
+        service,
+    )
+    layout = [
+        _obs(1, "cue", 100, 400),
+        _obs(2, "solid", 500, 250),
+    ]
+    pointed = iter(
+        [
+            SimpleNamespace(track_id=2, group="solid", score=1.0),
+            None,
+            SimpleNamespace(track_id=2, group="solid", score=1.0),
+            SimpleNamespace(track_id=2, group="solid", score=1.0),
+        ]
+    )
+    monkeypatch.setattr(planner.target_shot_mode, "_pointed_ball", lambda *args, **kwargs: next(pointed))
+
+    planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=layout))
+    expired = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(300), phase="PRE_SHOT_ARMED", layout=layout))
+    restarted = planner.plan(MatchStateFrame(frame_id=3, ts_cam_ns=_ts_ms(700), phase="PRE_SHOT_ARMED", layout=layout))
+    progress = planner.plan(MatchStateFrame(frame_id=4, ts_cam_ns=_ts_ms(1000), phase="PRE_SHOT_ARMED", layout=layout))
+
+    assert expired.target_shot_status == "inactive_no_aim"
+    assert restarted.target_shot_status == "activate_pending 0/1000ms"
+    assert progress.target_shot_status == "activate_pending 300/1000ms"
+
+
+def test_target_shot_mode_switches_only_after_longer_confirmation_window(monkeypatch) -> None:
+    service = _service()
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_lock_enabled=False,
+            target_shot_activate_hold_ms=200,
+            target_shot_switch_hold_ms=1500,
+        ),
+        service,
+    )
+    layout = [
+        _obs(1, "cue", 100, 400),
+        _obs(2, "solid", 500, 250),
+        _obs(3, "stripe", 650, 250),
+    ]
+    pointed = iter(
+        [
+            SimpleNamespace(track_id=2, group="solid", score=1.0),
+            SimpleNamespace(track_id=2, group="solid", score=1.0),
+            SimpleNamespace(track_id=3, group="stripe", score=1.0),
+            SimpleNamespace(track_id=3, group="stripe", score=1.0),
+            SimpleNamespace(track_id=3, group="stripe", score=1.0),
+        ]
+    )
+    monkeypatch.setattr(planner.target_shot_mode, "_pointed_ball", lambda *args, **kwargs: next(pointed))
+
+    planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=layout))
+    locked = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(200), phase="PRE_SHOT_ARMED", layout=layout))
+    switch_start = planner.plan(MatchStateFrame(frame_id=3, ts_cam_ns=_ts_ms(300), phase="PRE_SHOT_ARMED", layout=layout))
+    switch_mid = planner.plan(MatchStateFrame(frame_id=4, ts_cam_ns=_ts_ms(1000), phase="PRE_SHOT_ARMED", layout=layout))
+    switched = planner.plan(MatchStateFrame(frame_id=5, ts_cam_ns=_ts_ms(1800), phase="PRE_SHOT_ARMED", layout=layout))
+
+    assert locked.shot_mode == "target"
+    assert locked.locked_target_id == 2
+    assert locked.best is not None and locked.best.target_track_id == 2
+    assert switch_start.shot_mode == "target"
+    assert switch_start.locked_target_id == 2
+    assert switch_start.target_shot_status.startswith("switch_pending 0/1500ms")
+    assert switch_mid.shot_mode == "target"
+    assert switch_mid.locked_target_id == 2
+    assert switch_mid.target_shot_status.startswith("switch_pending 700/1500ms")
+    assert switched.shot_mode == "target"
+    assert switched.locked_target_id == 3
+    assert switched.best is not None and switched.best.target_track_id == 3
 
 
 def test_target_shot_mode_can_choose_bank_route_when_direct_route_is_not_possible() -> None:
@@ -598,7 +737,7 @@ def test_target_shot_mode_can_choose_bank_route_when_direct_route_is_not_possibl
         PlannerConfig(
             top_k=20,
             target_lock_enabled=False,
-            target_shot_trigger_frames=1,
+            target_shot_activate_hold_ms=100,
             target_shot_max_rebounds=1,
         ),
         service,
@@ -610,7 +749,8 @@ def test_target_shot_mode_can_choose_bank_route_when_direct_route_is_not_possibl
         _stick(9, 490, 320, 510, 390),
     ]
 
-    plan = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="PRE_SHOT_ARMED", layout=layout))
+    planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=layout))
+    plan = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(100), phase="PRE_SHOT_ARMED", layout=layout))
 
     assert plan.shot_mode == "target"
     assert plan.best is not None

@@ -73,7 +73,11 @@ class TargetShotModeController:
         self._active_target_id: Optional[int] = None
         self._active_group: Optional[str] = None
         self._pending_target_id: Optional[int] = None
-        self._pending_frames = 0
+        self._pending_group: Optional[str] = None
+        self._pending_hold_ms = 0.0
+        self._pending_miss_ms = 0.0
+        self._release_phase_ms = 0.0
+        self._last_update_ts_ns: Optional[int] = None
         self.last_status = "off"
 
     def update(
@@ -88,39 +92,48 @@ class TargetShotModeController:
             self.reset()
             return self._decision("disabled")
 
+        elapsed_ms = self._elapsed_ms(getattr(state, "ts_cam_ns", 0))
         phase = str(getattr(state, "phase", "") or "").strip().upper()
         if phase in RELEASE_PHASES:
-            had_active = self._active_target_id is not None
-            self.reset()
-            return self._decision("released_by_shot" if had_active else "inactive_motion")
+            return self._handle_release_phase(elapsed_ms)
+
+        self._release_phase_ms = 0.0
 
         pointed = self._pointed_ball(balls, tracks, frame_bgr=frame_bgr)
         if pointed is None:
-            self._clear_pending()
-            return self._decision("active_hold_no_aim" if self._active_target_id is not None else "inactive_no_aim")
+            return self._handle_non_object(
+                elapsed_ms,
+                active_status="active_hold_no_aim",
+                inactive_status="inactive_no_aim",
+            )
 
         if pointed.group == "cue":
-            self._clear_pending()
-            return self._decision("active_hold_cue_aim" if self._active_target_id is not None else "normal_cue_aim", candidate_target_id=pointed.track_id)
+            return self._handle_non_object(
+                elapsed_ms,
+                active_status="active_hold_cue_aim",
+                inactive_status="normal_cue_aim",
+            )
 
         if self._active_target_id is not None and int(pointed.track_id) == int(self._active_target_id):
             self._clear_pending()
             return self._decision("active_hold_same", candidate_target_id=pointed.track_id)
 
-        return self._update_pending(pointed)
+        return self._advance_pending(pointed, elapsed_ms)
 
-    def _update_pending(self, pointed: _PointedBall) -> TargetShotDecision:
+    def _advance_pending(self, pointed: _PointedBall, elapsed_ms: float) -> TargetShotDecision:
         if self._pending_target_id == pointed.track_id:
-            self._pending_frames += 1
+            self._pending_hold_ms += max(0.0, float(elapsed_ms))
+            self._pending_miss_ms = 0.0
         else:
             self._pending_target_id = pointed.track_id
-            self._pending_frames = 1
+            self._pending_group = str(pointed.group)
+            self._pending_hold_ms = 0.0
+            self._pending_miss_ms = 0.0
 
-        trigger_frames = max(1, int(getattr(self.config, "target_shot_trigger_frames", 15)))
-        if self._pending_frames < trigger_frames:
-            prefix = "switch" if self._active_target_id is not None else "activate"
+        hold_ms = self._switch_hold_ms() if self._active_target_id is not None else self._activate_hold_ms()
+        if self._pending_hold_ms < hold_ms:
             return self._decision(
-                f"{prefix}_pending {self._pending_frames}/{trigger_frames}",
+                self._pending_status(),
                 candidate_target_id=pointed.track_id,
                 pending_target_id=pointed.track_id,
             )
@@ -134,6 +147,80 @@ class TargetShotModeController:
             candidate_target_id=pointed.track_id,
             switched=switched,
         )
+
+    def _handle_release_phase(self, elapsed_ms: float) -> TargetShotDecision:
+        if self._active_target_id is None:
+            self._clear_pending()
+            self._release_phase_ms = 0.0
+            return self._decision("inactive_motion")
+        self._clear_pending()
+        self._release_phase_ms += max(0.0, float(elapsed_ms))
+        confirm_ms = self._release_confirm_ms()
+        if self._release_phase_ms < confirm_ms:
+            return self._decision(
+                f"release_pending {self._status_ms(self._release_phase_ms)}/{confirm_ms}ms",
+                candidate_target_id=self._active_target_id,
+            )
+        self.reset()
+        return self._decision("released_by_shot")
+
+    def _handle_non_object(
+        self,
+        elapsed_ms: float,
+        *,
+        active_status: str,
+        inactive_status: str,
+    ) -> TargetShotDecision:
+        pending_status = self._advance_pending_grace(elapsed_ms)
+        if pending_status is not None:
+            return self._decision(
+                pending_status,
+                pending_target_id=self._pending_target_id,
+            )
+        return self._decision(active_status if self._active_target_id is not None else inactive_status)
+
+    def _advance_pending_grace(self, elapsed_ms: float) -> Optional[str]:
+        if self._pending_target_id is None:
+            return None
+        self._pending_miss_ms += max(0.0, float(elapsed_ms))
+        grace_ms = self._miss_grace_ms()
+        if self._pending_miss_ms > grace_ms:
+            self._clear_pending()
+            return None
+        return self._pending_status()
+
+    def _pending_status(self) -> str:
+        prefix = "switch" if self._active_target_id is not None else "activate"
+        hold_target_ms = self._switch_hold_ms() if self._active_target_id is not None else self._activate_hold_ms()
+        status = f"{prefix}_pending {self._status_ms(self._pending_hold_ms)}/{hold_target_ms}ms"
+        if self._pending_miss_ms > 0.0:
+            grace_ms = self._miss_grace_ms()
+            status += f" grace {self._status_ms(self._pending_miss_ms)}/{grace_ms}ms"
+        return status
+
+    def _activate_hold_ms(self) -> int:
+        return max(1, int(getattr(self.config, "target_shot_activate_hold_ms", 1000) or 1000))
+
+    def _switch_hold_ms(self) -> int:
+        return max(1, int(getattr(self.config, "target_shot_switch_hold_ms", 1500) or 1500))
+
+    def _miss_grace_ms(self) -> int:
+        return max(0, int(getattr(self.config, "target_shot_miss_grace_ms", 200) or 0))
+
+    def _release_confirm_ms(self) -> int:
+        return max(0, int(getattr(self.config, "target_shot_release_confirm_ms", 300) or 0))
+
+    def _elapsed_ms(self, ts_cam_ns: int) -> float:
+        current = int(ts_cam_ns or 0)
+        previous = self._last_update_ts_ns
+        self._last_update_ts_ns = current
+        if previous is None or current <= previous:
+            return 0.0
+        return max(0.0, (current - previous) / 1_000_000.0)
+
+    @staticmethod
+    def _status_ms(value: float) -> int:
+        return max(0, int(round(float(value))))
 
     def _pointed_ball(
         self,
@@ -169,7 +256,9 @@ class TargetShotModeController:
 
     def _clear_pending(self) -> None:
         self._pending_target_id = None
-        self._pending_frames = 0
+        self._pending_group = None
+        self._pending_hold_ms = 0.0
+        self._pending_miss_ms = 0.0
 
     def _decision(
         self,

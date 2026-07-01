@@ -9,6 +9,47 @@ import yaml
 from .paths import DEFAULT_CONFIG_PATH, PROJECT_ROOT, resolve_path
 
 
+DEFAULT_TARGET_SHOT_ACTIVATE_HOLD_MS = 1000
+DEFAULT_TARGET_SHOT_SWITCH_HOLD_MS = 1500
+DEFAULT_TARGET_SHOT_MISS_GRACE_MS = 200
+DEFAULT_TARGET_SHOT_RELEASE_CONFIRM_MS = 300
+LEGACY_TARGET_SHOT_FALLBACK_HZ = 30.0
+
+
+def _positive_int_or_default(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return max(1, parsed)
+
+
+def _nonnegative_int_or_default(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return max(0, int(default))
+    return max(0, parsed)
+
+
+def _target_shot_activate_hold_ms(
+    *,
+    explicit_ms: Any,
+    legacy_frames: Any,
+    detect_fps_limit_hz: Any,
+    camera_fps: Any,
+) -> int:
+    if explicit_ms is not None:
+        return _positive_int_or_default(explicit_ms, DEFAULT_TARGET_SHOT_ACTIVATE_HOLD_MS)
+    if legacy_frames is None:
+        return DEFAULT_TARGET_SHOT_ACTIVATE_HOLD_MS
+    detect_hz = float(detect_fps_limit_hz or 0.0)
+    camera_hz = float(camera_fps or 0.0)
+    effective_hz = detect_hz if detect_hz > 0.0 else camera_hz if camera_hz > 0.0 else LEGACY_TARGET_SHOT_FALLBACK_HZ
+    hold_ms = round(max(1, int(legacy_frames)) * 1000.0 / max(1.0, effective_hz))
+    return max(1, int(hold_ms))
+
+
 @dataclass
 class CameraConfig:
     backend: str = "auto"  # auto | nori | opencv | video | synthetic
@@ -190,7 +231,11 @@ class PlannerConfig:
     target_lock_switch_min_distance_px: float = 70.0
     target_lock_reacquire_radius_px: float = 90.0
     target_shot_enabled: bool = True
-    target_shot_trigger_frames: int = 15
+    target_shot_trigger_frames: Optional[int] = None
+    target_shot_activate_hold_ms: Optional[int] = None
+    target_shot_switch_hold_ms: Optional[int] = None
+    target_shot_miss_grace_ms: Optional[int] = None
+    target_shot_release_confirm_ms: Optional[int] = None
     target_shot_max_rebounds: int = 2
     target_shot_pocket_tolerance_mm: float = 42.0
     target_shot_min_stick_quality: float = 0.25
@@ -258,6 +303,9 @@ class AppConfig:
     instant_replay: InstantReplayConfig = field(default_factory=InstantReplayConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
+    def __post_init__(self) -> None:
+        self.normalize_compat_settings()
+
     @classmethod
     def load(cls, path: str | Path | None = None) -> "AppConfig":
         cfg_path = Path(path) if path else DEFAULT_CONFIG_PATH
@@ -291,6 +339,29 @@ class AppConfig:
         )
         config.calibration.sync_projection_file_alias()
         return config
+
+    def normalize_compat_settings(self) -> "AppConfig":
+        planner = self.planner
+        planner.target_shot_activate_hold_ms = _target_shot_activate_hold_ms(
+            explicit_ms=planner.target_shot_activate_hold_ms,
+            legacy_frames=planner.target_shot_trigger_frames,
+            detect_fps_limit_hz=self.detector.detect_fps_limit_hz,
+            camera_fps=self.camera.fps,
+        )
+        planner.target_shot_switch_hold_ms = _positive_int_or_default(
+            planner.target_shot_switch_hold_ms,
+            DEFAULT_TARGET_SHOT_SWITCH_HOLD_MS,
+        )
+        planner.target_shot_miss_grace_ms = _nonnegative_int_or_default(
+            planner.target_shot_miss_grace_ms,
+            DEFAULT_TARGET_SHOT_MISS_GRACE_MS,
+        )
+        planner.target_shot_release_confirm_ms = _nonnegative_int_or_default(
+            planner.target_shot_release_confirm_ms,
+            DEFAULT_TARGET_SHOT_RELEASE_CONFIRM_MS,
+        )
+        planner.target_shot_trigger_frames = None
+        return self
 
     def resolve_paths(self) -> "AppConfig":
         base = PROJECT_ROOT

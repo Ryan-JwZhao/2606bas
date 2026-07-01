@@ -95,6 +95,10 @@ class UserSettings:
     planner_target_lock_switch_confirm_frames: Optional[int] = None
     planner_target_shot_enabled: Optional[bool] = None
     planner_target_shot_trigger_frames: Optional[int] = None
+    planner_target_shot_activate_hold_ms: Optional[int] = None
+    planner_target_shot_switch_hold_ms: Optional[int] = None
+    planner_target_shot_miss_grace_ms: Optional[int] = None
+    planner_target_shot_release_confirm_ms: Optional[int] = None
     learning_ranker_enabled: Optional[bool] = None
     learning_ranker_model_path: Optional[str] = None
     learning_score_blend: Optional[float] = None
@@ -309,7 +313,17 @@ class UserSettings:
         if self.planner_target_shot_enabled is not None:
             config.planner.target_shot_enabled = bool(self.planner_target_shot_enabled)
         if self.planner_target_shot_trigger_frames is not None:
+            if self.planner_target_shot_activate_hold_ms is None:
+                config.planner.target_shot_activate_hold_ms = None
             config.planner.target_shot_trigger_frames = max(1, int(self.planner_target_shot_trigger_frames))
+        if self.planner_target_shot_activate_hold_ms is not None:
+            config.planner.target_shot_activate_hold_ms = max(1, int(self.planner_target_shot_activate_hold_ms))
+        if self.planner_target_shot_switch_hold_ms is not None:
+            config.planner.target_shot_switch_hold_ms = max(1, int(self.planner_target_shot_switch_hold_ms))
+        if self.planner_target_shot_miss_grace_ms is not None:
+            config.planner.target_shot_miss_grace_ms = max(0, int(self.planner_target_shot_miss_grace_ms))
+        if self.planner_target_shot_release_confirm_ms is not None:
+            config.planner.target_shot_release_confirm_ms = max(0, int(self.planner_target_shot_release_confirm_ms))
         if self.learning_ranker_enabled is not None:
             config.learning.ranker_enabled = bool(self.learning_ranker_enabled)
         if self._has("learning_ranker_model_path"):
@@ -320,7 +334,7 @@ class UserSettings:
             config.learning.collect_enabled = bool(self.learning_collect_enabled)
         if self._has("learning_samples_directory") and self.learning_samples_directory:
             config.learning.samples_directory = self.learning_samples_directory
-        return config
+        return config.normalize_compat_settings()
 
     def _has(self, name: str) -> bool:
         if self._loaded_from_file:
@@ -409,7 +423,11 @@ class UserSettings:
             planner_target_lock_confirm_frames=config.planner.target_lock_confirm_frames,
             planner_target_lock_switch_confirm_frames=config.planner.target_lock_switch_confirm_frames,
             planner_target_shot_enabled=config.planner.target_shot_enabled,
-            planner_target_shot_trigger_frames=config.planner.target_shot_trigger_frames,
+            planner_target_shot_trigger_frames=None,
+            planner_target_shot_activate_hold_ms=config.planner.target_shot_activate_hold_ms,
+            planner_target_shot_switch_hold_ms=config.planner.target_shot_switch_hold_ms,
+            planner_target_shot_miss_grace_ms=config.planner.target_shot_miss_grace_ms,
+            planner_target_shot_release_confirm_ms=config.planner.target_shot_release_confirm_ms,
             learning_ranker_enabled=config.learning.ranker_enabled,
             learning_ranker_model_path=config.learning.ranker_model_path,
             learning_score_blend=config.learning.score_blend,
