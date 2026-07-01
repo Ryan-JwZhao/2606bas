@@ -132,27 +132,30 @@ class ProjectionInteractionController:
     ) -> bool:
         changed = False
         pocket_events = [event for event in state.events if event.name == "POCKET_CONFIRMED"]
-        if not pocket_events:
-            pocket_events = [event for event in state.events if event.name == "POT_PROBABLE"]
-        victory_events = [event for event in state.events if event.name == "GAME_OVER_CANDIDATE"]
-        if not victory_events:
-            victory_events = [
-                event
-                for event in state.events
-                if event.name == "REFEREE_INTENT"
-                and str((event.payload or {}).get("game_status", "")).strip().lower() not in {"", "in_progress"}
-            ]
+        victory_events = [event for event in state.events if event.name == "GAME_STATUS_CHANGED"]
         for event in [*pocket_events, *victory_events]:
             payload = dict(event.payload or {})
-            if event.name in {"POCKET_CONFIRMED", "POT_PROBABLE"}:
-                key = ("POCKET_EVENT", int(event.frame_id), payload.get("track_id"), payload.get("pocket_index"))
+            if event.name == "POCKET_CONFIRMED":
+                key = (
+                    "POCKET_EVENT",
+                    payload.get("shot_id"),
+                    payload.get("decision_id"),
+                    payload.get("track_id"),
+                    payload.get("pocket_index"),
+                )
                 if not self._remember_event_key(key):
                     continue
                 pocket_index = self._safe_int(payload.get("pocket_index"))
                 if pocket_index is not None and self._auto_pocket_animation_enabled:
                     changed = self.trigger_pocket_animation(pocket_index, fps_hint=fps_hint) or changed
-            elif event.name in {"GAME_OVER_CANDIDATE", "REFEREE_INTENT"}:
-                key = ("GAME_OVER_EVENT", int(event.frame_id), payload.get("reason"), payload.get("game_status"))
+            elif event.name == "GAME_STATUS_CHANGED":
+                key = (
+                    "GAME_STATUS_EVENT",
+                    payload.get("shot_id"),
+                    payload.get("decision_id"),
+                    payload.get("from_status"),
+                    payload.get("to_status"),
+                )
                 if not self._remember_event_key(key):
                     continue
                 if self._auto_victory_animation_enabled:

@@ -110,7 +110,7 @@ class LearningSampleRecorder:
         event_names: list[str] = []
         for event in events:
             event_names.append(event.name)
-            if event.name == "POT_PROBABLE":
+            if event.name == "POCKET_CONFIRMED":
                 potted.append(dict(event.payload))
         potted_ids = {int(item["track_id"]) for item in potted if "track_id" in item}
         potted_groups = [str(item.get("group", "")) for item in potted]

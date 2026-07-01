@@ -6,7 +6,16 @@ from typing import Literal, Optional
 Group = Literal["cue", "solid", "stripe", "black"]
 ObjectGroup = Literal["solid", "stripe"]
 TargetGroup = Literal["solid", "stripe", "black"]
-PocketState = Literal["on_table", "pocket_candidate", "pocket_confirmed", "off_table_candidate", "lost"]
+PocketState = Literal[
+    "on_table",
+    "pocket_candidate",
+    "pocket_tentative",
+    "pocket_confirmed",
+    "pocket_review_required",
+    "pocket_rejected",
+    "off_table_candidate",
+    "lost",
+]
 TableState = Literal["open", "closed"]
 BallInHandScope = Literal["none", "table_anywhere", "behind_head_string"]
 GameStatus = Literal["in_progress", "ended_pending_review"]
@@ -48,6 +57,10 @@ class ShotContext:
     first_contact_confidence: float = 0.0
     potted_confirmed: dict[Group, int] = field(default_factory=empty_group_counts)
     off_table_confirmed: dict[Group, int] = field(default_factory=empty_group_counts)
+    committed_pockets: list[dict[str, object]] = field(default_factory=list)
+    tentative_pockets: list[dict[str, object]] = field(default_factory=list)
+    review_pockets: list[dict[str, object]] = field(default_factory=list)
+    rejected_pockets: list[dict[str, object]] = field(default_factory=list)
     rail_contact_seen: bool = False
     cue_scratch_candidate: bool = False
     wrong_first_contact_candidate: bool = False

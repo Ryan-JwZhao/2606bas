@@ -74,6 +74,7 @@ class MatchStateMachine:
         inner_polygon_mm: Optional[List[tuple[float, float]]] = None,
         pockets_mm: Optional[List[tuple[float, float]]] = None,
         ball_diameter_mm: Optional[float] = None,
+        pocket_curves_mm: Optional[List[List[tuple[float, float]]]] = None,
     ) -> None:
         if inner_polygon_mm is not None:
             self._table_inner_polygon_mm = [(float(x), float(y)) for x, y in inner_polygon_mm]
@@ -81,6 +82,7 @@ class MatchStateMachine:
             self._pockets_mm = [(float(x), float(y)) for x, y in pockets_mm]
         if ball_diameter_mm is not None:
             self._ball_diameter_mm = float(ball_diameter_mm)
+        _ = pocket_curves_mm
 
     def force_phase(self, phase: MatchPhase | str, *, frame_id: int = 0, ts_cam_ns: int = 0, reason: str = "operator") -> None:
         target = phase if isinstance(phase, MatchPhase) else MatchPhase(str(phase))

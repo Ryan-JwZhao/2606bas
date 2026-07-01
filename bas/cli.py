@@ -36,6 +36,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_replay = sub.add_parser("replay-summary", help="Summarize a replay events.jsonl file.")
     p_replay.add_argument("path")
 
+    p_pocket_replay = sub.add_parser("pocket-replay", help="Replay a compact pocket trace fixture and print event results.")
+    p_pocket_replay.add_argument("path")
+
     p_smoke = sub.add_parser("smoke-run", help="Run synthetic pipeline for a fixed number of frames.")
     p_smoke.add_argument("--frames", type=int, default=90)
 
@@ -154,6 +157,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                     except Exception:
                         pass
             print(json.dumps({"event_counts": counts, "last_frame_id": last_frame}, ensure_ascii=False, indent=2))
+            return 0
+
+        if args.command == "pocket-replay":
+            from .state.replay import run_pocket_trace
+
+            print(json.dumps(run_pocket_trace(args.path), ensure_ascii=False, indent=2))
             return 0
 
         if args.command == "smoke-run":

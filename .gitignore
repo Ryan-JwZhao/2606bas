@@ -31,6 +31,8 @@ snapshots/
 videos/
 recordings/
 debug_frames/
+state_debug/
+state_debug_*/
 tmp/
 temp/
 *.tmp

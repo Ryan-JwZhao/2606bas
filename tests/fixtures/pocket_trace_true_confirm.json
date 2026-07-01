@@ -1,0 +1,49 @@
+{
+  "config": {
+    "pocket_confirm_missing_ms": 300
+  },
+  "table_context": {
+    "inner_polygon_mm": [[0, 0], [1000, 0], [1000, 500], [0, 500]],
+    "pockets_mm": [[0, 0]],
+    "ball_diameter_mm": 56
+  },
+  "initial_state": {
+    "table_state": "closed",
+    "actor_group": "solid",
+    "opponent_group": "stripe",
+    "turn_target_group": "solid",
+    "shot_number": 1
+  },
+  "event_filter": [
+    "POCKET_CANDIDATE",
+    "POCKET_TENTATIVE",
+    "POCKET_CONFIRMED",
+    "SHOT_CONTEXT_FINALIZED",
+    "REFEREE_INTENT"
+  ],
+  "frames": [
+    {
+      "frame_id": 1,
+      "ts_cam_ns": 1000000000,
+      "phase": "SHOT_ACTIVE",
+      "tracks": [
+        {"track_id": 2, "group": "solid", "center_mm": [35, 35], "velocity_mm_s": [-20, -20]}
+      ]
+    },
+    {
+      "frame_id": 2,
+      "ts_cam_ns": 1100000000,
+      "phase": "SHOT_ACTIVE",
+      "tracks": []
+    },
+    {
+      "frame_id": 3,
+      "ts_cam_ns": 1400000000,
+      "phase": "SHOT_ACTIVE",
+      "operator_events": ["TURN_RESOLVE"],
+      "tracks": [
+        {"track_id": 1, "group": "cue", "center_mm": [100, 100]}
+      ]
+    }
+  ]
+}

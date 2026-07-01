@@ -53,7 +53,7 @@ def test_projection_interaction_deduplicates_pocket_events_and_notices_target_ac
                 name="POCKET_CONFIRMED",
                 ts_cam_ns=12,
                 frame_id=12,
-                payload={"track_id": 8, "pocket_index": 0},
+                payload={"track_id": 8, "pocket_index": 0, "shot_id": 3, "decision_id": "pocket:1"},
             )
         ],
     )
@@ -76,7 +76,7 @@ def test_projection_interaction_deduplicates_pocket_events_and_notices_target_ac
     assert int(np.count_nonzero(image)) > 0
 
 
-def test_projection_interaction_falls_back_to_pot_probable_when_confirmed_event_is_absent(tmp_path: Path) -> None:
+def test_projection_interaction_ignores_pot_probable_alias_for_auto_animation(tmp_path: Path) -> None:
     pocket_dir = tmp_path / "Goal" / "pocket0"
     frame = np.zeros((8, 8, 4), dtype=np.uint8)
     frame[:, :, 1] = 255
@@ -89,16 +89,16 @@ def test_projection_interaction_falls_back_to_pot_probable_when_confirmed_event_
         frame_id=13,
         ts_cam_ns=13,
         phase="SHOT_ACTIVE",
-        events=[Event(name="POT_PROBABLE", ts_cam_ns=13, frame_id=13, payload={"track_id": 9, "pocket_index": 0})],
+        events=[Event(name="POT_PROBABLE", ts_cam_ns=13, frame_id=13, payload={"track_id": 9, "pocket_index": 0, "shot_id": 3, "decision_id": "pocket:legacy"})],
     )
     plan = ShotPlan(plan_id="p-pot", frame_id=13, ts_cam_ns=13)
 
-    assert controller.observe_output(state=state, plan=plan, fps_hint=30.0) is True
+    assert controller.observe_output(state=state, plan=plan, fps_hint=30.0) is False
     image = controller.compose_frame(
         ProjectionOverlay(overlay_id="blank", frame_id=13, projector_size=(220, 120)),
         star_formula=StarFormulaConfig(enabled=False),
     )
-    assert int(np.count_nonzero(image)) > 0
+    assert int(np.count_nonzero(image)) == 0
 
 
 def test_projection_interaction_triggers_victory_animation_once(tmp_path: Path) -> None:
@@ -114,7 +114,14 @@ def test_projection_interaction_triggers_victory_animation_once(tmp_path: Path) 
         frame_id=99,
         ts_cam_ns=99,
         phase="TURN_RESOLVE",
-        events=[Event(name="GAME_OVER_CANDIDATE", ts_cam_ns=99, frame_id=99, payload={"reason": "black_confirmed"})],
+        events=[
+            Event(
+                name="GAME_STATUS_CHANGED",
+                ts_cam_ns=99,
+                frame_id=99,
+                payload={"shot_id": 7, "decision_id": "game-status:7:in_progress->ended_pending_review", "from_status": "in_progress", "to_status": "ended_pending_review"},
+            )
+        ],
     )
     plan = ShotPlan(plan_id="p2", frame_id=99, ts_cam_ns=99)
 
@@ -126,7 +133,7 @@ def test_projection_interaction_triggers_victory_animation_once(tmp_path: Path) 
     assert tuple(int(v) for v in image[1, 1]) == (0, 0, 255)
 
 
-def test_projection_interaction_falls_back_to_referee_intent_for_victory(tmp_path: Path) -> None:
+def test_projection_interaction_ignores_referee_intent_for_auto_victory(tmp_path: Path) -> None:
     victory_dir = tmp_path / "Win"
     frame = np.zeros((4, 4, 4), dtype=np.uint8)
     frame[:, :, 2] = 255
@@ -143,12 +150,12 @@ def test_projection_interaction_falls_back_to_referee_intent_for_victory(tmp_pat
     )
     plan = ShotPlan(plan_id="p3", frame_id=100, ts_cam_ns=100)
 
-    assert controller.observe_output(state=state, plan=plan, fps_hint=30.0) is True
+    assert controller.observe_output(state=state, plan=plan, fps_hint=30.0) is False
     image = controller.compose_frame(
         ProjectionOverlay(overlay_id="blank", frame_id=100, projector_size=(4, 4)),
         star_formula=StarFormulaConfig(enabled=False),
     )
-    assert tuple(int(v) for v in image[1, 1]) == (0, 0, 255)
+    assert int(np.count_nonzero(image)) == 0
 
 
 def test_projection_interaction_can_disable_auto_pocket_animation_without_affecting_manual_trigger(tmp_path: Path) -> None:
@@ -167,7 +174,7 @@ def test_projection_interaction_can_disable_auto_pocket_animation_without_affect
         frame_id=14,
         ts_cam_ns=14,
         phase="SHOT_ACTIVE",
-        events=[Event(name="POT_PROBABLE", ts_cam_ns=14, frame_id=14, payload={"track_id": 10, "pocket_index": 0})],
+        events=[Event(name="POCKET_CONFIRMED", ts_cam_ns=14, frame_id=14, payload={"track_id": 10, "pocket_index": 0, "shot_id": 4, "decision_id": "pocket:4"})],
     )
     plan = ShotPlan(plan_id="p-pocket-off", frame_id=14, ts_cam_ns=14)
     overlay = ProjectionOverlay(overlay_id="blank", frame_id=14, projector_size=(220, 120))
@@ -195,7 +202,14 @@ def test_projection_interaction_can_disable_auto_victory_animation_without_affec
         frame_id=101,
         ts_cam_ns=101,
         phase="TURN_RESOLVE",
-        events=[Event(name="GAME_OVER_CANDIDATE", ts_cam_ns=101, frame_id=101, payload={"reason": "black_confirmed"})],
+        events=[
+            Event(
+                name="GAME_STATUS_CHANGED",
+                ts_cam_ns=101,
+                frame_id=101,
+                payload={"shot_id": 8, "decision_id": "game-status:8:in_progress->ended_pending_review", "from_status": "in_progress", "to_status": "ended_pending_review"},
+            )
+        ],
     )
     plan = ShotPlan(plan_id="p-victory-off", frame_id=101, ts_cam_ns=101)
     overlay = ProjectionOverlay(overlay_id="blank", frame_id=101, projector_size=(4, 4))

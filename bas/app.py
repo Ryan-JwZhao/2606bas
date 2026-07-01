@@ -75,6 +75,7 @@ class RuntimePipeline:
         self._last_state: Optional[MatchStateFrame] = None
         self._last_plan: Optional[ShotPlan] = None
         self._last_overlay: Optional[ProjectionOverlay] = None
+        self._last_pocket_curves_mm: list[list[tuple[float, float]]] = []
         self.last_timings_ms: dict[str, float] = {}
         self._processed_frames = 0
         self._cached_detection_frames = 0
@@ -117,6 +118,7 @@ class RuntimePipeline:
             inner_polygon_mm=self.calibration.table.inner_polygon_mm,
             pockets_mm=self.calibration.table.pockets_mm,
             ball_diameter_mm=self.calibration.table.ball_diameter_mm,
+            pocket_curves_mm=getattr(self, "_last_pocket_curves_mm", []),
         )
         state = self.state_machine.update(tracks)
         secondary_correction = getattr(self, "secondary_correction", None)
@@ -237,6 +239,7 @@ class RuntimePipeline:
             for pocket in pockets_px
             if np.asarray(pocket, dtype=np.float32).reshape((-1, 2)).shape[0] >= 2
         ]
+        self._last_pocket_curves_mm = [_points_to_tuples(curve) for curve in pocket_curves_mm]
         boundaries = derive_table_boundaries(
             visible_mm,
             pocket_curves_mm,

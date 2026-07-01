@@ -46,8 +46,7 @@ def resolve_turn_target_group(
     ):
         if remaining.get(active_object_group, 0) > 0:
             reasons.append(f"stable_visible_{active_object_group}_cleared")
-        remaining[active_object_group] = 0
-        review_required = True
+            review_required = True
 
     target = _target_from_remaining(raw_hint, active_object_group, remaining)
     return TargetGroupResolution(

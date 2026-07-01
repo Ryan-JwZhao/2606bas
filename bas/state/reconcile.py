@@ -146,7 +146,10 @@ class ObservationReconciler:
         groups: set[Group] = set()
         supporting_names = {
             "POCKET_CANDIDATE",
+            "POCKET_TENTATIVE",
             "POCKET_CONFIRMED",
+            "POCKET_REVIEW_REQUIRED",
+            "POCKET_REJECTED",
             "BALL_LOST_UNCONFIRMED",
             "BALL_OFF_TABLE_CONFIRMED",
             "POT_PROBABLE",

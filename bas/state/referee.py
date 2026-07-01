@@ -44,7 +44,19 @@ class ShotContextAggregator:
 
     def ingest(self, events: Iterable[Event], *, ts_ms: int, rule_state: MatchRuleState) -> None:
         event_list = list(events)
-        if any(event.name in {"SHOT_STARTED", "SHOT_START_VOTED", "POCKET_CANDIDATE", "POCKET_CONFIRMED"} for event in event_list):
+        if any(
+            event.name
+            in {
+                "SHOT_STARTED",
+                "SHOT_START_VOTED",
+                "POCKET_CANDIDATE",
+                "POCKET_TENTATIVE",
+                "POCKET_CONFIRMED",
+                "POCKET_REVIEW_REQUIRED",
+                "POCKET_REJECTED",
+            }
+            for event in event_list
+        ):
             ctx = self.begin_if_needed(ts_ms=ts_ms, rule_state=rule_state)
         else:
             ctx = self._active
@@ -56,17 +68,32 @@ class ShotContextAggregator:
     def finalize(self, *, ts_ms: int, rule_state: MatchRuleState) -> ShotContext:
         ctx = self.begin_if_needed(ts_ms=ts_ms, rule_state=rule_state)
         ctx.ts_end_ms = ts_ms
+        if ctx.tentative_pockets and not ctx.review_pockets:
+            ctx.review_required = True
+            ctx.reasons.append("tentative_pocket_unresolved")
         self._active = None
         return ctx
 
     def _ingest_event(self, ctx: ShotContext, event: Event) -> None:
         payload = dict(event.payload or {})
         if event.name == "POCKET_CONFIRMED":
+            self._clear_pending_pocket(ctx, payload)
+            ctx.committed_pockets.append(_normalized_pocket_payload(payload))
             group = normalize_group(payload.get("group"))
             if group is not None:
                 ctx.potted_confirmed[group] = int(ctx.potted_confirmed.get(group, 0)) + 1
                 if group == "cue":
                     ctx.cue_scratch_candidate = True
+        elif event.name == "POCKET_TENTATIVE":
+            ctx.tentative_pockets.append(_normalized_pocket_payload(payload))
+        elif event.name == "POCKET_REVIEW_REQUIRED":
+            self._clear_pending_pocket(ctx, payload)
+            ctx.review_pockets.append(_normalized_pocket_payload(payload))
+            ctx.review_required = True
+            ctx.reasons.extend(str(reason) for reason in list(payload.get("reason_codes") or []) if str(reason).strip())
+        elif event.name == "POCKET_REJECTED":
+            self._clear_pending_pocket(ctx, payload)
+            ctx.rejected_pockets.append(_normalized_pocket_payload(payload))
         elif event.name == "BALL_OFF_TABLE_CONFIRMED":
             group = normalize_group(payload.get("group"))
             if group is not None:
@@ -88,6 +115,13 @@ class ShotContextAggregator:
                 ctx.first_contact_group = other
                 ctx.first_contact_confidence = confidence
 
+    @staticmethod
+    def _clear_pending_pocket(ctx: ShotContext, payload: dict[str, object]) -> None:
+        decision_id = str(payload.get("decision_id") or "").strip()
+        if not decision_id:
+            return
+        ctx.tentative_pockets = [item for item in ctx.tentative_pockets if str(item.get("decision_id") or "") != decision_id]
+
 
 class RefereeAdapter:
     """Structured referee interface. It exposes flags but keeps final judging conservative."""
@@ -105,6 +139,7 @@ class RefereeAdapter:
         opponent = rule_state.opponent_group
         effective = effective_remaining or {}
         legal_first = self._legal_first_contact_group(actor, ledger, effective)
+        review_required = bool(shot_ctx.review_required or review_reasons)
         foul_flags = {
             "cue_scratch": bool(shot_ctx.cue_scratch_candidate or shot_ctx.potted_confirmed.get("cue", 0) > 0),
             "wrong_first_contact": bool(
@@ -128,8 +163,26 @@ class RefereeAdapter:
         black_potted = shot_ctx.potted_confirmed.get("black", 0) > 0
         game_status = "ended_pending_review" if black_potted else rule_state.game_status
 
+        if review_required and not black_potted:
+            return self._review_intent(
+                ledger,
+                rule_state,
+                foul_flags,
+                ball_in_hand_scope,
+                reasons + ["state_frozen_pending_review"],
+                effective_remaining=effective,
+            )
+
         if rule_state.table_state == "open":
-            return self._evaluate_open_table(shot_ctx, ledger, foul_flags, ball_in_hand_scope, game_status, reasons, effective)
+            return self._evaluate_open_table(
+                shot_ctx,
+                ledger,
+                foul_flags,
+                ball_in_hand_scope,
+                game_status,
+                reasons,
+                effective,
+            )
 
         if actor is None or opponent is None:
             return RefereeIntent(
@@ -158,7 +211,7 @@ class RefereeAdapter:
             opponent_group_after=other_object_group(next_actor),
             ball_in_hand_scope=ball_in_hand_scope,
             foul_flags=foul_flags,
-            review_required=bool(shot_ctx.review_required or review_reasons),
+            review_required=review_required,
             game_status=game_status,
             reasons=reasons,
         )
@@ -235,6 +288,34 @@ class RefereeAdapter:
             reasons=reasons,
         )
 
+    def _review_intent(
+        self,
+        ledger: InventoryLedger,
+        rule_state: MatchRuleState,
+        foul_flags: dict[str, bool],
+        ball_in_hand_scope: str,
+        reasons: list[str],
+        *,
+        effective_remaining: dict[str, int] | None = None,
+    ) -> RefereeIntent:
+        actor = rule_state.actor_group
+        if actor is not None:
+            next_group = self._target_for_actor(actor, ledger, effective_remaining)
+        else:
+            next_group = None
+        return RefereeIntent(
+            next_group_hint=next_group,
+            next_actor_changed=False,
+            table_state_after=rule_state.table_state,
+            actor_group_after=rule_state.actor_group,
+            opponent_group_after=rule_state.opponent_group,
+            ball_in_hand_scope=ball_in_hand_scope,  # type: ignore[arg-type]
+            foul_flags=foul_flags,
+            review_required=True,
+            game_status=rule_state.game_status,
+            reasons=reasons,
+        )
+
     @staticmethod
     def _target_for_actor(
         actor: ObjectGroup,
@@ -278,9 +359,28 @@ def shot_context_payload(ctx: ShotContext) -> dict[str, object]:
         "first_contact_confidence": ctx.first_contact_confidence,
         "potted_confirmed": {group: int(ctx.potted_confirmed.get(group, 0)) for group in GROUPS},
         "off_table_confirmed": {group: int(ctx.off_table_confirmed.get(group, 0)) for group in GROUPS},
+        "committed_pockets": list(ctx.committed_pockets),
+        "tentative_pockets": list(ctx.tentative_pockets),
+        "review_pockets": list(ctx.review_pockets),
+        "rejected_pockets": list(ctx.rejected_pockets),
         "rail_contact_seen": ctx.rail_contact_seen,
         "cue_scratch_candidate": ctx.cue_scratch_candidate,
         "wrong_first_contact_candidate": ctx.wrong_first_contact_candidate,
         "review_required": ctx.review_required,
         "reasons": list(ctx.reasons),
+    }
+
+
+def _normalized_pocket_payload(payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "track_id": payload.get("track_id"),
+        "logical_id": payload.get("logical_id"),
+        "group": payload.get("group"),
+        "pocket_index": payload.get("pocket_index"),
+        "shot_id": payload.get("shot_id"),
+        "decision_id": payload.get("decision_id"),
+        "decision": payload.get("decision"),
+        "review_required": bool(payload.get("review_required", False)),
+        "reason_codes": list(payload.get("reason_codes") or []),
+        "evidence": dict(payload.get("evidence") or {}),
     }

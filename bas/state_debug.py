@@ -210,6 +210,7 @@ def _subtitle_text(record: dict[str, Any]) -> str:
     state_debug = dict(record.get("state_debug") or {})
     signals = dict(state_debug.get("signals") or {})
     counters = dict(state_debug.get("counters") or {})
+    pocket_rows = list(state_debug.get("pocket_fsm") or [])
     events = list(record.get("events") or [])
     raw_plan = dict(record.get("plan_raw") or {})
     display_plan = dict(record.get("plan_displayed") or {})
@@ -235,6 +236,7 @@ def _subtitle_text(record: dict[str, Any]) -> str:
     ]
     if events:
         lines.append("events " + " | ".join(_compact_events(events)))
+    lines.extend(_compact_pocket_rows(pocket_rows))
     lines.append("raw " + _compact_plan(raw_plan))
     if raw_plan != display_plan:
         lines.append("show " + _compact_plan(display_plan))
@@ -260,6 +262,33 @@ def _compact_events(events: Iterable[dict[str, Any]]) -> list[str]:
     if len(event_list) > 4:
         parts.append(f"+{len(event_list) - 4}")
     return parts
+
+
+def _compact_pocket_rows(rows: Iterable[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    interesting: list[dict[str, Any]] = []
+    for row in rows:
+        state = str(row.get("state") or "")
+        decision = str(row.get("decision") or "")
+        if state in {"candidate", "tentative", "confirmed", "review_required", "rejected"} or decision not in {"", "none"}:
+            interesting.append(dict(row))
+    for row in interesting[:3]:
+        reasons = ",".join(str(item) for item in list(row.get("reason_codes") or [])[:2])
+        parts = [
+            f"pocket#{row.get('track_id')}",
+            f"z={row.get('zone') or row.get('last_zone') or '-'}",
+            f"in={float(row.get('inward_speed_mm_s', 0.0)):.1f}",
+            f"miss={int(row.get('missing_ms', 0))}",
+            f"decision={row.get('decision') or row.get('state')}",
+        ]
+        if row.get("candidate_reason"):
+            parts.append(f"why={row.get('candidate_reason')}")
+        if reasons:
+            parts.append(f"reasons={reasons}")
+        lines.append(" ".join(parts))
+    if len(interesting) > 3:
+        lines.append(f"pocket +{len(interesting) - 3}")
+    return lines
 
 
 def _compact_plan(plan: dict[str, Any]) -> str:

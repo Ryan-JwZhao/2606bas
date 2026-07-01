@@ -87,7 +87,7 @@ def test_learning_sample_recorder_writes_training_rows(tmp_path) -> None:
         frame_id=3,
         ts_cam_ns=3,
         phase="TURN_RESOLVE",
-        events=[Event("POT_PROBABLE", 3, 3, payload={"track_id": 2, "group": "solid", "pocket_index": 2}), Event("TURN_RESOLVE", 3, 3)],
+        events=[Event("POCKET_CONFIRMED", 3, 3, payload={"track_id": 2, "group": "solid", "pocket_index": 2}), Event("TURN_RESOLVE", 3, 3)],
         layout=[_track(1, "cue")],
     )
 
@@ -135,7 +135,7 @@ def test_learning_sample_recorder_aligns_potted_target_ids_by_group_and_pocket(t
         frame_id=3,
         ts_cam_ns=3,
         phase="TURN_RESOLVE",
-        events=[Event("POT_PROBABLE", 3, 3, payload={"track_id": 99, "group": "solid", "pocket_index": 2}), Event("TURN_RESOLVE", 3, 3)],
+        events=[Event("POCKET_CONFIRMED", 3, 3, payload={"track_id": 99, "group": "solid", "pocket_index": 2}), Event("TURN_RESOLVE", 3, 3)],
         layout=[_track(1, "cue")],
     )
 

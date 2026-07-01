@@ -41,6 +41,7 @@ class ModernMatchStateMachine:
         self._pending_turn_resolve: Optional[dict[str, int]] = None
         self._table_inner_polygon_mm: list[tuple[float, float]] = []
         self._pockets_mm: list[tuple[float, float]] = []
+        self._pocket_curves_mm: list[list[tuple[float, float]]] = []
         self._ball_diameter_mm = 57.15
 
     @property
@@ -86,6 +87,7 @@ class ModernMatchStateMachine:
         inner_polygon_mm: Optional[List[tuple[float, float]]] = None,
         pockets_mm: Optional[List[tuple[float, float]]] = None,
         ball_diameter_mm: Optional[float] = None,
+        pocket_curves_mm: Optional[List[List[tuple[float, float]]]] = None,
     ) -> None:
         if inner_polygon_mm is not None:
             self._table_inner_polygon_mm = [(float(x), float(y)) for x, y in inner_polygon_mm]
@@ -93,10 +95,16 @@ class ModernMatchStateMachine:
             self._pockets_mm = [(float(x), float(y)) for x, y in pockets_mm]
         if ball_diameter_mm is not None:
             self._ball_diameter_mm = float(ball_diameter_mm)
+        if pocket_curves_mm is not None:
+            self._pocket_curves_mm = [
+                [(float(point[0]), float(point[1])) for point in list(curve or [])]
+                for curve in pocket_curves_mm
+            ]
         self.pocket_fsm.set_table_context(
             inner_polygon_mm=self._table_inner_polygon_mm,
             pockets_mm=self._pockets_mm,
             ball_diameter_mm=self._ball_diameter_mm,
+            pocket_curves_mm=self._pocket_curves_mm,
         )
 
     def force_phase(self, phase: MatchPhase | str, *, frame_id: int = 0, ts_cam_ns: int = 0, reason: str = "operator") -> None:
@@ -229,6 +237,7 @@ class ModernMatchStateMachine:
         pocket_events = self.pocket_fsm.update(tracks_frame, pocket_phase)
         events.extend(pocket_events)
         ts_ms = self._ts_ms(tracks_frame.ts_cam_ns)
+        self._annotate_shot_ids(events, ts_ms=ts_ms)
         self.aggregator.ingest(events, ts_ms=ts_ms, rule_state=self.rule_state)
         self._process_turn_resolve_if_needed(tracks_frame, events)
 
@@ -272,6 +281,7 @@ class ModernMatchStateMachine:
             effective_remaining=target_resolution.effective_remaining,
             review_reasons=review_reasons,
         )
+        previous_status = self.rule_state.game_status
         self.rule_state.table_state = intent.table_state_after
         self.rule_state.actor_group = intent.actor_group_after
         self.rule_state.opponent_group = intent.opponent_group_after
@@ -321,13 +331,31 @@ class ModernMatchStateMachine:
                 confidence=0.85,
             )
         )
-        if intent.game_status != "in_progress":
+        if previous_status != intent.game_status:
+            transition_payload = {
+                "shot_id": shot_ctx.shot_id,
+                "decision_id": f"game-status:{shot_ctx.shot_id}:{previous_status}->{intent.game_status}",
+                "from_status": previous_status,
+                "to_status": intent.game_status,
+                "review_required": bool(intent.review_required),
+                "reason_codes": [str(reason) for reason in intent.reasons if str(reason).strip()],
+            }
+            events.append(
+                Event(
+                    name="GAME_STATUS_CHANGED",
+                    ts_cam_ns=tracks_frame.ts_cam_ns,
+                    frame_id=tracks_frame.frame_id,
+                    payload=transition_payload,
+                    confidence=0.90,
+                )
+            )
+        if previous_status != intent.game_status and intent.game_status != "in_progress":
             events.append(
                 Event(
                     name="GAME_OVER_CANDIDATE",
                     ts_cam_ns=tracks_frame.ts_cam_ns,
                     frame_id=tracks_frame.frame_id,
-                    payload={"game_status": intent.game_status, "reason": "black_confirmed"},
+                    payload={"game_status": intent.game_status, "reason": "black_confirmed", "shot_id": shot_ctx.shot_id},
                     confidence=0.80,
                 )
             )
@@ -657,6 +685,22 @@ class ModernMatchStateMachine:
 
     def _empty_signals(self) -> PhaseSignals:
         return PhaseSignals(False, False, False, False, False, False)
+
+    def _annotate_shot_ids(self, events: List[Event], *, ts_ms: int) -> None:
+        needs_shot_context = any(
+            event.name in {"POCKET_CANDIDATE", "POCKET_TENTATIVE", "POCKET_CONFIRMED", "POCKET_REVIEW_REQUIRED", "POCKET_REJECTED"}
+            for event in events
+        )
+        if not needs_shot_context:
+            return
+        ctx = self.aggregator.active
+        if ctx is None:
+            ctx = self.aggregator.begin_if_needed(ts_ms=ts_ms, rule_state=self.rule_state)
+        for event in events:
+            if event.name not in {"POCKET_CANDIDATE", "POCKET_TENTATIVE", "POCKET_CONFIRMED", "POCKET_REVIEW_REQUIRED", "POCKET_REJECTED"}:
+                continue
+            event.payload = dict(event.payload or {})
+            event.payload.setdefault("shot_id", ctx.shot_id)
 
     @staticmethod
     def _debug_visible_group_counts(tracks: List[TrackObservation]) -> Dict[str, int]:
