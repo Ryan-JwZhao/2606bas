@@ -60,6 +60,7 @@ from .cue_sector_preview import draw_cue_sector_candidate_box
 from .engineered_ball_compensation_wizard import EngineeredBallCompensationWizardDialog
 from .geometry_reference import draw_geometry_reference_lines
 from .projection_debug import append_projected_ball_overlays, append_projected_boundary_overlays
+from .widgets import AspectRatioPreviewFrame, CollapsibleSection, CompactButtonGrid
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1290,6 +1291,16 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
 class OperatorWindow(QtWidgets.QMainWindow):
     BASE_WIDTH = 1420
     BASE_HEIGHT = 860
+    RAW_PHOTO_LABEL = "抓拍原图"
+    RAW_PHOTO_TOOLTIP = "抓取当前无画线校正照片"
+    INSTANT_REPLAY_LABEL = "导出纯净回放"
+    INSTANT_REPLAY_TOOLTIP = "导出前 60 秒纯净视频回放"
+    RAW_VIDEO_START_LABEL = "开始原始录制"
+    RAW_VIDEO_STOP_LABEL = "停止原始录制"
+    RAW_VIDEO_TOOLTIP = "录制无画线视频"
+    ROUTE_VIDEO_START_LABEL = "开始路线录制"
+    ROUTE_VIDEO_STOP_LABEL = "停止路线录制"
+    ROUTE_VIDEO_TOOLTIP = "录制进洞路线画线视频"
 
     def __init__(self, config: AppConfig):
         super().__init__()
@@ -1362,8 +1373,32 @@ class OperatorWindow(QtWidgets.QMainWindow):
         root = QtWidgets.QWidget()
         self.setCentralWidget(root)
         self.outer_layout = QtWidgets.QVBoxLayout(root)
+        self._compact_grids: list[CompactButtonGrid] = []
+        self._form_layouts: list[QtWidgets.QFormLayout] = []
+        self._section_content_layouts: list[QtWidgets.QVBoxLayout] = []
+        self._field_layouts: list[QtWidgets.QVBoxLayout] = []
 
-        header = QtWidgets.QHBoxLayout()
+        self._build_header()
+
+        self.main_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setStretchFactor(0, 0)
+        self.main_splitter.setStretchFactor(1, 1)
+        self.main_splitter.setStretchFactor(2, 0)
+        self.outer_layout.addWidget(self.main_splitter, 1)
+
+        self._build_left_sidebar()
+        self._build_center_panel()
+        self._build_right_sidebar()
+
+        self.main_splitter.addWidget(self.left_scroll_area)
+        self.main_splitter.addWidget(self.center_panel)
+        self.main_splitter.addWidget(self.right_scroll_area)
+
+    def _build_header(self) -> None:
+        self.header_widget = QtWidgets.QWidget()
+        self.header_layout = QtWidgets.QVBoxLayout(self.header_widget)
+        self.header_top_row = QtWidgets.QHBoxLayout()
         title_box = QtWidgets.QVBoxLayout()
         self.title = QtWidgets.QLabel("BAS 台球智能辅助")
         self.title.setObjectName("title")
@@ -1371,25 +1406,39 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.subtitle.setObjectName("muted")
         title_box.addWidget(self.title)
         title_box.addWidget(self.subtitle)
-        header.addLayout(title_box)
-        header.addStretch(1)
+        self.header_top_row.addLayout(title_box)
+        self.header_top_row.addStretch(1)
         self.status_label = QtWidgets.QLabel("离线")
         self.status_label.setObjectName("status")
-        header.addWidget(self.status_label)
-        self.outer_layout.addLayout(header)
+        self.header_top_row.addWidget(self.status_label)
+        self.header_layout.addLayout(self.header_top_row)
 
-        self.main_layout = QtWidgets.QHBoxLayout()
-        self.outer_layout.addLayout(self.main_layout, 1)
+        self.header_metrics_layout = QtWidgets.QHBoxLayout()
+        self.fps_metric = self._metric("FPS", "--")
+        self.det_metric = self._metric("检测", "--")
+        self.track_metric = self._metric("跟踪", "--")
+        self.phase_metric = self._metric("状态", "--")
+        for item in [self.fps_metric, self.det_metric, self.track_metric, self.phase_metric]:
+            self.header_metrics_layout.addWidget(item)
+        self.header_metrics_layout.addStretch(1)
+        self.header_layout.addLayout(self.header_metrics_layout)
+        self.outer_layout.addWidget(self.header_widget)
 
+    def _build_left_sidebar(self) -> None:
+        self.left_scroll_area = self._scroll_area()
         self.sidebar = self._panel()
         self.side_layout = QtWidgets.QVBoxLayout(self.sidebar)
-        self.capture_btn = self._button("开始采集")
-        self.projection_btn = self._button("开始投影")
-        self.init_module_btn = self._button("初始化图形图像模块")
-        self.projector_calib_btn = self._button("校正投影仪")
-        self.settings_btn = self._button("设置")
-        self.probe_btn = self._button("探测相机")
-        self.export_diag_btn = self._button("导出诊断快照")
+        self.left_scroll_area.setWidget(self.sidebar)
+
+        control_section = self._section("运行控制")
+        control_layout = control_section.contentLayout()
+        self.capture_btn = self._button("开始采集", variant="primary")
+        self.projection_btn = self._button("开始投影", variant="primary")
+        self.init_module_btn = self._button("初始化图形图像模块", variant="compact")
+        self.projector_calib_btn = self._button("校正投影仪", variant="compact")
+        self.settings_btn = self._button("设置", variant="compact")
+        self.probe_btn = self._button("探测相机", variant="compact")
+        self.export_diag_btn = self._button("导出诊断快照", variant="compact")
         self.capture_btn.clicked.connect(self.toggle_capture)
         self.projection_btn.clicked.connect(self.toggle_projection_window)
         self.init_module_btn.clicked.connect(self.initialize_graphics_image_module)
@@ -1397,11 +1446,18 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.settings_btn.clicked.connect(self.open_settings)
         self.probe_btn.clicked.connect(self.probe_camera_devices)
         self.export_diag_btn.clicked.connect(self.export_diagnostic_snapshot)
-        for btn in [self.capture_btn, self.projection_btn, self.init_module_btn, self.projector_calib_btn, self.settings_btn, self.probe_btn, self.export_diag_btn]:
-            self.side_layout.addWidget(btn)
-        self.side_layout.addSpacing(6)
+        control_layout.addWidget(self.capture_btn)
+        control_layout.addWidget(self.projection_btn)
+        control_grid = CompactButtonGrid(columns=2)
+        self._compact_grids.append(control_grid)
+        for button in [self.init_module_btn, self.projector_calib_btn, self.settings_btn, self.probe_btn]:
+            control_grid.addButton(button)
+        control_grid.addButton(self.export_diag_btn, column_span=2)
+        control_layout.addWidget(control_grid)
+        self.side_layout.addWidget(control_section)
 
-        self.side_layout.addWidget(self._section_label("采集"))
+        capture_settings_section = self._section("采集设置")
+        capture_settings_layout = capture_settings_section.contentLayout()
         self.backend_combo = QtWidgets.QComboBox()
         self.backend_combo.addItems(["auto", "nori", "opencv", "video", "synthetic"])
         self.nori_device_combo = QtWidgets.QComboBox()
@@ -1414,55 +1470,67 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.fps_combo = QtWidgets.QComboBox()
         self.fps_combo.addItems(COMMON_FPS)
         self.fps_combo.setEditable(True)
-        self.side_layout.addWidget(self._field("输入类型", self.backend_combo))
-        self.side_layout.addWidget(self._field("工业相机", self.nori_device_combo))
-        self.side_layout.addWidget(self._field("OpenCV 设备", self.device_spin))
-        self.side_layout.addWidget(self._field("分辨率", self.resolution_combo))
-        self.side_layout.addWidget(self._field("帧率", self.fps_combo))
+        capture_form_box, capture_form = self._form_panel()
+        self._add_form_row(capture_form, "输入类型", self.backend_combo)
+        self._add_form_row(capture_form, "工业相机", self.nori_device_combo)
+        self._add_form_row(capture_form, "OpenCV 设备", self.device_spin)
+        self._add_form_row(capture_form, "分辨率", self.resolution_combo)
+        self._add_form_row(capture_form, "帧率", self.fps_combo)
+        capture_settings_layout.addWidget(capture_form_box)
+        self.side_layout.addWidget(capture_settings_section)
 
+        display_section = self._section("显示与模式")
+        display_layout = display_section.contentLayout()
         self.replay_check = QtWidgets.QCheckBox("记录回放")
         self.replay_check.setChecked(self.config.replay.enabled)
-        self.side_layout.addWidget(self.replay_check)
         self.geometry_reference_check = QtWidgets.QCheckBox("显示几何参考线")
         self.geometry_reference_check.setChecked(bool(self.config.projection.geometry_reference_enabled))
         self.geometry_reference_check.toggled.connect(self._geometry_reference_toggled)
-        self.side_layout.addWidget(self.geometry_reference_check)
         self.projection_debug_check = QtWidgets.QCheckBox("投影调试模式")
         self.projection_debug_check.setChecked(False)
         self.projection_debug_check.toggled.connect(self._projection_debug_toggled)
-        self.side_layout.addWidget(self.projection_debug_check)
         self.cue_sector_preview_check = QtWidgets.QCheckBox()
         self.cue_sector_preview_check.setChecked(False)
         self.cue_sector_preview_check.setText("\u663e\u793a\u7403\u6746\u77e9\u5f62\u5019\u9009\u6846")
         self.cue_sector_preview_check.toggled.connect(self._cue_sector_preview_toggled)
-        self.side_layout.addWidget(self.cue_sector_preview_check)
+        for widget in [self.replay_check, self.geometry_reference_check, self.projection_debug_check, self.cue_sector_preview_check]:
+            display_layout.addWidget(widget)
         self.shot_mode_combo = QtWidgets.QComboBox()
         self.shot_mode_combo.addItem("规则模式", "rule")
         self.shot_mode_combo.addItem("自由模式", "free")
         self.shot_mode_combo.currentIndexChanged.connect(self._shot_mode_changed)
-        self.side_layout.addWidget(self._field("画线模式", self.shot_mode_combo))
         self.state_machine_combo = QtWidgets.QComboBox()
         self.state_machine_combo.addItem("状态机（旧）", "legacy")
         self.state_machine_combo.addItem("状态机（新）", "modern")
         self.state_machine_combo.currentIndexChanged.connect(self._state_machine_changed)
-        self.side_layout.addWidget(self._field("状态机", self.state_machine_combo))
-        self.side_layout.addWidget(self._section_label("现场抓取"))
-        self.raw_photo_btn = self._button("抓取无画线照片")
-        self.instant_replay_export_btn = self._button("导出前60秒纯净视频")
-        self.raw_video_btn = self._button("开始无画线视频")
-        self.route_video_btn = self._button("开始进洞路线视频")
+        display_form_box, display_form = self._form_panel()
+        self._add_form_row(display_form, "画线模式", self.shot_mode_combo)
+        self._add_form_row(display_form, "状态机", self.state_machine_combo)
+        display_layout.addWidget(display_form_box)
+        self.side_layout.addWidget(display_section)
+
+        capture_actions_section = self._section("现场抓取")
+        capture_actions_layout = capture_actions_section.contentLayout()
+        self.raw_photo_btn = self._button(self.RAW_PHOTO_LABEL, variant="compact")
+        self.instant_replay_export_btn = self._button(self.INSTANT_REPLAY_LABEL, variant="compact")
+        self.raw_video_btn = self._button(self.RAW_VIDEO_START_LABEL, variant="compact")
+        self.route_video_btn = self._button(self.ROUTE_VIDEO_START_LABEL, variant="compact")
+        self._configure_capture_action_buttons()
         self.raw_photo_btn.clicked.connect(self.capture_raw_photo)
         self.instant_replay_export_btn.clicked.connect(self.trigger_instant_replay_export)
         self.raw_video_btn.clicked.connect(self.toggle_raw_video_recording)
         self.route_video_btn.clicked.connect(self.toggle_route_video_recording)
-        for btn in [self.raw_photo_btn, self.instant_replay_export_btn, self.raw_video_btn, self.route_video_btn]:
-            self.side_layout.addWidget(btn)
-        self.side_layout.addWidget(self._section_label("交互调试"))
-        interaction_debug = QtWidgets.QWidget()
-        interaction_debug_grid = QtWidgets.QGridLayout(interaction_debug)
-        interaction_debug_grid.setContentsMargins(0, 0, 0, 0)
-        interaction_debug_grid.setHorizontalSpacing(6)
-        interaction_debug_grid.setVerticalSpacing(6)
+        capture_action_grid = CompactButtonGrid(columns=2)
+        self._compact_grids.append(capture_action_grid)
+        for button in [self.raw_photo_btn, self.instant_replay_export_btn, self.raw_video_btn, self.route_video_btn]:
+            capture_action_grid.addButton(button)
+        capture_actions_layout.addWidget(capture_action_grid)
+        self.side_layout.addWidget(capture_actions_section)
+
+        self.interaction_section = self._section("交互调试", expanded=False)
+        interaction_layout = self.interaction_section.contentLayout()
+        interaction_grid = CompactButtonGrid(columns=3)
+        self._compact_grids.append(interaction_grid)
         self.interaction_test_buttons: dict[str, QtWidgets.QPushButton] = {}
         pocket_layout = (
             ("pocket0", "P0", 0, 0),
@@ -1473,155 +1541,192 @@ class OperatorWindow(QtWidgets.QMainWindow):
             ("pocket3", "P3", 2, 2),
         )
         for key, text, row, col in pocket_layout:
-            btn = self._button(text)
+            btn = self._button(text, variant="compact")
             pocket_index = int(key.replace("pocket", ""))
             btn.clicked.connect(lambda _checked=False, idx=pocket_index: self._trigger_interaction_test_pocket(idx))
-            interaction_debug_grid.addWidget(btn, row, col)
+            interaction_grid.addButton(btn, row=row, column=col)
             self.interaction_test_buttons[key] = btn
-        victory_btn = self._button("结算")
+        victory_btn = self._button("结算", variant="compact")
         victory_btn.clicked.connect(self._trigger_interaction_test_victory)
-        interaction_debug_grid.addWidget(victory_btn, 1, 1)
+        interaction_grid.addButton(victory_btn, row=1, column=1)
         self.interaction_test_buttons["victory"] = victory_btn
-        self.side_layout.addWidget(interaction_debug)
+        interaction_layout.addWidget(interaction_grid)
+        self.side_layout.addWidget(self.interaction_section)
+
         self.side_layout.addStretch(1)
         self.config_label = QtWidgets.QLabel("设置保存在 local_settings/user_settings.json")
         self.config_label.setObjectName("muted")
         self.config_label.setWordWrap(True)
         self.side_layout.addWidget(self.config_label)
-        self.main_layout.addWidget(self.sidebar)
 
-        self.center_layout = QtWidgets.QVBoxLayout()
+    def _build_center_panel(self) -> None:
+        self.center_panel = QtWidgets.QWidget()
+        self.center_layout = QtWidgets.QVBoxLayout(self.center_panel)
+
         self.preview_panel = self._panel()
         self.preview_layout = QtWidgets.QVBoxLayout(self.preview_panel)
-        self.preview_label = QtWidgets.QLabel("等待画面")
-        self.preview_label.setObjectName("preview")
-        self.preview_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.preview_layout.addWidget(self.preview_label, 1)
-        self.center_layout.addWidget(self.preview_panel, 1)
-        self.metric_layout = QtWidgets.QHBoxLayout()
-        self.fps_metric = self._metric("FPS", "--")
-        self.det_metric = self._metric("检测", "--")
-        self.track_metric = self._metric("跟踪", "--")
-        self.phase_metric = self._metric("状态", "--")
-        for item in [self.fps_metric, self.det_metric, self.track_metric, self.phase_metric]:
-            self.metric_layout.addWidget(item)
-        self.center_layout.addLayout(self.metric_layout)
-        self.main_layout.addLayout(self.center_layout, 1)
+        self.preview_layout.addWidget(self._section_label("实时预览"))
+        self.preview_frame = AspectRatioPreviewFrame()
+        self.preview_label = self.preview_frame.label()
+        self.preview_frame.viewportChanged.connect(self._refresh_preview_pixmap)
+        self.preview_layout.addWidget(self.preview_frame, 0, QtCore.Qt.AlignHCenter)
+        self.center_layout.addWidget(self.preview_panel)
 
-        self.right_panel = self._panel()
-        self.right_layout = QtWidgets.QVBoxLayout(self.right_panel)
-        self.right_layout.addWidget(self._section_label("模块状态"))
-        self.module_status = QtWidgets.QTableWidget(0, 3)
-        self.module_status.setHorizontalHeaderLabels(["模块", "状态", "细节"])
-        self.module_status.horizontalHeader().setStretchLastSection(True)
-        self.module_status.verticalHeader().setVisible(False)
-        self.module_status.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self.module_status.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
-        self.right_layout.addWidget(self.module_status)
-        self._module_rows = {}
-        for name in ["采集", "检测", "跟踪", "状态机", "规划", "投影", "回放", "抓取", "标定"]:
-            self._add_module_row(name)
-
-        self.right_layout.addWidget(self._section_label("状态机人工介入"))
-        self.manual_phase_combo = QtWidgets.QComboBox()
-        self.manual_phase_combo.addItems([phase.value for phase in MatchPhase])
-        self.force_phase_btn = self._button("强制状态")
-        self.hold_state_btn = self._button("冻结状态机")
-        self.deep_debug_btn = self._button("开始深入调试")
-        self.snapshot_state_btn = self._button("确认当前布局稳定")
-        self.reset_state_btn = self._button("重置状态机")
-        self.confirm_review_btn = self._button("确认复核")
-        self.reject_review_btn = self._button("驳回复核")
-        self.review_group_combo = QtWidgets.QComboBox()
-        self.review_group_combo.addItem("实色", "solid")
-        self.review_group_combo.addItem("花色", "stripe")
-        self.resolve_open_table_group_btn = self._button("确认开台花色")
-        self.review_status_label = QtWidgets.QLabel("暂无待复核")
-        self.review_status_label.setObjectName("muted")
-        self.review_pending_list = QtWidgets.QListWidget()
-        self.review_pending_list.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
-        self.force_phase_btn.clicked.connect(self.force_state_phase)
-        self.hold_state_btn.clicked.connect(self.toggle_state_hold)
-        self.deep_debug_btn.clicked.connect(self.toggle_deep_debug_mode)
-        self.snapshot_state_btn.clicked.connect(self.snapshot_stable_layout)
-        self.reset_state_btn.clicked.connect(self.reset_state_machine)
-        self.confirm_review_btn.clicked.connect(self.confirm_state_review)
-        self.reject_review_btn.clicked.connect(self.reject_state_review)
-        self.resolve_open_table_group_btn.clicked.connect(self.resolve_state_open_table_group)
-        state_target_box = QtWidgets.QWidget()
-        state_target_layout = QtWidgets.QVBoxLayout(state_target_box)
-        state_target_layout.setContentsMargins(0, 0, 0, 0)
-        state_target_layout.addWidget(self.manual_phase_combo)
-        state_target_layout.addWidget(self.deep_debug_btn)
-        self.right_layout.addWidget(self._field("目标状态", state_target_box))
-        manual_grid = QtWidgets.QGridLayout()
-        for idx, button in enumerate(
-            [
-                self.force_phase_btn,
-                self.hold_state_btn,
-                self.snapshot_state_btn,
-                self.reset_state_btn,
-                self.confirm_review_btn,
-                self.reject_review_btn,
-            ]
-        ):
-            manual_grid.addWidget(button, idx // 2, idx % 2)
-        self.right_layout.addLayout(manual_grid)
-        review_group_box = QtWidgets.QWidget()
-        review_group_layout = QtWidgets.QHBoxLayout(review_group_box)
-        review_group_layout.setContentsMargins(0, 0, 0, 0)
-        review_group_layout.addWidget(self.review_group_combo, 1)
-        review_group_layout.addWidget(self.resolve_open_table_group_btn)
-        self.right_layout.addWidget(self.review_status_label)
-        self.right_layout.addWidget(self.review_pending_list)
-        self.right_layout.addWidget(self._field("开台花色复核", review_group_box))
-
-        self.right_layout.addWidget(self._section_label("最佳路线"))
+        self.plan_panel = self._panel()
+        self.plan_layout = QtWidgets.QVBoxLayout(self.plan_panel)
+        self.plan_layout.addWidget(self._section_label("最佳路线"))
         self.best_label = QtWidgets.QLabel("无")
         self.best_label.setObjectName("bestShot")
         self.best_label.setWordWrap(True)
-        self.right_layout.addWidget(self.best_label)
-        self.right_layout.addWidget(self._section_label("候选"))
+        self.plan_layout.addWidget(self.best_label)
+        self.plan_layout.addWidget(self._section_label("候选路线"))
         self.candidates = QtWidgets.QTableWidget(0, 4)
         self.candidates.setHorizontalHeaderLabels(["ID", "袋口", "评分", "风险"])
         self.candidates.horizontalHeader().setStretchLastSection(True)
         self.candidates.verticalHeader().setVisible(False)
         self.candidates.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.candidates.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
-        self.right_layout.addWidget(self.candidates, 1)
-        self.right_layout.addWidget(self._section_label("事件"))
-        self.event_list = QtWidgets.QListWidget()
-        self.right_layout.addWidget(self.event_list, 1)
-        self.main_layout.addWidget(self.right_panel)
+        self.plan_layout.addWidget(self.candidates, 1)
+        self.center_layout.addWidget(self.plan_panel, 1)
 
+    def _build_right_sidebar(self) -> None:
+        self.right_scroll_area = self._scroll_area()
+        self.right_panel = self._panel()
+        self.right_layout = QtWidgets.QVBoxLayout(self.right_panel)
+        self.right_scroll_area.setWidget(self.right_panel)
+
+        module_section = self._section("模块状态")
+        module_layout = module_section.contentLayout()
+        self.module_status = QtWidgets.QTableWidget(0, 3)
+        self.module_status.setHorizontalHeaderLabels(["模块", "状态", "细节"])
+        self.module_status.horizontalHeader().setStretchLastSection(True)
+        self.module_status.verticalHeader().setVisible(False)
+        self.module_status.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.module_status.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        module_layout.addWidget(self.module_status)
+        self._module_rows = {}
+        for name in ["采集", "检测", "跟踪", "状态机", "规划", "投影", "回放", "抓取", "标定"]:
+            self._add_module_row(name)
+        self.right_layout.addWidget(module_section)
+
+        manual_section = self._section("状态机人工介入")
+        manual_layout = manual_section.contentLayout()
+        self.manual_phase_combo = QtWidgets.QComboBox()
+        self.manual_phase_combo.addItems([phase.value for phase in MatchPhase])
+        self.force_phase_btn = self._button("强制状态", variant="compact")
+        self.hold_state_btn = self._button("冻结状态机", variant="compact")
+        self.deep_debug_btn = self._button("开始深入调试", variant="compact")
+        self.snapshot_state_btn = self._button("确认当前布局稳定", variant="compact")
+        self.reset_state_btn = self._button("重置状态机", variant="compact")
+        self.force_phase_btn.clicked.connect(self.force_state_phase)
+        self.hold_state_btn.clicked.connect(self.toggle_state_hold)
+        self.deep_debug_btn.clicked.connect(self.toggle_deep_debug_mode)
+        self.snapshot_state_btn.clicked.connect(self.snapshot_stable_layout)
+        self.reset_state_btn.clicked.connect(self.reset_state_machine)
+        state_target_box = QtWidgets.QWidget()
+        state_target_layout = QtWidgets.QVBoxLayout(state_target_box)
+        state_target_layout.setContentsMargins(0, 0, 0, 0)
+        state_target_layout.addWidget(self.manual_phase_combo)
+        state_target_layout.addWidget(self.deep_debug_btn)
+        manual_layout.addWidget(self._field("目标状态", state_target_box))
+        manual_grid = CompactButtonGrid(columns=2)
+        self._compact_grids.append(manual_grid)
+        for button in [self.force_phase_btn, self.hold_state_btn, self.snapshot_state_btn, self.reset_state_btn]:
+            manual_grid.addButton(button)
+        manual_layout.addWidget(manual_grid)
+        self.right_layout.addWidget(manual_section)
+
+        self.review_section = self._section("复核", expanded=False)
+        review_layout = self.review_section.contentLayout()
+        self.confirm_review_btn = self._button("确认复核", variant="compact")
+        self.reject_review_btn = self._button("驳回复核", variant="compact")
+        self.review_group_combo = QtWidgets.QComboBox()
+        self.review_group_combo.addItem("实色", "solid")
+        self.review_group_combo.addItem("花色", "stripe")
+        self.resolve_open_table_group_btn = self._button("确认开台花色", variant="compact")
+        self.review_status_label = QtWidgets.QLabel("暂无待复核")
+        self.review_status_label.setObjectName("muted")
+        self.review_pending_list = QtWidgets.QListWidget()
+        self.review_pending_list.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.confirm_review_btn.clicked.connect(self.confirm_state_review)
+        self.reject_review_btn.clicked.connect(self.reject_state_review)
+        self.resolve_open_table_group_btn.clicked.connect(self.resolve_state_open_table_group)
+        review_layout.addWidget(self.review_status_label)
+        review_layout.addWidget(self.review_pending_list)
+        review_actions = CompactButtonGrid(columns=2)
+        self._compact_grids.append(review_actions)
+        review_actions.addButton(self.confirm_review_btn)
+        review_actions.addButton(self.reject_review_btn)
+        review_layout.addWidget(review_actions)
+        review_group_box = QtWidgets.QWidget()
+        review_group_layout = QtWidgets.QHBoxLayout(review_group_box)
+        review_group_layout.setContentsMargins(0, 0, 0, 0)
+        review_group_layout.addWidget(self.review_group_combo, 1)
+        review_group_layout.addWidget(self.resolve_open_table_group_btn)
+        review_layout.addWidget(self._field("开台花色复核", review_group_box))
+        self.right_layout.addWidget(self.review_section)
+
+        events_log_section = self._section("事件 / 日志")
+        self.events_log_layout = events_log_section.contentLayout()
+        self.event_list = QtWidgets.QListWidget()
         self.log_box = QtWidgets.QPlainTextEdit()
         self.log_box.setObjectName("logBox")
         self.log_box.setReadOnly(True)
-        self.outer_layout.addWidget(self.log_box)
+        self.events_log_layout.addWidget(self._field("事件", self.event_list))
+        self.events_log_layout.addWidget(self._field("日志", self.log_box))
+        self.right_layout.addWidget(events_log_section, 1)
+        self.right_layout.addStretch(1)
 
     def _panel(self) -> QtWidgets.QFrame:
         frame = QtWidgets.QFrame()
         frame.setObjectName("panel")
         return frame
 
+    def _scroll_area(self) -> QtWidgets.QScrollArea:
+        area = QtWidgets.QScrollArea()
+        area.setObjectName("panelScroll")
+        area.setWidgetResizable(True)
+        area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        return area
+
+    def _section(self, title: str, *, expanded: bool = True) -> CollapsibleSection:
+        section = CollapsibleSection(title, expanded=expanded)
+        content_layout = section.contentLayout()
+        content_layout.setContentsMargins(0, 8, 0, 0)
+        content_layout.setSpacing(8)
+        self._section_content_layouts.append(content_layout)
+        return section
+
     def _section_label(self, text: str) -> QtWidgets.QLabel:
         label = QtWidgets.QLabel(text)
         label.setObjectName("section")
         return label
 
-    def _button(self, text: str) -> QtWidgets.QPushButton:
+    def _button(self, text: str, *, variant: str = "default") -> QtWidgets.QPushButton:
         button = QtWidgets.QPushButton(text)
         button.setCursor(QtCore.Qt.PointingHandCursor)
+        self._set_button_variant(button, variant)
         return button
+
+    @staticmethod
+    def _set_button_variant(button: QtWidgets.QPushButton, variant: str) -> None:
+        button.setProperty("variant", variant)
+        style = button.style()
+        style.unpolish(button)
+        style.polish(button)
 
     def _field(self, label_text: str, widget: QtWidgets.QWidget) -> QtWidgets.QWidget:
         box = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(box)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
         label = QtWidgets.QLabel(label_text)
         label.setObjectName("muted")
         layout.addWidget(label)
         layout.addWidget(widget)
+        self._field_layouts.append(layout)
         return box
 
     def _metric(self, name: str, value: str) -> QtWidgets.QFrame:
@@ -1637,6 +1742,27 @@ class OperatorWindow(QtWidgets.QMainWindow):
         box.value_label = value_label  # type: ignore[attr-defined]
         box.metric_layout = layout  # type: ignore[attr-defined]
         return box
+
+    def _form_panel(self) -> tuple[QtWidgets.QWidget, QtWidgets.QFormLayout]:
+        box = QtWidgets.QWidget()
+        layout = QtWidgets.QFormLayout(box)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setLabelAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        layout.setFormAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop)
+        layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.AllNonFixedFieldsGrow)
+        self._form_layouts.append(layout)
+        return box, layout
+
+    def _add_form_row(self, form: QtWidgets.QFormLayout, label_text: str, widget: QtWidgets.QWidget) -> None:
+        label = QtWidgets.QLabel(label_text)
+        label.setObjectName("muted")
+        form.addRow(label, widget)
+
+    def _configure_capture_action_buttons(self) -> None:
+        self.raw_photo_btn.setToolTip(self.RAW_PHOTO_TOOLTIP)
+        self.instant_replay_export_btn.setToolTip(self.INSTANT_REPLAY_TOOLTIP)
+        self.raw_video_btn.setToolTip(self.RAW_VIDEO_TOOLTIP)
+        self.route_video_btn.setToolTip(self.ROUTE_VIDEO_TOOLTIP)
 
     def _add_module_row(self, name: str) -> None:
         row = self.module_status.rowCount()
@@ -1673,22 +1799,49 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
         self.outer_layout.setContentsMargins(px(14), px(14), px(14), px(14))
         self.outer_layout.setSpacing(px(12))
-        self.main_layout.setSpacing(px(12))
+        self.header_layout.setContentsMargins(0, 0, 0, 0)
+        self.header_layout.setSpacing(px(8))
+        self.header_top_row.setSpacing(px(12))
+        self.header_metrics_layout.setSpacing(px(10))
         self.side_layout.setContentsMargins(px(14), px(14), px(14), px(14))
         self.side_layout.setSpacing(px(10))
+        self.left_scroll_area.setMinimumWidth(px(304))
+        self.left_scroll_area.setMaximumWidth(px(304))
         self.center_layout.setSpacing(px(12))
         self.preview_layout.setContentsMargins(px(8), px(8), px(8), px(8))
-        self.metric_layout.setSpacing(px(10))
+        self.preview_layout.setSpacing(px(8))
+        self.plan_layout.setContentsMargins(px(12), px(12), px(12), px(12))
+        self.plan_layout.setSpacing(px(8))
         self.right_layout.setContentsMargins(px(14), px(14), px(14), px(14))
         self.right_layout.setSpacing(px(10))
-        self.sidebar.setFixedWidth(px(275))
-        self.right_panel.setFixedWidth(px(390))
-        self.preview_label.setMinimumSize(px(620), px(390))
-        self.log_box.setMaximumHeight(px(130))
-        self.module_status.setMaximumHeight(px(215))
+        self.right_scroll_area.setMinimumWidth(px(372))
+        self.right_scroll_area.setMaximumWidth(px(372))
+        self.main_splitter.setHandleWidth(px(6))
+        if force:
+            self.main_splitter.setSizes([px(304), px(700), px(372)])
+        self.preview_frame.setPreferredSize(px(680), px(382))
+        self.preview_frame.setMaximumHeight(px(394))
+        for layout in self._section_content_layouts:
+            layout.setContentsMargins(0, px(8), 0, 0)
+            layout.setSpacing(px(8))
+        for layout in self._field_layouts:
+            layout.setSpacing(px(4))
+        for form in self._form_layouts:
+            form.setHorizontalSpacing(px(8))
+            form.setVerticalSpacing(px(6))
+        for grid in self._compact_grids:
+            grid_layout = grid.gridLayout()
+            grid_layout.setHorizontalSpacing(px(6))
+            grid_layout.setVerticalSpacing(px(6))
+        self.module_status.setMinimumHeight(px(170))
+        self.module_status.setMaximumHeight(px(230))
         self.module_status.verticalHeader().setDefaultSectionSize(px(22))
-        self.candidates.verticalHeader().setDefaultSectionSize(px(30))
-        self.review_pending_list.setMaximumHeight(px(110))
+        self.candidates.verticalHeader().setDefaultSectionSize(px(28))
+        self.review_pending_list.setMinimumHeight(px(86))
+        self.review_pending_list.setMaximumHeight(px(132))
+        self.event_list.setMinimumHeight(px(150))
+        self.log_box.setMinimumHeight(px(120))
+        self.log_box.setMaximumHeight(px(180))
         for metric in [self.fps_metric, self.det_metric, self.track_metric, self.phase_metric]:
             metric.metric_layout.setContentsMargins(px(12), px(9), px(12), px(9))  # type: ignore[attr-defined]
             metric.metric_layout.setSpacing(px(2))  # type: ignore[attr-defined]
@@ -1717,10 +1870,32 @@ class OperatorWindow(QtWidgets.QMainWindow):
             color: #ffffff;
             font-weight: 600;
         }}
+        QScrollArea#panelScroll {{
+            background: transparent;
+            border: none;
+        }}
         QFrame#panel, QFrame#metric {{
             background: #181818;
             border: 1px solid #343434;
             border-radius: {px(2)}px;
+        }}
+        QFrame#collapsibleSection {{
+            background: transparent;
+            border: none;
+        }}
+        QToolButton#sectionToggle {{
+            background: #151515;
+            border: 1px solid #343434;
+            border-radius: {px(2)}px;
+            color: #ffffff;
+            font-weight: 700;
+            padding: {px(7)}px {px(10)}px;
+            text-align: left;
+        }}
+        QToolButton#sectionToggle:hover {{ background: #1d1d1d; border-color: #4c4c4c; }}
+        QFrame#previewViewport {{
+            background: transparent;
+            border: none;
         }}
         QLabel#preview {{
             background: #050505;
@@ -1744,6 +1919,19 @@ class OperatorWindow(QtWidgets.QMainWindow):
         QPushButton:hover {{ background: #2b2b2b; border-color: #666666; }}
         QPushButton:pressed {{ background: #171717; }}
         QPushButton:disabled {{ color: #777777; background: #181818; border-color: #303030; }}
+        QPushButton[variant="primary"] {{
+            background: #e9e9e9;
+            border-color: #ffffff;
+            color: #121212;
+            padding: {px(10)}px {px(12)}px;
+        }}
+        QPushButton[variant="primary"]:hover {{ background: #ffffff; border-color: #ffffff; }}
+        QPushButton[variant="primary"]:pressed {{ background: #d8d8d8; }}
+        QPushButton[variant="compact"] {{
+            padding: {px(6)}px {px(8)}px;
+            min-height: {px(30)}px;
+            font-weight: 600;
+        }}
         QComboBox, QSpinBox, QDoubleSpinBox {{
             background: #111111;
             border: 1px solid #444444;
@@ -2296,6 +2484,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
             if group_choice_required:
                 label += " / 需要指定开台花色"
             self.review_status_label.setText(label)
+            if not self.review_section.isExpanded():
+                self.review_section.setExpanded(True)
         else:
             self.review_status_label.setText("暂无待复核")
 
@@ -2618,14 +2808,14 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if route:
             self._route_video_recorder = recorder
             self._route_video_path = path
-            self.route_video_btn.setText("停止进洞路线视频")
+            self.route_video_btn.setText(self.ROUTE_VIDEO_STOP_LABEL)
             if self.last_output is not None and self.last_output.plan.best is None:
                 self._append_log("当前无最佳进洞路线，视频会在路线出现后开始画线")
             self._append_log(f"进洞路线画线视频开始录制: {path} ({record_fps:.1f}fps, H.264 6000kbps)")
         else:
             self._raw_video_recorder = recorder
             self._raw_video_path = path
-            self.raw_video_btn.setText("停止无画线视频")
+            self.raw_video_btn.setText(self.RAW_VIDEO_STOP_LABEL)
             self._append_log(f"无画线视频开始录制: {path} ({record_fps:.1f}fps, H.264 6000kbps)")
         self._update_module_status(self.last_output)
         self._update_deep_debug_controls(running=self.pipeline is not None)
@@ -2644,11 +2834,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self._append_log(f"停止录制时 ffmpeg 异常: {exc}")
         if route:
             self._route_video_recorder = None
-            self.route_video_btn.setText("开始进洞路线视频")
+            self.route_video_btn.setText(self.ROUTE_VIDEO_START_LABEL)
             self._route_video_path = None
         else:
             self._raw_video_recorder = None
-            self.raw_video_btn.setText("开始无画线视频")
+            self.raw_video_btn.setText(self.RAW_VIDEO_START_LABEL)
             self._raw_video_path = None
         label = "进洞路线画线视频" if route else "无画线视频"
         if code == 0:
@@ -2837,10 +3027,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
                 pass
             if route:
                 self._route_video_recorder = None
-                self.route_video_btn.setText("开始进洞路线视频")
+                self.route_video_btn.setText(self.ROUTE_VIDEO_START_LABEL)
             else:
                 self._raw_video_recorder = None
-                self.raw_video_btn.setText("开始无画线视频")
+                self.raw_video_btn.setText(self.RAW_VIDEO_START_LABEL)
             self._update_module_status(self.last_output)
 
     def _route_capture_frame(self, out: PipelineOutput, *, base_frame: Optional[np.ndarray] = None) -> np.ndarray:
@@ -3828,8 +4018,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.raw_photo_btn.setEnabled(running)
         self.instant_replay_export_btn.setEnabled(running and bool(self.config.instant_replay.enabled))
         if not running:
-            self.raw_video_btn.setText("开始无画线视频")
-            self.route_video_btn.setText("开始进洞路线视频")
+            self.raw_video_btn.setText(self.RAW_VIDEO_START_LABEL)
+            self.route_video_btn.setText(self.ROUTE_VIDEO_START_LABEL)
         self.status_label.setText("运行中" if running else "离线")
         self._update_deep_debug_controls(running=running)
 

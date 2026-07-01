@@ -38,6 +38,57 @@ def test_operator_window_uses_clean_cue_sector_preview_label() -> None:
     app.processEvents()
 
 
+def test_operator_window_uses_scrollable_three_column_layout() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    window.resize(window.BASE_WIDTH, window.BASE_HEIGHT)
+    window.show()
+    app.processEvents()
+
+    assert window.main_splitter.count() == 3
+    assert window.left_scroll_area.widget() is window.sidebar
+    assert window.right_scroll_area.widget() is window.right_panel
+    assert window.outer_layout.indexOf(window.log_box) == -1
+    assert window.right_panel.isAncestorOf(window.log_box) is True
+    assert window.preview_label.parent() is window.preview_frame
+    assert abs((window.preview_label.width() / max(1, window.preview_label.height())) - (16.0 / 9.0)) < 0.05
+
+    window.close()
+    app.processEvents()
+
+
+def test_operator_window_preserves_preview_ratio_at_minimum_size() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    window.resize(1120, 720)
+    window.show()
+    app.processEvents()
+
+    assert abs((window.preview_label.width() / max(1, window.preview_label.height())) - (16.0 / 9.0)) < 0.05
+    assert window.left_scroll_area.verticalScrollBarPolicy() == main_window.QtCore.Qt.ScrollBarAsNeeded
+    assert window.right_scroll_area.verticalScrollBarPolicy() == main_window.QtCore.Qt.ScrollBarAsNeeded
+
+    window.close()
+    app.processEvents()
+
+
+def test_operator_window_scene_capture_buttons_keep_tooltips_after_shortening_labels() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+
+    assert window.raw_photo_btn.text() == window.RAW_PHOTO_LABEL
+    assert window.raw_photo_btn.toolTip() == window.RAW_PHOTO_TOOLTIP
+    assert window.instant_replay_export_btn.text() == window.INSTANT_REPLAY_LABEL
+    assert window.instant_replay_export_btn.toolTip() == window.INSTANT_REPLAY_TOOLTIP
+    assert window.raw_video_btn.text() == window.RAW_VIDEO_START_LABEL
+    assert window.raw_video_btn.toolTip() == window.RAW_VIDEO_TOOLTIP
+    assert window.route_video_btn.text() == window.ROUTE_VIDEO_START_LABEL
+    assert window.route_video_btn.toolTip() == window.ROUTE_VIDEO_TOOLTIP
+
+    window.close()
+    app.processEvents()
+
+
 def test_operator_window_exposes_explicit_review_controls() -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())
@@ -82,6 +133,7 @@ def test_review_controls_follow_pending_review_payload() -> None:
     assert window.confirm_review_btn.isEnabled() is True
     assert window.reject_review_btn.isEnabled() is True
     assert window.resolve_open_table_group_btn.isEnabled() is True
+    assert window.review_section.isExpanded() is True
 
     window.pipeline = None
     window.close()
@@ -136,6 +188,61 @@ def test_start_pipeline_and_tick_use_same_thread(monkeypatch) -> None:
     fake = created[0]
     assert fake.creator_thread_id == fake.step_thread_id
     window.close()
+
+
+def test_operator_window_buttons_remain_wired_after_layout_refactor(monkeypatch) -> None:
+    app = _app()
+    calls: list[str] = []
+
+    def _record(name: str):
+        def _handler(self) -> None:
+            calls.append(name)
+
+        return _handler
+
+    patched_methods = [
+        ("toggle_capture", "capture"),
+        ("toggle_projection_window", "projection"),
+        ("open_settings", "settings"),
+        ("probe_camera_devices", "probe"),
+        ("capture_raw_photo", "raw_photo"),
+        ("trigger_instant_replay_export", "instant_replay"),
+        ("toggle_raw_video_recording", "raw_video"),
+        ("toggle_route_video_recording", "route_video"),
+        ("force_state_phase", "force_phase"),
+        ("toggle_state_hold", "hold_state"),
+        ("toggle_deep_debug_mode", "deep_debug"),
+        ("confirm_state_review", "confirm_review"),
+        ("reject_state_review", "reject_review"),
+        ("resolve_state_open_table_group", "resolve_group"),
+    ]
+    for attr, name in patched_methods:
+        monkeypatch.setattr(main_window.OperatorWindow, attr, _record(name))
+
+    window = main_window.OperatorWindow(AppConfig())
+    for button in [
+        window.capture_btn,
+        window.projection_btn,
+        window.settings_btn,
+        window.probe_btn,
+        window.raw_photo_btn,
+        window.instant_replay_export_btn,
+        window.raw_video_btn,
+        window.route_video_btn,
+        window.force_phase_btn,
+        window.hold_state_btn,
+        window.deep_debug_btn,
+        window.confirm_review_btn,
+        window.reject_review_btn,
+        window.resolve_open_table_group_btn,
+    ]:
+        button.setEnabled(True)
+        button.click()
+
+    assert calls == [name for _, name in patched_methods]
+
+    window.close()
+    app.processEvents()
 
 
 def test_tick_runtime_exception_stops_pipeline_instead_of_crashing(monkeypatch) -> None:
@@ -198,6 +305,26 @@ def test_settings_dialog_groups_controls_into_clear_tabs() -> None:
     assert dialog.tabs.usesScrollButtons() is True
 
     dialog.close()
+    app.processEvents()
+
+
+def test_set_running_updates_capture_action_states() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    window.config.instant_replay.enabled = True
+
+    window._set_running(True)
+    assert window.raw_photo_btn.isEnabled() is True
+    assert window.instant_replay_export_btn.isEnabled() is True
+    assert window.deep_debug_btn.isEnabled() is True
+
+    window._set_running(False)
+    assert window.raw_photo_btn.isEnabled() is False
+    assert window.instant_replay_export_btn.isEnabled() is False
+    assert window.raw_video_btn.text() == window.RAW_VIDEO_START_LABEL
+    assert window.route_video_btn.text() == window.ROUTE_VIDEO_START_LABEL
+
+    window.close()
     app.processEvents()
 
 
