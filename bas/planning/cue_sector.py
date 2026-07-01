@@ -9,6 +9,7 @@ from ..calibration.service import CalibrationService
 from ..config import PlannerConfig
 from ..schemas import MatchStateFrame, ShotCandidate, TrackObservation
 from ..utils import unit
+from .aim_context import PlannerAimFrameContext
 from .cue_aim import CueStickAimDetector
 from .cue_direction_stability import CueDirectionStabilizer
 
@@ -52,7 +53,7 @@ class CueSectorDebugView:
 class CueSectorCorrection:
     version = "cue_corridor_correction_v2"
 
-    def __init__(self, config: PlannerConfig, calibration: CalibrationService):
+    def __init__(self, config: PlannerConfig, calibration: CalibrationService, aim_detector: CueStickAimDetector | None = None):
         self.config = config
         self.calibration = calibration
         self.last_status = "off"
@@ -60,7 +61,7 @@ class CueSectorCorrection:
         self._pending_target_id: Optional[int] = None
         self._pending_frames = 0
         self._lock_miss_frames = 0
-        self.aim_detector = CueStickAimDetector()
+        self.aim_detector = aim_detector or CueStickAimDetector()
         self.direction_stabilizer = CueDirectionStabilizer(config)
         self.last_debug_view: Optional[CueSectorDebugView] = None
 
@@ -76,7 +77,13 @@ class CueSectorCorrection:
     def enabled(self) -> bool:
         return bool(getattr(self.config, "cue_sector_correction_enabled", True))
 
-    def detect_aim(self, state: MatchStateFrame, cue_ball, frame_bgr: Optional[np.ndarray] = None) -> Optional[CueSectorAim]:
+    def detect_aim(
+        self,
+        state: MatchStateFrame,
+        cue_ball,
+        frame_bgr: Optional[np.ndarray] = None,
+        frame_context: PlannerAimFrameContext | None = None,
+    ) -> Optional[CueSectorAim]:
         if not self.enabled():
             self.last_status = "disabled"
             self._reset_aim_state()
@@ -94,14 +101,21 @@ class CueSectorCorrection:
         cue_center_px = np.asarray(cue_track.center_px, dtype=np.float32).reshape((2,))
         cue_radius_px = max(2.0, float(cue_track.radius_px))
         min_quality = float(getattr(self.config, "cue_sector_min_stick_quality", 0.25))
-        aim_px = self.aim_detector.detect(
-            frame_bgr=frame_bgr,
-            tracks=state.layout,
-            cue_center_px=cue_center_px,
-            cue_radius_px=cue_radius_px,
-            inner_polygon_px=self._inner_polygon_px(frame_bgr.shape if frame_bgr is not None else None),
-            min_stick_quality=min_quality,
-        )
+        if frame_context is not None:
+            aim_px = frame_context.shared_aim()
+            if aim_px is not None and not self._aim_passes_quality(aim_px, min_quality):
+                aim_px = None
+        else:
+            aim_px = self.aim_detector.detect(
+                frame_bgr=frame_bgr,
+                tracks=state.layout,
+                cue_center_px=cue_center_px,
+                cue_radius_px=cue_radius_px,
+                inner_polygon_px=self._inner_polygon_px(frame_bgr.shape if frame_bgr is not None else None),
+                min_stick_quality=min_quality,
+                prefer_tracks=False,
+                allow_edge_detection=True,
+            )
         if aim_px is None:
             self.last_status = "no_valid_cue_stick"
             self._reset_aim_state()
@@ -121,6 +135,13 @@ class CueSectorCorrection:
         self._store_debug_view(cue_center_px, aim, (), direction_decision.status)
         self.last_status = f"aim_active:{aim_px.source}/{direction_decision.status}"
         return aim
+
+    @staticmethod
+    def _aim_passes_quality(aim_px, min_stick_quality: float) -> bool:
+        if str(getattr(aim_px, "source", "")).strip().lower() != "track_bbox":
+            return True
+        track_quality = getattr(aim_px, "track_quality", None)
+        return track_quality is None or float(track_quality) >= float(min_stick_quality)
 
     def apply(
         self,

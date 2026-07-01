@@ -11,6 +11,8 @@ from ..calibration.service import CalibrationService
 from ..config import LearningConfig, PlannerConfig
 from ..schemas import MatchStateFrame, Point, ShotCandidate, ShotPlan, TrackObservation
 from ..utils import angle_deg, clamp, point_segment_distance, unit, wall_time_id
+from .aim_context import PlannerAimFrameContext
+from .cue_aim import CueStickAimDetector
 from .cue_sector import CueSectorCorrection
 from .free_shot import FreeShotPlanner
 from .learning import create_learning_ranker
@@ -40,10 +42,11 @@ class GeometryPhysicsPlanner:
             table_width_mm=self.calibration.table.width_mm,
             table_height_mm=self.calibration.table.height_mm,
         )
+        self.aim_detector = CueStickAimDetector()
         self.free_planner = FreeShotPlanner(config, calibration)
-        self.cue_sector = CueSectorCorrection(config, calibration)
+        self.cue_sector = CueSectorCorrection(config, calibration, aim_detector=self.aim_detector)
         self.target_lock = TargetLockController(config)
-        self.target_shot_mode = TargetShotModeController(config)
+        self.target_shot_mode = TargetShotModeController(config, aim_detector=self.aim_detector)
         self.target_shot_planner = TargetShotPlanner(config, calibration)
 
     def plan(
@@ -73,16 +76,32 @@ class GeometryPhysicsPlanner:
                 locked_target_id=target_lock.locked_target_id,
                 target_lock_status=target_lock.status,
                 target_shot_status="free_mode",
-        )
+            )
         balls = self._extract_balls(state.layout)
         cue = next((b for b in balls if b.group == "cue"), None)
         if cue is None:
             return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
-        target_shot = self.target_shot_mode.update(state=state, balls=balls, tracks=state.layout, frame_bgr=frame_bgr)
+        frame_context = self._build_aim_frame_context(
+            cue=cue,
+            tracks=state.layout,
+            frame_bgr=frame_bgr,
+        )
+        target_shot = self.target_shot_mode.update(
+            state=state,
+            balls=balls,
+            tracks=state.layout,
+            frame_bgr=frame_bgr,
+            frame_context=frame_context,
+        )
         if target_shot.active:
             return self._target_shot_plan(state, cue, balls, target_shot)
         turn_target_group = forced_turn_target_group if forced_turn_target_group is not None else getattr(state, "turn_target_group", None)
-        cue_sector_aim = self.cue_sector.detect_aim(state, cue, frame_bgr=frame_bgr)
+        cue_sector_aim = self.cue_sector.detect_aim(
+            state,
+            cue,
+            frame_bgr=frame_bgr,
+            frame_context=frame_context,
+        )
         target_lock = self.target_lock.update(state=state, cue_ball=cue, balls=balls, aim=cue_sector_aim)
         locked_target = self._locked_target(balls, target_lock)
         if locked_target is not None:
@@ -167,6 +186,10 @@ class GeometryPhysicsPlanner:
         for tr in tracks:
             if tr.group not in {"cue", "solid", "stripe", "black"}:
                 continue
+            if str(getattr(tr, "visibility", "visible")).strip().lower() != "visible":
+                continue
+            if float(getattr(tr, "quality", 0.0)) <= 0.25:
+                continue
             center = self.calibration.ball_camera_px_to_table_mm(np.asarray([tr.center_px], dtype=np.float32))[0]
             radius_mm = self.calibration.ball_pixel_radius_to_mm(tr.center_px, tr.radius_px)
             if radius_mm <= 1.0 or radius_mm > 80.0:
@@ -183,6 +206,42 @@ class GeometryPhysicsPlanner:
                 )
             )
         return balls
+
+    def _build_aim_frame_context(
+        self,
+        *,
+        cue: _Ball,
+        tracks: Sequence[TrackObservation],
+        frame_bgr: Optional[np.ndarray],
+    ) -> PlannerAimFrameContext:
+        min_stick_quality = min(
+            float(getattr(self.config, "target_shot_min_stick_quality", 0.25)),
+            float(getattr(self.config, "cue_sector_min_stick_quality", 0.25)),
+        )
+        return PlannerAimFrameContext(
+            frame_bgr=frame_bgr,
+            tracks=tracks,
+            cue_center_px=cue.center_px,
+            cue_radius_px=cue.radius_px,
+            inner_polygon_px=self._inner_polygon_px(frame_bgr.shape if frame_bgr is not None else None),
+            aim_detector=self.aim_detector,
+            min_stick_quality=min_stick_quality,
+        )
+
+    def _inner_polygon_px(self, frame_shape: Optional[tuple[int, ...]]) -> Optional[np.ndarray]:
+        base_polygon = self.calibration.table.center_playable_polygon_mm or self.calibration.table.inner_polygon_mm
+        poly_mm = np.asarray(base_polygon, dtype=np.float32).reshape((-1, 2))
+        if poly_mm.shape[0] >= 3:
+            try:
+                poly_px = self.calibration.table_mm_to_camera_px(poly_mm).astype(np.float32)
+                if np.all(np.isfinite(poly_px)):
+                    return poly_px
+            except Exception:
+                pass
+        if frame_shape is not None and len(frame_shape) >= 2:
+            h, w = frame_shape[:2]
+            return np.asarray([(0.0, 0.0), (float(w), 0.0), (float(w), float(h)), (0.0, float(h))], dtype=np.float32)
+        return None
 
     def _locked_target(self, balls: Sequence[_Ball], target_lock: TargetLockDecision) -> Optional[_Ball]:
         if target_lock.locked_target_id is None:

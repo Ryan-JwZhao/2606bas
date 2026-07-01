@@ -2,26 +2,28 @@
 
 ## 简介
 
-BAS 是一个台球辅助系统，主链路包含采集、检测、跟踪、状态机、规划和投影。
+BAS 是一个台球辅助系统，主链路包含：
 
-当前仓库里建议优先使用 `modern` 状态机。最近这轮重构重点收口了“进洞确认 / ledger 提交 / 胜负动画”这条链路，核心语义如下：
+- 采集：相机或视频输入
+- 感知：球与球杆检测
+- 跟踪：跨帧目标跟踪
+- 状态：回合、进球、胜负等状态判定
+- 规划：推荐击球路线、目标球与自由球路径
+- 投影：把规划结果投到球台上
 
-- 只有真正允许修改 `ledger`、切换花色、触发胜负状态和动画的事件，才会发 `POCKET_CONFIRMED`
-- 洞口 `mouth` 级别证据只会进入 `candidate / tentative / review_required`，不会再直接确认
-- `POCKET_COMMIT_READY` 是内部提交态，表示 pocket 证据已经够强，但还要等 `TURN_RESOLVE` 统一 reconcile 后才能真正提交
-- 只要该杆存在 `review_required`、可见球和 ledger 冲突、近袋口重现冲突，整杆都会冻结，不会污染全局状态
-- 黑八也走同一套提交栅栏；只有 clean confirm 才允许发 `GAME_STATUS_CHANGED` 和 `GAME_OVER_CANDIDATE`
+当前仓库建议优先使用 `modern` 状态机，并基于本地视频或相机配置做联调。
 
 ## 模块结构
 
 - `bas/capture`：相机与视频输入
-- `bas/perception`：目标检测
-- `bas/tracking`：跨帧跟踪
-- `bas/state`：状态机、进洞判定、裁判意图、ledger 与复核接口
-- `bas/planning`：走位与击球规划
+- `bas/perception`：检测模型与检测区域
+- `bas/tracking`：时序跟踪
+- `bas/state`：状态机、进球判定、事件流
+- `bas/planning`：规则路线、target shot、free shot、cue sector
 - `bas/projection`：投影叠加与动画
 - `bas/ui`：桌面控制台
-- `tests`：单元测试、回放测试、交互测试
+- `scripts`：本地调试和辅助脚本
+- `tests`：单测与回归测试
 
 ## 快速开始
 
@@ -55,72 +57,73 @@ Start_BAS.cmd
 .\.venv\Scripts\python.exe -m bas probe-cameras
 ```
 
-## 进洞 / 胜负状态语义
+## Shared Aim 优化说明
 
-### 关键事件
+这次针对 `planner` 的性能瓶颈做了根因修复，没有优先改状态机本体。
 
-- `POCKET_CANDIDATE`：检测到近袋口候选
-- `POCKET_TENTATIVE`：候选暂挂，继续等缺失窗口或重现冲突
-- `POCKET_COMMIT_READY`：内部提交态，外层还不能播动画
-- `POCKET_CONFIRMED`：该杆在 `TURN_RESOLVE` 后 clean commit，允许真正记分和播动画
-- `POCKET_REVIEW_REQUIRED`：证据不足或发生冲突，需要人工复核
-- `POCKET_REJECTED`：候选被否决，例如同袋口近距离重现
-- `GAME_STATUS_CHANGED`：比赛状态真正发生变化，只在提交态发出
+优化点：
 
-### 当前判定规则
+- `GeometryPhysicsPlanner.plan()` 每帧创建一个共享的 `PlannerAimFrameContext`
+- `CueStickAimDetector.detect()` 在同一帧内最多调用一次
+- `target_shot` 与 `cue_sector` 共享同一个 aim 结果
+- `_pointed_ball()` 改为纯几何选球，不再对每个候选球重复跑 Hough/Canny
+- `CueStickAimPx` 增加最小必要的 track 元数据，供共享结果做后置质量过滤
 
-- `mouth + inward + disappear`：最多到 `candidate -> tentative -> review_required`
-- 只有 `crossed_throat` 或 `entered_interior` 才有资格进入自动确认链路
-- 同袋口、近距离、窗口期内任意重现都会否决原 pocket
-- 如果重现时 `track_id` 或 `group` 变化，会作为复核证据保留下来
-- 投影层只消费提交态事件，因此 `tentative` / `review_required` 不会再触发自动进球或胜利动画
+实现位置：
 
-## 人工复核
+- `bas/planning/aim_context.py`
+- `bas/planning/planner.py`
+- `bas/planning/target_shot.py`
+- `bas/planning/cue_sector.py`
+- `bas/planning/cue_aim.py`
 
-桌面控制台里现在提供三类显式决议：
+## 本地性能复测
 
-- `确认复核`：确认冻结中的 pocket，提交本杆
-- `驳回复核`：驳回冻结中的 pocket，保持冻结前 ledger 与胜负状态
-- `确认开台花色`：开台同时进了不同花色时，显式指定本杆花色归属
-
-不再建议使用“只清标记不修状态”的思路。复核动作必须同时完成状态决议和全局状态修正。
-
-## Pocket Replay
-
-仓库内置了 5 个 pocket trace fixture，可直接回放：
+共享 aim 优化后的本地 benchmark 脚本：
 
 ```powershell
-.\.venv\Scripts\python.exe -m bas pocket-replay tests/fixtures/pocket_trace_mouth_review.json
-.\.venv\Scripts\python.exe -m bas pocket-replay tests/fixtures/pocket_trace_true_confirm.json
-.\.venv\Scripts\python.exe -m bas pocket-replay tests/fixtures/pocket_trace_black_victory_once.json
-.\.venv\Scripts\python.exe -m bas pocket-replay tests/fixtures/pocket_trace_track_id_churn_reject.json
-.\.venv\Scripts\python.exe -m bas pocket-replay tests/fixtures/pocket_trace_group_flip_review.json
+.\.venv\Scripts\python.exe scripts\benchmark_planner_shared_aim.py --frames 40 90 120
 ```
 
-这几类 fixture 分别覆盖：
+脚本会自动读取当前有效配置：
 
-- 洞口晃动后消失，只能进复核
-- 真正跨 throat / interior 的正常进球
-- 黑八 clean confirm 只触发一次胜负状态变化
-- 同袋口换 `track_id` 重现，原 pocket 应被 reject
-- 同袋口近距离跨组重现，整杆应冻结并要求复核
+- `UserSettings.load().apply_to_config(AppConfig.load()).resolve_paths()`
 
-## 测试
+输出指标：
 
-推荐先跑和这次重构直接相关的测试：
+- `fps`
+- `planner_plan_avg_ms`
+- `target_shot_avg_ms`
+- `detect_calls_per_frame`
+- `max_detect_calls_per_frame`
+
+目标不是锁死某个绝对 fps，而是确认：
+
+- 同一帧 `CueStickAimDetector.detect` 调用次数不超过 `1`
+- `planner.plan` 与 `target_shot` 平均耗时明显低于旧基线
+
+## 当前基线与复测口径
+
+修复前基线（同一套本地 `video + ultralytics + modern` 配置）：
+
+- `40f = 2.57 fps`
+- `90f = 3.70 fps`
+- `120f = 4.68 fps`
+- `planner.plan ≈ 322.9 ms/frame`
+- `target_shot ≈ 291.7 ms/frame`
+
+修复后请直接运行上面的 benchmark 脚本，以当前本机配置复测。
+
+## 回归测试
+
+这次优化相关的回归命令：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_state_modern.py tests\test_state_replay.py tests\test_projection_interaction.py tests\test_ui_runtime.py -q --basetemp=.\pytest_tmp_codex\pocket_state_refactor -p no:cacheprovider
+.\.venv\Scripts\python.exe -m pytest tests\test_state_modern.py tests\test_planner.py tests\test_cue_aim.py -q --basetemp=pytest_tmp_codex -o cache_dir=pytest_cache_local\pytest_cache
 ```
 
-完整回归：
+## 仓库约定
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest .\tests -q --basetemp=.\pytest_tmp_codex\full_state_refactor -o cache_dir=.\pytest_cache_local\full_state_refactor
-```
-
-## 仓库说明
-
-- 大文件、日志、回放产物不要直接入库，相关目录应加入 `.gitignore`
-- 调试脚本尽量做成独立模块或 CLI 子命令，方便复现与排查
-- 排查 pocket / win 问题时，优先看 replay、`SHOT_CONTEXT_FINALIZED`、`REFEREE_INTENT` 和 `pending_review`
+- 大文件、日志、回放产物不要提交，相关目录需要维护在 `.gitignore`
+- 调试逻辑优先做成独立脚本或模块，避免把临时测量代码塞进核心链路
+- 排查问题时优先复用 `tests`、`scripts` 和 replay/benchmark 工具，保证可复现

@@ -11,6 +11,7 @@ from ..calibration.service import CalibrationService
 from ..config import PlannerConfig
 from ..schemas import MatchStateFrame, ShotCandidate, TrackObservation
 from ..utils import angle_deg, clamp, point_segment_distance, unit
+from .aim_context import PlannerAimFrameContext
 from .cue_aim import CueStickAimDetector
 
 
@@ -63,9 +64,9 @@ class _Rect:
 class TargetShotModeController:
     version = "target_shot_mode_v1"
 
-    def __init__(self, config: PlannerConfig):
+    def __init__(self, config: PlannerConfig, aim_detector: CueStickAimDetector | None = None):
         self.config = config
-        self.aim_detector = CueStickAimDetector()
+        self.aim_detector = aim_detector or CueStickAimDetector()
         self.last_status = "off"
         self.reset()
 
@@ -87,6 +88,7 @@ class TargetShotModeController:
         balls: Sequence[object],
         tracks: Sequence[TrackObservation],
         frame_bgr: Optional[np.ndarray] = None,
+        frame_context: PlannerAimFrameContext | None = None,
     ) -> TargetShotDecision:
         if not bool(getattr(self.config, "target_shot_enabled", True)):
             self.reset()
@@ -99,7 +101,12 @@ class TargetShotModeController:
 
         self._release_phase_ms = 0.0
 
-        pointed = self._pointed_ball(balls, tracks, frame_bgr=frame_bgr)
+        pointed = self._pointed_ball(
+            balls,
+            tracks,
+            frame_bgr=frame_bgr,
+            frame_context=frame_context,
+        )
         if pointed is None:
             return self._handle_non_object(
                 elapsed_ms,
@@ -228,31 +235,101 @@ class TargetShotModeController:
         tracks: Sequence[TrackObservation],
         *,
         frame_bgr: Optional[np.ndarray],
+        frame_context: PlannerAimFrameContext | None = None,
     ) -> _PointedBall | None:
         min_quality = float(getattr(self.config, "target_shot_min_stick_quality", 0.25))
-        best: tuple[float, _PointedBall] | None = None
+        cue_ball = next(
+            (
+                ball
+                for ball in balls
+                if str(getattr(ball, "group", "")).strip().lower() == "cue"
+                and float(getattr(ball, "quality", 0.0)) > 0.25
+            ),
+            None,
+        )
+        if cue_ball is None:
+            return None
+        aim = self._shared_or_local_aim(
+            cue_ball=cue_ball,
+            tracks=tracks,
+            frame_bgr=frame_bgr,
+            frame_context=frame_context,
+            min_stick_quality=min_quality,
+        )
+        if aim is None:
+            return None
+        direction = unit(np.asarray(aim.direction_px, dtype=np.float32).reshape((2,)))
+        if float(np.linalg.norm(direction)) < 1.0e-6:
+            return None
+        cue_center = np.asarray(getattr(cue_ball, "center_px"), dtype=np.float32).reshape((2,))
+        normal = np.asarray([-float(direction[1]), float(direction[0])], dtype=np.float32)
+        half_width = 0.5 * max(1.0, float(getattr(self.config, "cue_sector_corridor_width_px", 140.0)))
+        ranked: list[tuple[tuple[float, float, float, float], _PointedBall]] = []
         for ball in balls:
             group = str(getattr(ball, "group", "")).strip().lower()
-            if group not in OBJECT_GROUPS | {"cue"}:
+            if group not in OBJECT_GROUPS:
                 continue
-            if float(getattr(ball, "quality", 0.0)) <= 0.25:
+            quality = float(getattr(ball, "quality", 0.0))
+            if quality <= 0.25:
                 continue
             center = np.asarray(getattr(ball, "center_px"), dtype=np.float32).reshape((2,))
-            radius = max(2.0, float(getattr(ball, "radius_px", 0.0)))
+            vec = center - cue_center
+            forward = float(np.dot(vec, direction))
+            if forward <= 0.0:
+                continue
+            lateral = float(np.dot(vec, normal))
+            if abs(lateral) > half_width:
+                continue
+            distance = float(np.linalg.norm(vec))
+            ranked.append(
+                (
+                    (abs(lateral), forward, distance, -quality),
+                    _PointedBall(
+                        track_id=int(getattr(ball, "track_id")),
+                        group=group,
+                        score=float(aim.score),
+                    ),
+                )
+            )
+        if ranked:
+            ranked.sort(key=lambda item: item[0])
+            return ranked[0][1]
+        return _PointedBall(
+            track_id=int(getattr(cue_ball, "track_id")),
+            group="cue",
+            score=float(aim.score),
+        )
+
+    def _shared_or_local_aim(
+        self,
+        *,
+        cue_ball: object,
+        tracks: Sequence[TrackObservation],
+        frame_bgr: Optional[np.ndarray],
+        frame_context: PlannerAimFrameContext | None,
+        min_stick_quality: float,
+    ):
+        if frame_context is not None:
+            aim = frame_context.shared_aim()
+        else:
             aim = self.aim_detector.detect(
                 frame_bgr=frame_bgr,
                 tracks=tracks,
-                cue_center_px=center,
-                cue_radius_px=radius,
+                cue_center_px=np.asarray(getattr(cue_ball, "center_px"), dtype=np.float32).reshape((2,)),
+                cue_radius_px=max(2.0, float(getattr(cue_ball, "radius_px", 0.0))),
                 inner_polygon_px=None,
-                min_stick_quality=min_quality,
+                min_stick_quality=min_stick_quality,
+                prefer_tracks=False,
+                allow_edge_detection=True,
             )
-            if aim is None:
-                continue
-            pointed = _PointedBall(track_id=int(getattr(ball, "track_id")), group=group, score=float(aim.score))
-            if best is None or pointed.score > best[0]:
-                best = (pointed.score, pointed)
-        return best[1] if best is not None else None
+        if aim is None:
+            return None
+        if str(getattr(aim, "source", "")).strip().lower() != "track_bbox":
+            return aim
+        track_quality = getattr(aim, "track_quality", None)
+        if track_quality is None or float(track_quality) >= float(min_stick_quality):
+            return aim
+        return None
 
     def _clear_pending(self) -> None:
         self._pending_target_id = None

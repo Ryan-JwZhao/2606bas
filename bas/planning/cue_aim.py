@@ -19,6 +19,9 @@ class CueStickAimPx:
     direction_px: np.ndarray
     source: str
     score: float
+    track_id: Optional[int] = None
+    track_quality: Optional[float] = None
+    track_confidence: Optional[float] = None
 
 
 class CueStickAimDetector:
@@ -86,7 +89,7 @@ class CueStickAimDetector:
         *,
         min_stick_quality: float,
     ) -> Optional[CueStickAimPx]:
-        best: Optional[tuple[float, ResolvedCueDirectionPx]] = None
+        best: Optional[tuple[float, TrackObservation, ResolvedCueDirectionPx]] = None
         line_limit = max(18.0, 4.5 * cue_radius)
         near_limit = max(line_limit, 8.0 * cue_radius)
         for track in tracks:
@@ -123,16 +126,19 @@ class CueStickAimDetector:
                 + self._orientation_bonus(resolved)
             )
             if best is None or score > best[0]:
-                best = (score, resolved)
+                best = (score, track, resolved)
         if best is None:
             return None
-        score, resolved = best
+        score, track, resolved = best
         return CueStickAimPx(
             tip_px=resolved.tip_px.astype(np.float32),
             tail_px=resolved.tail_px.astype(np.float32),
             direction_px=resolved.direction_px.astype(np.float32),
             source="track_bbox",
             score=float(score),
+            track_id=int(track.track_id),
+            track_quality=float(track.quality),
+            track_confidence=float(track.confidence),
         )
 
     def _detect_from_edges(

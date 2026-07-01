@@ -477,7 +477,7 @@ def test_target_lock_ignores_new_aim_during_shot_motion(monkeypatch) -> None:
     assert moving_2.target_lock_status == "locked_hold_motion"
 
 
-def test_target_shot_mode_activates_after_pointing_object_for_threshold() -> None:
+def test_target_shot_mode_activates_after_pointing_object_for_threshold(monkeypatch) -> None:
     service = _service()
     service.table.pockets_mm = [(500, 0)]
     planner = GeometryPhysicsPlanner(
@@ -493,6 +493,8 @@ def test_target_shot_mode_activates_after_pointing_object_for_threshold() -> Non
         _obs(2, "solid", 500, 250),
         _stick(9, 490, 320, 510, 390),
     ]
+    pointed = SimpleNamespace(track_id=2, group="solid", score=1.0)
+    monkeypatch.setattr(planner.target_shot_mode, "_pointed_ball", lambda *args, **kwargs: pointed)
 
     pending = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=layout))
     almost = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(600), phase="PRE_SHOT_ARMED", layout=layout))
@@ -517,7 +519,7 @@ def test_target_shot_mode_keeps_edge_detection_available_when_scanning_candidate
         PlannerConfig(
             top_k=20,
             target_lock_enabled=False,
-            target_shot_activate_hold_ms=100,
+            target_shot_activate_hold_ms=1000,
         ),
         service,
     )
@@ -532,18 +534,112 @@ def test_target_shot_mode_keeps_edge_detection_available_when_scanning_candidate
     layout = [
         _obs(1, "cue", 100, 400),
         _obs(2, "solid", 500, 250),
+        _obs(3, "stripe", 500, 320),
         _stick(9, 490, 320, 510, 390),
     ]
 
-    planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=layout))
-    plan = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(100), phase="PRE_SHOT_ARMED", layout=layout))
+    plan = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=layout))
 
-    assert detect_kwargs_seen
-    assert all(prefer_tracks is False and allow_edges is True for prefer_tracks, allow_edges in detect_kwargs_seen)
-    assert plan.shot_mode == "target"
+    assert detect_kwargs_seen == [(False, True)]
+    assert plan.shot_mode == "rule"
+    assert plan.best is not None
 
 
-def test_target_shot_mode_holds_without_cue_stick_and_keeps_route_independent_of_direction() -> None:
+def test_planner_calls_shared_aim_detector_at_most_once_per_frame(monkeypatch) -> None:
+    service = _service()
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_lock_enabled=False,
+            target_shot_activate_hold_ms=1000,
+        ),
+        service,
+    )
+    detect_calls = 0
+    original_detect = planner.cue_sector.aim_detector.detect
+
+    def _wrapped_detect(**kwargs):
+        nonlocal detect_calls
+        detect_calls += 1
+        return original_detect(**kwargs)
+
+    monkeypatch.setattr(planner.cue_sector.aim_detector, "detect", _wrapped_detect)
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=_ts_ms(0),
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _stick(9, 20, 240, 90, 260),
+            _obs(2, "solid", 620, 250),
+            _obs(3, "stripe", 620, 320),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert detect_calls == 1
+    assert plan.best is not None
+
+
+def test_planner_reuses_same_shared_aim_for_target_shot_and_cue_sector(monkeypatch) -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_lock_enabled=False,
+            target_shot_activate_hold_ms=1000,
+        ),
+        _service(),
+    )
+    shared_ids: dict[str, int | None] = {}
+    detect_calls = 0
+    original_detect = planner.cue_sector.aim_detector.detect
+    original_pointed_ball = planner.target_shot_mode._pointed_ball
+    original_detect_aim = planner.cue_sector.detect_aim
+
+    def _wrapped_detect(**kwargs):
+        nonlocal detect_calls
+        detect_calls += 1
+        return original_detect(**kwargs)
+
+    def _wrapped_pointed_ball(*args, **kwargs):
+        frame_context = kwargs.get("frame_context")
+        aim = frame_context.shared_aim() if frame_context is not None else None
+        shared_ids["target_shot"] = id(aim) if aim is not None else None
+        return original_pointed_ball(*args, **kwargs)
+
+    def _wrapped_detect_aim(*args, **kwargs):
+        frame_context = kwargs.get("frame_context")
+        aim = frame_context.shared_aim() if frame_context is not None else None
+        shared_ids["cue_sector"] = id(aim) if aim is not None else None
+        return original_detect_aim(*args, **kwargs)
+
+    monkeypatch.setattr(planner.cue_sector.aim_detector, "detect", _wrapped_detect)
+    monkeypatch.setattr(planner.target_shot_mode, "_pointed_ball", _wrapped_pointed_ball)
+    monkeypatch.setattr(planner.cue_sector, "detect_aim", _wrapped_detect_aim)
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=_ts_ms(0),
+        phase="PRE_SHOT_ARMED",
+        turn_target_group="solid",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _stick(9, 20, 240, 90, 260),
+            _obs(2, "solid", 620, 250),
+            _obs(3, "stripe", 620, 320),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert detect_calls == 1
+    assert plan.best is not None
+    assert shared_ids["target_shot"] is not None
+    assert shared_ids["target_shot"] == shared_ids["cue_sector"]
+
+
+def test_target_shot_mode_holds_without_cue_stick_and_keeps_route_independent_of_direction(monkeypatch) -> None:
     service = _service()
     service.table.pockets_mm = [(500, 0)]
     planner = GeometryPhysicsPlanner(
@@ -564,6 +660,14 @@ def test_target_shot_mode_holds_without_cue_stick_and_keeps_route_independent_of
         _obs(1, "cue", 100, 400),
         _obs(2, "solid", 500, 250),
     ]
+    pointed = iter(
+        [
+            SimpleNamespace(track_id=2, group="solid", score=1.0),
+            SimpleNamespace(track_id=2, group="solid", score=1.0),
+            None,
+        ]
+    )
+    monkeypatch.setattr(planner.target_shot_mode, "_pointed_ball", lambda *args, **kwargs: next(pointed))
 
     planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=locked_layout))
     locked = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(100), phase="PRE_SHOT_ARMED", layout=locked_layout))
@@ -578,7 +682,7 @@ def test_target_shot_mode_holds_without_cue_stick_and_keeps_route_independent_of
     assert held.best.object_line == locked.best.object_line
 
 
-def test_target_shot_mode_releases_after_release_confirmation_window() -> None:
+def test_target_shot_mode_releases_after_release_confirmation_window(monkeypatch) -> None:
     service = _service()
     service.table.pockets_mm = [(500, 0)]
     planner = GeometryPhysicsPlanner(
@@ -595,6 +699,8 @@ def test_target_shot_mode_releases_after_release_confirmation_window() -> None:
         _obs(2, "solid", 500, 250),
         _stick(9, 490, 320, 510, 390),
     ]
+    pointed = SimpleNamespace(track_id=2, group="solid", score=1.0)
+    monkeypatch.setattr(planner.target_shot_mode, "_pointed_ball", lambda *args, **kwargs: pointed)
 
     planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=layout))
     locked = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(100), phase="PRE_SHOT_ARMED", layout=layout))
@@ -730,7 +836,7 @@ def test_target_shot_mode_switches_only_after_longer_confirmation_window(monkeyp
     assert switched.best is not None and switched.best.target_track_id == 3
 
 
-def test_target_shot_mode_can_choose_bank_route_when_direct_route_is_not_possible() -> None:
+def test_target_shot_mode_can_choose_bank_route_when_direct_route_is_not_possible(monkeypatch) -> None:
     service = _service()
     service.table.pockets_mm = [(500, 0)]
     planner = GeometryPhysicsPlanner(
@@ -748,6 +854,8 @@ def test_target_shot_mode_can_choose_bank_route_when_direct_route_is_not_possibl
         _obs(3, "stripe", 500, 130),
         _stick(9, 490, 320, 510, 390),
     ]
+    pointed = SimpleNamespace(track_id=2, group="solid", score=1.0)
+    monkeypatch.setattr(planner.target_shot_mode, "_pointed_ball", lambda *args, **kwargs: pointed)
 
     planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=_ts_ms(0), phase="PRE_SHOT_ARMED", layout=layout))
     plan = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=_ts_ms(100), phase="PRE_SHOT_ARMED", layout=layout))
