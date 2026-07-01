@@ -51,6 +51,7 @@ class ShotContextAggregator:
                 "SHOT_START_VOTED",
                 "POCKET_CANDIDATE",
                 "POCKET_TENTATIVE",
+                "POCKET_COMMIT_READY",
                 "POCKET_CONFIRMED",
                 "POCKET_REVIEW_REQUIRED",
                 "POCKET_REJECTED",
@@ -76,11 +77,24 @@ class ShotContextAggregator:
 
     def _ingest_event(self, ctx: ShotContext, event: Event) -> None:
         payload = dict(event.payload or {})
-        if event.name == "POCKET_CONFIRMED":
+        if event.name == "POCKET_COMMIT_READY":
             self._clear_pending_pocket(ctx, payload)
             ctx.committed_pockets.append(_normalized_pocket_payload(payload))
             group = normalize_group(payload.get("group"))
             if group is not None:
+                ctx.potted_confirmed[group] = int(ctx.potted_confirmed.get(group, 0)) + 1
+                if group == "cue":
+                    ctx.cue_scratch_candidate = True
+        elif event.name == "POCKET_CONFIRMED":
+            self._clear_pending_pocket(ctx, payload)
+            already_known = any(
+                str(item.get("decision_id") or "") == str(payload.get("decision_id") or "")
+                for item in ctx.committed_pockets
+            )
+            if not already_known:
+                ctx.committed_pockets.append(_normalized_pocket_payload(payload))
+            group = normalize_group(payload.get("group"))
+            if group is not None and not already_known:
                 ctx.potted_confirmed[group] = int(ctx.potted_confirmed.get(group, 0)) + 1
                 if group == "cue":
                     ctx.cue_scratch_candidate = True
@@ -160,10 +174,7 @@ class RefereeAdapter:
         if foul_flags["wrong_first_contact"]:
             reasons.append("wrong_first_contact")
 
-        black_potted = shot_ctx.potted_confirmed.get("black", 0) > 0
-        game_status = "ended_pending_review" if black_potted else rule_state.game_status
-
-        if review_required and not black_potted:
+        if review_required:
             return self._review_intent(
                 ledger,
                 rule_state,
@@ -172,6 +183,9 @@ class RefereeAdapter:
                 reasons + ["state_frozen_pending_review"],
                 effective_remaining=effective,
             )
+
+        black_potted = shot_ctx.potted_confirmed.get("black", 0) > 0
+        game_status = "ended_pending_review" if black_potted else rule_state.game_status
 
         if rule_state.table_state == "open":
             return self._evaluate_open_table(

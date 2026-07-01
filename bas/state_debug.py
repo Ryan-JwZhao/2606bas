@@ -270,7 +270,7 @@ def _compact_pocket_rows(rows: Iterable[dict[str, Any]]) -> list[str]:
     for row in rows:
         state = str(row.get("state") or "")
         decision = str(row.get("decision") or "")
-        if state in {"candidate", "tentative", "confirmed", "review_required", "rejected"} or decision not in {"", "none"}:
+        if state in {"candidate", "tentative", "commit_ready", "confirmed", "review_required", "rejected"} or decision not in {"", "none"}:
             interesting.append(dict(row))
     for row in interesting[:3]:
         reasons = ",".join(str(item) for item in list(row.get("reason_codes") or [])[:2])

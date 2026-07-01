@@ -38,6 +38,56 @@ def test_operator_window_uses_clean_cue_sector_preview_label() -> None:
     app.processEvents()
 
 
+def test_operator_window_exposes_explicit_review_controls() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+
+    assert window.confirm_review_btn.text() == "确认复核"
+    assert window.reject_review_btn.text() == "驳回复核"
+    assert window.resolve_open_table_group_btn.text() == "确认开台花色"
+    assert window.review_group_combo.itemData(0) == "solid"
+    assert window.review_group_combo.itemData(1) == "stripe"
+
+    window.close()
+    app.processEvents()
+
+
+def test_review_controls_follow_pending_review_payload() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    window.pipeline = SimpleNamespace(
+        state_machine=SimpleNamespace(
+            debug_snapshot=lambda: {
+                "pending_review": {
+                    "decision_ids": ["pocket:review"],
+                    "review_reasons": ["visible_exceeds_ledger"],
+                    "group_choice_required": True,
+                    "review_pockets": [
+                        {
+                            "decision_id": "pocket:review",
+                            "group": "solid",
+                            "pocket_index": 0,
+                        }
+                    ],
+                    "committed_pockets": [],
+                }
+            }
+        )
+    )
+
+    window._refresh_review_controls()
+
+    assert window.review_status_label.text().startswith("待复核")
+    assert window.review_pending_list.count() == 1
+    assert window.confirm_review_btn.isEnabled() is True
+    assert window.reject_review_btn.isEnabled() is True
+    assert window.resolve_open_table_group_btn.isEnabled() is True
+
+    window.pipeline = None
+    window.close()
+    app.processEvents()
+
+
 def test_start_pipeline_and_tick_use_same_thread(monkeypatch) -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())

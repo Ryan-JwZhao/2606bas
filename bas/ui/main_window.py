@@ -1530,13 +1530,24 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.deep_debug_btn = self._button("开始深入调试")
         self.snapshot_state_btn = self._button("确认当前布局稳定")
         self.reset_state_btn = self._button("重置状态机")
-        self.clear_review_btn = self._button("清除复核标记")
+        self.confirm_review_btn = self._button("确认复核")
+        self.reject_review_btn = self._button("驳回复核")
+        self.review_group_combo = QtWidgets.QComboBox()
+        self.review_group_combo.addItem("实色", "solid")
+        self.review_group_combo.addItem("花色", "stripe")
+        self.resolve_open_table_group_btn = self._button("确认开台花色")
+        self.review_status_label = QtWidgets.QLabel("暂无待复核")
+        self.review_status_label.setObjectName("muted")
+        self.review_pending_list = QtWidgets.QListWidget()
+        self.review_pending_list.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         self.force_phase_btn.clicked.connect(self.force_state_phase)
         self.hold_state_btn.clicked.connect(self.toggle_state_hold)
         self.deep_debug_btn.clicked.connect(self.toggle_deep_debug_mode)
         self.snapshot_state_btn.clicked.connect(self.snapshot_stable_layout)
         self.reset_state_btn.clicked.connect(self.reset_state_machine)
-        self.clear_review_btn.clicked.connect(self.clear_state_review_flags)
+        self.confirm_review_btn.clicked.connect(self.confirm_state_review)
+        self.reject_review_btn.clicked.connect(self.reject_state_review)
+        self.resolve_open_table_group_btn.clicked.connect(self.resolve_state_open_table_group)
         state_target_box = QtWidgets.QWidget()
         state_target_layout = QtWidgets.QVBoxLayout(state_target_box)
         state_target_layout.setContentsMargins(0, 0, 0, 0)
@@ -1544,9 +1555,26 @@ class OperatorWindow(QtWidgets.QMainWindow):
         state_target_layout.addWidget(self.deep_debug_btn)
         self.right_layout.addWidget(self._field("目标状态", state_target_box))
         manual_grid = QtWidgets.QGridLayout()
-        for idx, button in enumerate([self.force_phase_btn, self.hold_state_btn, self.snapshot_state_btn, self.reset_state_btn, self.clear_review_btn]):
+        for idx, button in enumerate(
+            [
+                self.force_phase_btn,
+                self.hold_state_btn,
+                self.snapshot_state_btn,
+                self.reset_state_btn,
+                self.confirm_review_btn,
+                self.reject_review_btn,
+            ]
+        ):
             manual_grid.addWidget(button, idx // 2, idx % 2)
         self.right_layout.addLayout(manual_grid)
+        review_group_box = QtWidgets.QWidget()
+        review_group_layout = QtWidgets.QHBoxLayout(review_group_box)
+        review_group_layout.setContentsMargins(0, 0, 0, 0)
+        review_group_layout.addWidget(self.review_group_combo, 1)
+        review_group_layout.addWidget(self.resolve_open_table_group_btn)
+        self.right_layout.addWidget(self.review_status_label)
+        self.right_layout.addWidget(self.review_pending_list)
+        self.right_layout.addWidget(self._field("开台花色复核", review_group_box))
 
         self.right_layout.addWidget(self._section_label("最佳路线"))
         self.best_label = QtWidgets.QLabel("无")
@@ -1660,6 +1688,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.module_status.setMaximumHeight(px(215))
         self.module_status.verticalHeader().setDefaultSectionSize(px(22))
         self.candidates.verticalHeader().setDefaultSectionSize(px(30))
+        self.review_pending_list.setMaximumHeight(px(110))
         for metric in [self.fps_metric, self.det_metric, self.track_metric, self.phase_metric]:
             metric.metric_layout.setContentsMargins(px(12), px(9), px(12), px(9))  # type: ignore[attr-defined]
             metric.metric_layout.setSpacing(px(2))  # type: ignore[attr-defined]
@@ -2207,6 +2236,74 @@ class OperatorWindow(QtWidgets.QMainWindow):
             return 0, 0
         return int(self.last_output.frame.frame_id), int(self.last_output.frame.ts_cam_ns)
 
+    def _pending_review_payload(self) -> dict[str, object]:
+        if self.pipeline is None:
+            return {}
+        snapshot_fn = getattr(self.pipeline.state_machine, "debug_snapshot", None)
+        if not callable(snapshot_fn):
+            return {}
+        try:
+            snapshot = snapshot_fn()
+        except Exception:
+            return {}
+        pending = snapshot.get("pending_review")
+        return dict(pending) if isinstance(pending, dict) else {}
+
+    @staticmethod
+    def _format_pending_review_entry(pocket: dict[str, object], review_reasons: list[str]) -> str:
+        parts: list[str] = []
+        decision_id = str(pocket.get("decision_id") or "").strip()
+        group = str(pocket.get("group") or "").strip()
+        pocket_index = pocket.get("pocket_index")
+        reason_codes = [str(item) for item in list(pocket.get("reason_codes") or []) if str(item).strip()]
+        if decision_id:
+            parts.append(decision_id)
+        if group:
+            parts.append(f"group {group}")
+        if pocket_index is not None:
+            parts.append(f"pocket {pocket_index}")
+        if reason_codes:
+            parts.append("reason " + "/".join(reason_codes))
+        elif review_reasons:
+            parts.append("reason " + "/".join(review_reasons))
+        return " | ".join(parts or ["待复核 pocket"])
+
+    def _refresh_review_controls(self) -> None:
+        pending = self._pending_review_payload()
+        decision_ids = [str(item) for item in list(pending.get("decision_ids") or []) if str(item).strip()]
+        review_reasons = [str(item) for item in list(pending.get("review_reasons") or []) if str(item).strip()]
+        group_choice_required = bool(pending.get("group_choice_required"))
+        items: list[str] = []
+        for pocket in list(pending.get("review_pockets") or []):
+            if isinstance(pocket, dict):
+                items.append(self._format_pending_review_entry(pocket, review_reasons))
+        if not items:
+            for pocket in list(pending.get("committed_pockets") or []):
+                if isinstance(pocket, dict):
+                    items.append(self._format_pending_review_entry(pocket, review_reasons))
+        if not items and review_reasons:
+            items.append("reason " + "/".join(review_reasons))
+        if not items and decision_ids:
+            items.append("decision " + ", ".join(decision_ids))
+
+        self.review_pending_list.clear()
+        for text in items:
+            self.review_pending_list.addItem(QtWidgets.QListWidgetItem(text))
+
+        has_pending = bool(items or decision_ids or review_reasons)
+        if has_pending:
+            label = f"待复核 {max(len(items), len(decision_ids), 1)} 项"
+            if group_choice_required:
+                label += " / 需要指定开台花色"
+            self.review_status_label.setText(label)
+        else:
+            self.review_status_label.setText("暂无待复核")
+
+        self.confirm_review_btn.setEnabled(has_pending)
+        self.reject_review_btn.setEnabled(has_pending)
+        self.review_group_combo.setEnabled(has_pending and group_choice_required)
+        self.resolve_open_table_group_btn.setEnabled(has_pending and group_choice_required)
+
     @QtCore.pyqtSlot()
     def force_state_phase(self) -> None:
         sm = self._state_machine_or_none()
@@ -2256,12 +2353,73 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot()
     def clear_state_review_flags(self) -> None:
+        self.reject_state_review()
+        return
         sm = self._state_machine_or_none()
         if sm is None:
             return
         frame_id, ts_cam_ns = self._last_frame_marker()
         sm.clear_review_flags(frame_id=frame_id, ts_cam_ns=ts_cam_ns)
         self._append_log("已清除进洞/异常复核标记")
+        self._update_module_status(self.last_output)
+
+    @QtCore.pyqtSlot()
+    def confirm_state_review(self) -> None:
+        sm = self._state_machine_or_none()
+        if sm is None:
+            return
+        confirm_episode = getattr(sm, "confirm_episode", None)
+        if not callable(confirm_episode):
+            self._append_log("当前状态机不支持确认复核")
+            self._update_module_status(self.last_output)
+            return
+        frame_id, ts_cam_ns = self._last_frame_marker()
+        confirmed = bool(confirm_episode(frame_id=frame_id, ts_cam_ns=ts_cam_ns, reason="operator_ui"))
+        if confirmed:
+            self._append_log("已确认待复核 pocket，本杆结果已提交")
+            self._refresh_current_plan()
+        else:
+            self._append_log("当前没有可确认的待复核项")
+        self._update_module_status(self.last_output)
+
+    @QtCore.pyqtSlot()
+    def reject_state_review(self) -> None:
+        sm = self._state_machine_or_none()
+        if sm is None:
+            return
+        reject_episode = getattr(sm, "reject_episode", None)
+        if not callable(reject_episode):
+            self._append_log("当前状态机不支持驳回复核")
+            self._update_module_status(self.last_output)
+            return
+        frame_id, ts_cam_ns = self._last_frame_marker()
+        rejected = bool(reject_episode(frame_id=frame_id, ts_cam_ns=ts_cam_ns, reason="operator_ui"))
+        if rejected:
+            self._append_log("已驳回待复核 pocket，本杆保持冻结前结果")
+            self._refresh_current_plan()
+        else:
+            self._append_log("当前没有可驳回的待复核项")
+        self._update_module_status(self.last_output)
+
+    @QtCore.pyqtSlot()
+    def resolve_state_open_table_group(self) -> None:
+        sm = self._state_machine_or_none()
+        if sm is None:
+            return
+        resolve_group = getattr(sm, "resolve_open_table_group", None)
+        if not callable(resolve_group):
+            self._append_log("当前状态机不支持开台花色复核")
+            self._update_module_status(self.last_output)
+            return
+        frame_id, ts_cam_ns = self._last_frame_marker()
+        group = str(self.review_group_combo.currentData() or self.review_group_combo.currentText() or "").strip().lower()
+        resolved = bool(resolve_group(group, frame_id=frame_id, ts_cam_ns=ts_cam_ns, reason="operator_ui"))
+        if resolved:
+            label = self.review_group_combo.currentText()
+            self._append_log(f"已确认开台花色为 {label}，本杆结果已提交")
+            self._refresh_current_plan()
+        else:
+            self._append_log("当前没有需要指定开台花色的待复核项")
         self._update_module_status(self.last_output)
 
     @QtCore.pyqtSlot()
@@ -3102,6 +3260,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
             self._set_module_status("规划", "待机", "GeometryPhysics")
             self._set_module_status("标定", "未加载", self.config.calibration.active_projection_file() or "未设置")
             self.hold_state_btn.setText("冻结状态机")
+            self._refresh_review_controls()
             return
         info = self.pipeline.capture.info()
         timings = getattr(self.pipeline, "last_timings_ms", {})
@@ -3153,6 +3312,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if self.pipeline.recorder is not None:
             self._set_module_status("回放", "记录中", self.pipeline.recorder.session_id)
         self.hold_state_btn.setText("恢复自动状态机" if self.pipeline.state_machine.operator_hold else "冻结状态机")
+        self._refresh_review_controls()
 
     def _media_capture_status_detail(self) -> str:
         parts = []

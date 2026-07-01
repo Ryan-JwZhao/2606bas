@@ -147,6 +147,7 @@ class ObservationReconciler:
         supporting_names = {
             "POCKET_CANDIDATE",
             "POCKET_TENTATIVE",
+            "POCKET_COMMIT_READY",
             "POCKET_CONFIRMED",
             "POCKET_REVIEW_REQUIRED",
             "POCKET_REJECTED",

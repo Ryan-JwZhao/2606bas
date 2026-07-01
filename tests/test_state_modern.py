@@ -81,12 +81,34 @@ def test_modern_pocket_confirmation_waits_for_missing_window() -> None:
 
     first = sm.update(TracksFrame(frame_id=1, ts_cam_ns=1_000_000_000, tracks=[_ball(2, "solid", 35, 35, -20, -20)]))
     early = sm.update(TracksFrame(frame_id=2, ts_cam_ns=1_100_000_000, tracks=[]))
-    confirmed = sm.update(TracksFrame(frame_id=3, ts_cam_ns=1_400_000_000, tracks=[]))
+    commit_ready = sm.update(TracksFrame(frame_id=3, ts_cam_ns=1_400_000_000, tracks=[]))
+    sm.force_phase(MatchPhase.TURN_RESOLVE, frame_id=4, ts_cam_ns=1_500_000_000)
+    confirmed = sm.update(TracksFrame(frame_id=4, ts_cam_ns=1_500_000_000, tracks=[_ball(1, "cue", 100, 100)]))
 
     assert any(event.name == "POCKET_CANDIDATE" for event in first.events)
     assert any(event.name == "POCKET_TENTATIVE" for event in early.events)
+    assert any(event.name == "POCKET_COMMIT_READY" for event in commit_ready.events)
+    assert not any(event.name == "POCKET_CONFIRMED" for event in commit_ready.events)
     assert any(event.name == "POCKET_CONFIRMED" for event in confirmed.events)
     assert any(event.name == "POT_PROBABLE" for event in confirmed.events)
+
+
+def test_modern_mouth_inward_disappearance_requires_review_not_commit() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern", pocket_confirm_missing_ms=300))
+    sm.set_table_context(inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)], pockets_mm=[(0, 0)], ball_diameter_mm=56)
+    sm.phase = MatchPhase.SHOT_ACTIVE
+
+    first = sm.update(TracksFrame(frame_id=1, ts_cam_ns=1_000_000_000, tracks=[_ball(2, "solid", 90, 0, -20, 0)]))
+    tentative = sm.update(TracksFrame(frame_id=2, ts_cam_ns=1_100_000_000, tracks=[]))
+    reviewed = sm.update(TracksFrame(frame_id=3, ts_cam_ns=1_400_000_000, tracks=[]))
+
+    candidate = next(event for event in first.events if event.name == "POCKET_CANDIDATE")
+    assert candidate.payload["candidate_reason"] == "mouth_inward_trend"
+    assert any(event.name == "POCKET_TENTATIVE" for event in tentative.events)
+    assert not any(event.name == "POCKET_COMMIT_READY" for event in reviewed.events)
+    assert not any(event.name == "POCKET_CONFIRMED" for event in reviewed.events)
+    review = next(event for event in reviewed.events if event.name == "POCKET_REVIEW_REQUIRED")
+    assert "insufficient_pocket_evidence" in review.payload["reason_codes"]
 
 
 def test_modern_pocket_reappearing_with_new_track_is_rejected() -> None:
@@ -101,6 +123,22 @@ def test_modern_pocket_reappearing_with_new_track_is_rejected() -> None:
     assert any(event.name == "POCKET_REAPPEARED" for event in out.events)
     assert any(event.name == "POCKET_REJECTED" for event in out.events)
     assert not any(event.name == "POCKET_CONFIRMED" for event in out.events)
+
+
+def test_modern_cross_group_reappearing_near_same_pocket_requires_review() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern", pocket_confirm_missing_ms=300))
+    sm.set_table_context(inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)], pockets_mm=[(0, 0)], ball_diameter_mm=56)
+    sm.phase = MatchPhase.SHOT_ACTIVE
+
+    sm.update(TracksFrame(frame_id=1, ts_cam_ns=1_000_000_000, tracks=[_ball(2, "solid", 35, 35, -20, -20)]))
+    sm.update(TracksFrame(frame_id=2, ts_cam_ns=1_100_000_000, tracks=[]))
+    out = sm.update(TracksFrame(frame_id=3, ts_cam_ns=1_400_000_000, tracks=[_ball(99, "black", 42, 42)]))
+
+    assert any(event.name == "POCKET_REAPPEARED" for event in out.events)
+    assert any(event.name == "POCKET_REVIEW_REQUIRED" for event in out.events)
+    assert not any(event.name == "POCKET_CONFIRMED" for event in out.events)
+    review = next(event for event in out.events if event.name == "POCKET_REVIEW_REQUIRED")
+    assert "reappeared_group_changed" in review.payload["reason_codes"]
 
 
 def test_occluded_frames_without_true_loss_do_not_confirm() -> None:
@@ -306,7 +344,7 @@ def test_black_commit_emits_game_status_change_only_once() -> None:
 
     sm.aggregator.begin_if_needed(ts_ms=1000, rule_state=sm.rule_state)
     sm.aggregator.ingest(
-        [Event("POCKET_CONFIRMED", 1_000_000_000, 1, payload={"group": "black", "track_id": 8, "pocket_index": 0, "shot_id": 1, "decision_id": "pocket:1"})],
+        [Event("POCKET_COMMIT_READY", 1_000_000_000, 1, payload={"group": "black", "track_id": 8, "pocket_index": 0, "shot_id": 1, "decision_id": "pocket:1"})],
         ts_ms=1000,
         rule_state=sm.rule_state,
     )
@@ -320,6 +358,37 @@ def test_black_commit_emits_game_status_change_only_once() -> None:
     assert any(event.name == "GAME_OVER_CANDIDATE" for event in first_events)
     assert not any(event.name == "GAME_STATUS_CHANGED" for event in second_events)
     assert not any(event.name == "GAME_OVER_CANDIDATE" for event in second_events)
+
+
+def test_black_visible_conflict_blocks_game_status_change() -> None:
+    cfg = StateConfig(engine="modern", observation_reconcile_stable_frames=2)
+    sm = ModernMatchStateMachine(cfg)
+    sm.rule_state.table_state = "closed"
+    sm.rule_state.actor_group = "solid"
+    sm.rule_state.opponent_group = "stripe"
+    sm.ledger.remaining["solid"] = 0
+    sm._turn_target_group = "black"
+
+    visible_black = TracksFrame(frame_id=1, ts_cam_ns=1_000_000_000, tracks=[_ball(8, "black", 480, 220)])
+    sm.reconciler.update_observation(visible_black)
+    sm.reconciler.update_observation(TracksFrame(frame_id=2, ts_cam_ns=1_050_000_000, tracks=[_ball(8, "black", 480, 220)]))
+    sm.aggregator.begin_if_needed(ts_ms=1000, rule_state=sm.rule_state)
+    sm.aggregator.ingest(
+        [Event("POCKET_COMMIT_READY", 1_000_000_000, 1, payload={"group": "black", "track_id": 8, "pocket_index": 0, "shot_id": 1, "decision_id": "pocket:1"})],
+        ts_ms=1000,
+        rule_state=sm.rule_state,
+    )
+
+    events = [Event("TURN_RESOLVE", 1_100_000_000, 3)]
+    sm._process_turn_resolve_if_needed(
+        TracksFrame(frame_id=3, ts_cam_ns=1_100_000_000, tracks=[_ball(8, "black", 480, 220)]),
+        events,
+    )
+
+    assert any(event.name == "LEDGER_OBSERVATION_MISMATCH" for event in events)
+    assert not any(event.name == "GAME_STATUS_CHANGED" for event in events)
+    assert sm.rule_state.game_status == "in_progress"
+    assert sm.ledger.remaining["black"] == 1
 
 
 def test_review_required_turn_keeps_previous_committed_state() -> None:
@@ -359,3 +428,125 @@ def test_review_required_turn_keeps_previous_committed_state() -> None:
     assert sm.rule_state.actor_group == "solid"
     assert sm.rule_state.opponent_group == "stripe"
     assert sm.turn_target_group == "solid"
+
+
+def test_confirm_episode_commits_frozen_reviewed_pocket() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern"))
+    sm.rule_state.table_state = "closed"
+    sm.rule_state.actor_group = "solid"
+    sm.rule_state.opponent_group = "stripe"
+    sm.set_turn_target_group("solid")
+
+    sm.aggregator.begin_if_needed(ts_ms=1000, rule_state=sm.rule_state)
+    sm.aggregator.ingest(
+        [
+            Event(
+                "POCKET_REVIEW_REQUIRED",
+                1_000_000_000,
+                1,
+                payload={
+                    "group": "solid",
+                    "track_id": 2,
+                    "pocket_index": 0,
+                    "shot_id": 1,
+                    "decision_id": "pocket:review",
+                    "reason_codes": ["mouth_rest_disappear_requires_review"],
+                },
+            )
+        ],
+        ts_ms=1000,
+        rule_state=sm.rule_state,
+    )
+    events = [Event("TURN_RESOLVE", 1_000_000_000, 1)]
+    sm._process_turn_resolve_if_needed(TracksFrame(frame_id=1, ts_cam_ns=1_000_000_000, tracks=[_ball(1, "cue", 100, 100)]), events)
+
+    assert sm.debug_snapshot()["pending_review"]["decision_ids"] == ["pocket:review"]
+
+    confirmed = sm.confirm_episode(frame_id=2, ts_cam_ns=1_100_000_000, reason="test")
+
+    assert confirmed is True
+    assert sm.debug_snapshot()["pending_review"] == {}
+    assert sm.ledger.remaining["solid"] == 6
+    assert sm.rule_state.shot_number == 1
+    assert sm.rule_state.actor_group == "solid"
+
+
+def test_reject_episode_discards_frozen_reviewed_pocket() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern"))
+    sm.rule_state.table_state = "closed"
+    sm.rule_state.actor_group = "solid"
+    sm.rule_state.opponent_group = "stripe"
+    sm.set_turn_target_group("solid")
+
+    sm.aggregator.begin_if_needed(ts_ms=1000, rule_state=sm.rule_state)
+    sm.aggregator.ingest(
+        [
+            Event(
+                "POCKET_REVIEW_REQUIRED",
+                1_000_000_000,
+                1,
+                payload={
+                    "group": "solid",
+                    "track_id": 2,
+                    "pocket_index": 0,
+                    "shot_id": 1,
+                    "decision_id": "pocket:review",
+                    "reason_codes": ["mouth_rest_disappear_requires_review"],
+                },
+            )
+        ],
+        ts_ms=1000,
+        rule_state=sm.rule_state,
+    )
+    events = [Event("TURN_RESOLVE", 1_000_000_000, 1)]
+    sm._process_turn_resolve_if_needed(TracksFrame(frame_id=1, ts_cam_ns=1_000_000_000, tracks=[_ball(1, "cue", 100, 100)]), events)
+
+    rejected = sm.reject_episode(frame_id=2, ts_cam_ns=1_100_000_000, reason="test")
+
+    assert rejected is True
+    assert sm.debug_snapshot()["pending_review"] == {}
+    assert sm.ledger.remaining["solid"] == 7
+    assert sm.rule_state.shot_number == 1
+    assert sm.rule_state.actor_group == "stripe"
+
+
+def test_resolve_open_table_group_commits_group_choice() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern"))
+    sm.rule_state.table_state = "open"
+    sm.rule_state.shot_number = 1
+
+    sm.aggregator.begin_if_needed(ts_ms=1000, rule_state=sm.rule_state)
+    sm.aggregator.ingest(
+        [
+            Event(
+                "POCKET_COMMIT_READY",
+                1_000_000_000,
+                1,
+                payload={"group": "solid", "track_id": 2, "pocket_index": 0, "shot_id": 1, "decision_id": "pocket:solid"},
+            ),
+            Event(
+                "POCKET_COMMIT_READY",
+                1_000_000_000,
+                1,
+                payload={"group": "stripe", "track_id": 9, "pocket_index": 1, "shot_id": 1, "decision_id": "pocket:stripe"},
+            ),
+        ],
+        ts_ms=1000,
+        rule_state=sm.rule_state,
+    )
+    events = [Event("TURN_RESOLVE", 1_000_000_000, 1)]
+    sm._process_turn_resolve_if_needed(TracksFrame(frame_id=1, ts_cam_ns=1_000_000_000, tracks=[_ball(1, "cue", 100, 100)]), events)
+
+    pending = sm.debug_snapshot()["pending_review"]
+    assert pending["group_choice_required"] is True
+
+    resolved = sm.resolve_open_table_group("solid", frame_id=2, ts_cam_ns=1_100_000_000, reason="test")
+
+    assert resolved is True
+    assert sm.debug_snapshot()["pending_review"] == {}
+    assert sm.rule_state.table_state == "closed"
+    assert sm.rule_state.actor_group == "solid"
+    assert sm.rule_state.opponent_group == "stripe"
+    assert sm.rule_state.shot_number == 2
+    assert sm.ledger.remaining["solid"] == 6
+    assert sm.ledger.remaining["stripe"] == 6

@@ -72,6 +72,7 @@ class _PocketMemory:
     reason_codes: list[str] = field(default_factory=list)
     reappear_veto: bool = False
     reappear_track_id: Optional[int] = None
+    reappear_group: Optional[Group] = None
 
 
 class PerBallPocketFSM:
@@ -165,6 +166,7 @@ class PerBallPocketFSM:
                     "candidate_reason": memory.candidate_reason,
                     "missing_ms": self._memory_missing_ms(memory, memory.last_seen_ts_ns),
                     "reappear_veto": bool(memory.reappear_veto),
+                    "reappear_group": memory.reappear_group,
                     "reason_codes": list(memory.reason_codes),
                 }
             )
@@ -221,8 +223,13 @@ class PerBallPocketFSM:
         if memory.nonvisible_since_ns is not None and not memory.resolved and memory.state in {"candidate", "tentative"}:
             missing_ms = self._elapsed_ms(frame.ts_cam_ns, memory.nonvisible_since_ns)
             if missing_ms <= self._reappear_window_ms():
+                reappeared_group = normalize_group(track.group)
+                reason_codes = ["reappeared_same_track"]
+                if reappeared_group is not None and reappeared_group != memory.group:
+                    memory.reappear_group = reappeared_group
+                    reason_codes.append("reappeared_group_changed")
                 self._emit_reappeared(memory, track.track_id, frame, missing_ms, events)
-                self._reject(memory, frame, events, reason_codes=["reappeared_same_track"], candidate_reason="reappeared_visible")
+                self._reject(memory, frame, events, reason_codes=reason_codes, candidate_reason="reappeared_visible")
                 reappeared_now = True
 
         if active and not reappeared_now:
@@ -381,18 +388,17 @@ class PerBallPocketFSM:
         self._review(memory, frame, events, reason_codes=reason_codes)
 
     def _confirm(self, memory: _PocketMemory, frame: TracksFrame, events: List[Event]) -> None:
-        memory.state = "confirmed"
-        memory.decision = "confirmed"
+        memory.state = "commit_ready"
+        memory.decision = "commit_ready"
         memory.resolved = True
         payload = self._decision_payload(
             memory,
             frame.ts_cam_ns,
-            decision="confirmed",
+            decision="commit_ready",
             review_required=False,
-            reason_codes=["committed_pocket"],
+            reason_codes=["ready_for_turn_commit"],
         )
-        events.append(Event(name="POCKET_CONFIRMED", ts_cam_ns=frame.ts_cam_ns, frame_id=frame.frame_id, payload=payload, confidence=0.92))
-        events.append(Event(name="POT_PROBABLE", ts_cam_ns=frame.ts_cam_ns, frame_id=frame.frame_id, payload=payload, confidence=0.92))
+        events.append(Event(name="POCKET_COMMIT_READY", ts_cam_ns=frame.ts_cam_ns, frame_id=frame.frame_id, payload=payload, confidence=0.92))
 
     def _review(self, memory: _PocketMemory, frame: TracksFrame, events: List[Event], *, reason_codes: list[str]) -> None:
         if memory.resolved:
@@ -464,7 +470,9 @@ class PerBallPocketFSM:
         for candidate in self._memory.values():
             if candidate.track_id == memory.track_id or candidate.resolved:
                 continue
-            if candidate.group != memory.group or candidate.pocket_index != sample.pocket_index:
+            if "cue" in {candidate.group, memory.group}:
+                continue
+            if candidate.pocket_index != sample.pocket_index:
                 continue
             if candidate.nonvisible_since_ns is None:
                 continue
@@ -474,14 +482,23 @@ class PerBallPocketFSM:
                 continue
             candidate.reappear_veto = True
             candidate.reappear_track_id = int(track.track_id)
+            candidate.reappear_group = memory.group
             self._emit_reappeared(candidate, track.track_id, frame, self._memory_missing_ms(candidate, frame.ts_cam_ns), events)
-            self._reject(
-                candidate,
-                frame,
-                events,
-                reason_codes=["reappeared_new_track", "track_relinked"],
-                candidate_reason="reappeared_near_pocket",
-            )
+            if candidate.group != memory.group:
+                self._review(
+                    candidate,
+                    frame,
+                    events,
+                    reason_codes=["reappeared_near_pocket", "track_relinked", "reappeared_group_changed"],
+                )
+            else:
+                self._reject(
+                    candidate,
+                    frame,
+                    events,
+                    reason_codes=["reappeared_new_track", "track_relinked"],
+                    candidate_reason="reappeared_near_pocket",
+                )
             vetoed = True
         return vetoed
 
@@ -502,6 +519,7 @@ class PerBallPocketFSM:
                     "track_id": memory.track_id,
                     "group": memory.group,
                     "reappeared_track_id": int(track_id),
+                    "reappeared_group": memory.reappear_group,
                     "pocket_index": memory.pocket_index,
                     "missing_ms": int(missing_ms),
                 },
@@ -543,6 +561,7 @@ class PerBallPocketFSM:
             "missing_ms": self._memory_missing_ms(memory, now_ns),
             "reappear_veto": bool(memory.reappear_veto),
             "reappear_track_id": memory.reappear_track_id,
+            "reappear_group": memory.reappear_group,
             "crossed_mouth": bool(memory.crossed_mouth),
             "crossed_throat": bool(memory.crossed_throat),
             "entered_interior": bool(memory.entered_interior),
@@ -681,7 +700,10 @@ class PerBallPocketFSM:
 
     def _review_reason_codes(self, memory: _PocketMemory) -> list[str]:
         if memory.reappear_veto:
-            return ["reappeared_near_pocket"]
+            reasons = ["reappeared_near_pocket"]
+            if memory.reappear_group is not None and memory.reappear_group != memory.group:
+                reasons.append("reappeared_group_changed")
+            return reasons
         if memory.resting_mouth_since_ns is not None and not memory.crossed_throat:
             return ["mouth_rest_disappear_requires_review"]
         if not self._strong_confirmation_evidence(memory):
@@ -692,7 +714,7 @@ class PerBallPocketFSM:
         return (not memory.tentative_emitted) and self._has_pocket_interest(memory)
 
     def _strong_confirmation_evidence(self, memory: _PocketMemory) -> bool:
-        return bool(memory.entered_interior or memory.crossed_throat or memory.candidate_reason == "mouth_inward_trend")
+        return bool(memory.entered_interior or memory.crossed_throat)
 
     def _occluded_commit_allowed(self, memory: _PocketMemory) -> bool:
         if memory.absent_since_ns is not None:

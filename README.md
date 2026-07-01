@@ -2,137 +2,116 @@
 
 ## 简介
 
-BAS 是一个台球辅助系统，运行链路包含采集、检测、跟踪、状态机、规划和投影。
+BAS 是一个台球辅助系统，主链路包含采集、检测、跟踪、状态机、规划和投影。
 
-这次重构重点修了 `modern` 状态机里的进洞判定与结算链路：
+当前仓库里建议优先使用 `modern` 状态机。最近这轮重构重点收口了“进洞确认 / ledger 提交 / 胜负动画”这条链路，核心语义如下：
 
-- 进洞不再靠单次消失直接确认，而是改成“证据累计 -> tentative -> confirmed / review / rejected”两阶段判定。
-- `ledger`、花色推进、黑八结算只消费 `POCKET_CONFIRMED`，不会再被临时误判直接污染。
-- 胜利动画只在 `GAME_STATUS_CHANGED` 时触发一次，不再因为后续 `TURN_RESOLVE` 重复播放。
-- 调试输出增加了 pocket evidence，能直接看到为什么判进、为什么没判进、为什么要求复核。
-
-`legacy` 状态机仍然保留，当前增强只落在 `modern` 链路。
+- 只有真正允许修改 `ledger`、切换花色、触发胜负状态和动画的事件，才会发 `POCKET_CONFIRMED`
+- 洞口 `mouth` 级别证据只会进入 `candidate / tentative / review_required`，不会再直接确认
+- `POCKET_COMMIT_READY` 是内部提交态，表示 pocket 证据已经够强，但还要等 `TURN_RESOLVE` 统一 reconcile 后才能真正提交
+- 只要该杆存在 `review_required`、可见球和 ledger 冲突、近袋口重现冲突，整杆都会冻结，不会污染全局状态
+- 黑八也走同一套提交栅栏；只有 clean confirm 才允许发 `GAME_STATUS_CHANGED` 和 `GAME_OVER_CANDIDATE`
 
 ## 模块结构
 
 - `bas/capture`：相机与视频输入
 - `bas/perception`：目标检测
-- `bas/tracking`：时序跟踪
-- `bas/state`：状态机、进洞判定、裁判意图、结算
-- `bas/planning`：走位与目标球规划
-- `bas/projection`：投影叠加与动效
+- `bas/tracking`：跨帧跟踪
+- `bas/state`：状态机、进洞判定、裁判意图、ledger 与复核接口
+- `bas/planning`：走位与击球规划
+- `bas/projection`：投影叠加与动画
 - `bas/ui`：桌面控制台
-- `tests`：单元测试、集成测试、回放 fixture
+- `tests`：单元测试、回放测试、交互测试
 
 ## 快速开始
 
-1. 安装依赖：
+1. 安装依赖
 
 ```powershell
 Setup_Environment.cmd
 ```
 
-2. 打开桌面控制台：
+2. 启动桌面控制台
 
 ```powershell
 Start_BAS.cmd
 ```
 
-3. 直接用 Python 启动：
+3. 直接用 Python 启动 UI
 
 ```powershell
 .\.venv\Scripts\python.exe -m bas ui
 ```
 
-4. 无界面跑主流程：
+4. 无界面跑主流程
 
 ```powershell
 .\.venv\Scripts\python.exe -m bas run --headless --max-frames 90
 ```
 
-5. 检查相机：
+5. 检查相机
 
 ```powershell
 .\.venv\Scripts\python.exe -m bas probe-cameras
 ```
 
-6. 检查标定：
+## 进洞 / 胜负状态语义
 
-```powershell
-.\.venv\Scripts\python.exe -m bas inspect-calib
-```
+### 关键事件
 
-## 进洞判定调试
+- `POCKET_CANDIDATE`：检测到近袋口候选
+- `POCKET_TENTATIVE`：候选暂挂，继续等缺失窗口或重现冲突
+- `POCKET_COMMIT_READY`：内部提交态，外层还不能播动画
+- `POCKET_CONFIRMED`：该杆在 `TURN_RESOLVE` 后 clean commit，允许真正记分和播动画
+- `POCKET_REVIEW_REQUIRED`：证据不足或发生冲突，需要人工复核
+- `POCKET_REJECTED`：候选被否决，例如同袋口近距离重现
+- `GAME_STATUS_CHANGED`：比赛状态真正发生变化，只在提交态发出
 
-### 事件语义
+### 当前判定规则
 
-- `POCKET_TENTATIVE`：近袋消失，先挂起，不落账
-- `POCKET_CONFIRMED`：证据成立，正式提交进球
-- `POCKET_REVIEW_REQUIRED`：证据不足或洞口晃动，需要人工复核
-- `POCKET_REJECTED`：重现、回桌或其它否决条件成立
-- `GAME_STATUS_CHANGED`：比赛状态真正发生变化，只发一次
+- `mouth + inward + disappear`：最多到 `candidate -> tentative -> review_required`
+- 只有 `crossed_throat` 或 `entered_interior` 才有资格进入自动确认链路
+- 同袋口、近距离、窗口期内任意重现都会否决原 pocket
+- 如果重现时 `track_id` 或 `group` 变化，会作为复核证据保留下来
+- 投影层只消费提交态事件，因此 `tentative` / `review_required` 不会再触发自动进球或胜利动画
 
-### 调试输出重点
+## 人工复核
 
-`modern` 状态调试里现在会输出每颗候选球的 pocket evidence，重点看这些字段：
+桌面控制台里现在提供三类显式决议：
 
-- `zone`
-- `inward_speed_mm_s`
-- `candidate_reason`
-- `missing_ms`
-- `reappear_veto`
-- `decision`
-- `reason_codes`
+- `确认复核`：确认冻结中的 pocket，提交本杆
+- `驳回复核`：驳回冻结中的 pocket，保持冻结前 ledger 与胜负状态
+- `确认开台花色`：开台同时进了不同花色时，显式指定本杆花色归属
 
-如果出现“洞口晃一下就播进球动画”之类的问题，先看该球最后是 `review_required` 还是 `confirmed`，再看 `reason_codes`。
+不再建议使用“只清标记不修状态”的思路。复核动作必须同时完成状态决议和全局状态修正。
 
-### 常见判定规则
+## Pocket Replay
 
-- `mouth` 区静止后直接消失，默认不会提交，只会进入复核
-- 只有跨过 `throat` / 进入 `interior` 且 missing 持续成立，才会 `POCKET_CONFIRMED`
-- 同袋口附近短时间重现，即使换了 `track_id`，也会否决旧 tentative
-- 仅 `occluded` 几帧但未真正持续 lost，不会立刻提交最终进球
-
-## 回放与复现
-
-### 小型 fixture 回放
-
-仓库里内置了 3 个 pocket trace fixture，可直接跑：
+仓库内置了 5 个 pocket trace fixture，可直接回放：
 
 ```powershell
 .\.venv\Scripts\python.exe -m bas pocket-replay tests/fixtures/pocket_trace_mouth_review.json
 .\.venv\Scripts\python.exe -m bas pocket-replay tests/fixtures/pocket_trace_true_confirm.json
 .\.venv\Scripts\python.exe -m bas pocket-replay tests/fixtures/pocket_trace_black_victory_once.json
+.\.venv\Scripts\python.exe -m bas pocket-replay tests/fixtures/pocket_trace_track_id_churn_reject.json
+.\.venv\Scripts\python.exe -m bas pocket-replay tests/fixtures/pocket_trace_group_flip_review.json
 ```
 
-回放输出会包含：
+这几类 fixture 分别覆盖：
 
-- 逐帧事件序列
-- 最终 `rule_state`
-- 最后一次 `SHOT_CONTEXT_FINALIZED`
-- 最后一次 `REFEREE_INTENT`
-- pocket debug 快照
-
-### 现有 replay 摘要
-
-如果只是想先看已有录制的 `events.jsonl` 里有什么类型的事件：
-
-```powershell
-.\.venv\Scripts\python.exe -m bas replay-summary replays\your_session\events.jsonl
-```
-
-## 关键参数
-
-状态机相关参数在 `state` 配置段：
-
-- `pocket_confirm_missing_ms`：tentative 持续多久后允许最终决策
-- `pocket_reappear_window_ms`：近袋消失后，多久内的重现会否决 tentative
-- `turn_resolve_grace_ms`：`TURN_RESOLVE` 遇到 pending pocket 时最多等待多久
-- `observation_reconcile_stable_frames`：YOLO 可见计数要稳定多少帧才参与复核
-
-不建议再靠单纯调大/调小这些阈值修 bug。阈值只负责微调，正确性主要依赖事件链路和证据逻辑。
+- 洞口晃动后消失，只能进复核
+- 真正跨 throat / interior 的正常进球
+- 黑八 clean confirm 只触发一次胜负状态变化
+- 同袋口换 `track_id` 重现，原 pocket 应被 reject
+- 同袋口近距离跨组重现，整杆应冻结并要求复核
 
 ## 测试
+
+推荐先跑和这次重构直接相关的测试：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_state_modern.py tests\test_state_replay.py tests\test_projection_interaction.py tests\test_ui_runtime.py -q --basetemp=.\pytest_tmp_codex\pocket_state_refactor -p no:cacheprovider
+```
 
 完整回归：
 
@@ -140,16 +119,8 @@ Start_BAS.cmd
 .\.venv\Scripts\python.exe -m pytest .\tests -q --basetemp=.\pytest_tmp_codex\full_state_refactor -o cache_dir=.\pytest_cache_local\full_state_refactor
 ```
 
-本次重构新增和更新了：
-
-- pocket FSM 单元测试
-- `modern` 结算与黑八状态测试
-- 动画触发测试
-- 学习采集测试
-- pocket trace 回放回归测试
-
 ## 仓库说明
 
-- 调试产物、日志、大文件不要直接入库，相关目录应加入 `.gitignore`
-- 推荐优先改 `modern` 链路，`legacy` 仅作为回退
-- 需要新增调试脚本时，尽量做成独立模块或 CLI 子命令，方便复现和排查
+- 大文件、日志、回放产物不要直接入库，相关目录应加入 `.gitignore`
+- 调试脚本尽量做成独立模块或 CLI 子命令，方便复现与排查
+- 排查 pocket / win 问题时，优先看 replay、`SHOT_CONTEXT_FINALIZED`、`REFEREE_INTENT` 和 `pending_review`

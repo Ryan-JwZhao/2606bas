@@ -73,6 +73,17 @@ class InventoryLedger:
     remaining: dict[Group, int] = field(default_factory=lambda: {"cue": 1, "solid": 7, "stripe": 7, "black": 1})
     removed_confirmed: dict[Group, int] = field(default_factory=empty_group_counts)
 
+    def clone(self) -> "InventoryLedger":
+        return InventoryLedger(
+            remaining={group: int(self.remaining.get(group, 0)) for group in GROUPS},
+            removed_confirmed={group: int(self.removed_confirmed.get(group, 0)) for group in GROUPS},
+        )
+
+    def applied_copy(self, shot_ctx: ShotContext) -> "InventoryLedger":
+        preview = self.clone()
+        preview.apply(shot_ctx)
+        return preview
+
     def reset(self) -> None:
         self.remaining = {"cue": 1, "solid": 7, "stripe": 7, "black": 1}
         self.removed_confirmed = empty_group_counts()
