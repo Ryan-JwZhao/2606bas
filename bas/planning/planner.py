@@ -4,11 +4,11 @@ import math
 from dataclasses import dataclass, replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
-import cv2
 import numpy as np
 
 from ..calibration.service import CalibrationService
 from ..config import LearningConfig, PlannerConfig
+from ..route_geometry import polygon_contains_with_margin, segment_inside_polygon, segment_inside_polygon_to_pocket
 from ..schemas import MatchStateFrame, Point, ShotCandidate, ShotPlan, TrackObservation
 from ..utils import angle_deg, clamp, point_segment_distance, unit, wall_time_id
 from .aim_context import PlannerAimFrameContext
@@ -421,30 +421,39 @@ class GeometryPhysicsPlanner:
         if polygon.size < 6:
             x, y = point
             return 0.0 - margin_mm <= x <= self.calibration.table.width_mm + margin_mm and 0.0 - margin_mm <= y <= self.calibration.table.height_mm + margin_mm
-        dist = cv2.pointPolygonTest(polygon.reshape((-1, 1, 2)).astype(np.float32), (float(point[0]), float(point[1])), True)
-        return float(dist) >= float(margin_mm)
+        return polygon_contains_with_margin(polygon, point, margin_mm=margin_mm)
 
     def _segment_inside(self, polygon: np.ndarray, a: np.ndarray, b: np.ndarray, margin_mm: float) -> bool:
-        length = float(np.linalg.norm(b - a))
-        samples = max(8, int(length / 50.0))
-        for i in range(samples + 1):
-            t = i / max(1, samples)
-            p = a * (1.0 - t) + b * t
-            if not self._inside(polygon, p, margin_mm=margin_mm):
-                return False
-        return True
+        if polygon.size < 6:
+            length = float(np.linalg.norm(b - a))
+            samples = max(8, int(length / 50.0))
+            for i in range(samples + 1):
+                t = i / max(1, samples)
+                p = a * (1.0 - t) + b * t
+                if not self._inside(polygon, p, margin_mm=margin_mm):
+                    return False
+            return True
+        return segment_inside_polygon(polygon, a, b, margin_mm=margin_mm)
 
     def _segment_inside_to_pocket(self, polygon: np.ndarray, a: np.ndarray, b: np.ndarray, margin_mm: float) -> bool:
-        length = float(np.linalg.norm(b - a))
-        samples = max(8, int(length / 50.0))
-        for i in range(samples + 1):
-            t = i / max(1, samples)
-            p = a * (1.0 - t) + b * t
-            remaining = (1.0 - t) * length
-            relaxed = -max(18.0, 2.0 * self.calibration.table.ball_diameter_mm) if remaining < 70.0 else margin_mm
-            if not self._inside(polygon, p, margin_mm=relaxed):
-                return False
-        return True
+        if polygon.size < 6:
+            length = float(np.linalg.norm(b - a))
+            samples = max(8, int(length / 50.0))
+            for i in range(samples + 1):
+                t = i / max(1, samples)
+                p = a * (1.0 - t) + b * t
+                remaining = (1.0 - t) * length
+                relaxed = -max(18.0, 2.0 * self.calibration.table.ball_diameter_mm) if remaining < 70.0 else margin_mm
+                if not self._inside(polygon, p, margin_mm=relaxed):
+                    return False
+            return True
+        return segment_inside_polygon_to_pocket(
+            polygon,
+            a,
+            b,
+            margin_mm=margin_mm,
+            pocket_relief_mm=max(18.0, 2.0 * self.calibration.table.ball_diameter_mm),
+        )
 
     def _path_clearance(self, a: np.ndarray, b: np.ndarray, balls: List[_Ball], ignore: set[int], moving_radius: float) -> float:
         min_clearance = float("inf")

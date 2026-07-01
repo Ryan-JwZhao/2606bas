@@ -9,6 +9,76 @@ import numpy as np
 from .utils import unit
 
 
+def polygon_contains_with_margin(
+    polygon: np.ndarray,
+    point: np.ndarray,
+    *,
+    margin_mm: float = 0.0,
+) -> bool:
+    poly = np.asarray(polygon, dtype=np.float32).reshape((-1, 2))
+    if poly.shape[0] < 3:
+        return True
+    sample = np.asarray(point, dtype=np.float32).reshape((2,))
+    dist = cv2.pointPolygonTest(poly.reshape((-1, 1, 2)), (float(sample[0]), float(sample[1])), True)
+    return float(dist) >= float(margin_mm)
+
+
+def segment_inside_polygon(
+    polygon: np.ndarray,
+    start: np.ndarray,
+    end: np.ndarray,
+    *,
+    margin_mm: float,
+    sample_step_mm: float = 50.0,
+) -> bool:
+    poly = np.asarray(polygon, dtype=np.float32).reshape((-1, 2))
+    if poly.shape[0] < 3:
+        return True
+    a = np.asarray(start, dtype=np.float32).reshape((2,))
+    b = np.asarray(end, dtype=np.float32).reshape((2,))
+    length = float(np.linalg.norm(b - a))
+    if length < 1e-6:
+        return polygon_contains_with_margin(poly, a, margin_mm=margin_mm)
+    samples = max(8, int(length / max(1.0, float(sample_step_mm))))
+    for idx in range(samples + 1):
+        t = idx / max(1, samples)
+        point = a * (1.0 - t) + b * t
+        if not polygon_contains_with_margin(poly, point, margin_mm=margin_mm):
+            return False
+    return True
+
+
+def segment_inside_polygon_to_pocket(
+    polygon: np.ndarray,
+    start: np.ndarray,
+    end: np.ndarray,
+    *,
+    margin_mm: float,
+    pocket_relief_mm: float,
+    pocket_relief_distance_mm: float = 70.0,
+    sample_step_mm: float = 50.0,
+) -> bool:
+    poly = np.asarray(polygon, dtype=np.float32).reshape((-1, 2))
+    if poly.shape[0] < 3:
+        return True
+    a = np.asarray(start, dtype=np.float32).reshape((2,))
+    b = np.asarray(end, dtype=np.float32).reshape((2,))
+    length = float(np.linalg.norm(b - a))
+    if length < 1e-6:
+        return polygon_contains_with_margin(poly, a, margin_mm=margin_mm)
+    samples = max(8, int(length / max(1.0, float(sample_step_mm))))
+    relief = max(0.0, float(pocket_relief_mm))
+    relief_distance = max(0.0, float(pocket_relief_distance_mm))
+    for idx in range(samples + 1):
+        t = idx / max(1, samples)
+        point = a * (1.0 - t) + b * t
+        remaining = (1.0 - t) * length
+        effective_margin = -relief if remaining < relief_distance else float(margin_mm)
+        if not polygon_contains_with_margin(poly, point, margin_mm=effective_margin):
+            return False
+    return True
+
+
 def cue_alignment_start(
     cue: np.ndarray,
     ghost: np.ndarray,

@@ -9,9 +9,11 @@ import numpy as np
 
 from ..calibration.service import CalibrationService
 from ..config import PlannerConfig
+from ..route_geometry import segment_inside_polygon_to_pocket
 from ..schemas import MatchStateFrame, ShotCandidate, TrackObservation
 from ..utils import angle_deg, clamp, point_segment_distance, unit
 from .aim_context import PlannerAimFrameContext
+from .corridor_targeting import rank_object_balls_in_corridor
 from .cue_aim import CueStickAimDetector
 
 
@@ -261,39 +263,19 @@ class TargetShotModeController:
         direction = unit(np.asarray(aim.direction_px, dtype=np.float32).reshape((2,)))
         if float(np.linalg.norm(direction)) < 1.0e-6:
             return None
-        cue_center = np.asarray(getattr(cue_ball, "center_px"), dtype=np.float32).reshape((2,))
-        normal = np.asarray([-float(direction[1]), float(direction[0])], dtype=np.float32)
         half_width = 0.5 * max(1.0, float(getattr(self.config, "cue_sector_corridor_width_px", 140.0)))
-        ranked: list[tuple[tuple[float, float, float, float], _PointedBall]] = []
-        for ball in balls:
-            group = str(getattr(ball, "group", "")).strip().lower()
-            if group not in OBJECT_GROUPS:
-                continue
-            quality = float(getattr(ball, "quality", 0.0))
-            if quality <= 0.25:
-                continue
-            center = np.asarray(getattr(ball, "center_px"), dtype=np.float32).reshape((2,))
-            vec = center - cue_center
-            forward = float(np.dot(vec, direction))
-            if forward <= 0.0:
-                continue
-            lateral = float(np.dot(vec, normal))
-            if abs(lateral) > half_width:
-                continue
-            distance = float(np.linalg.norm(vec))
-            ranked.append(
-                (
-                    (abs(lateral), forward, distance, -quality),
-                    _PointedBall(
-                        track_id=int(getattr(ball, "track_id")),
-                        group=group,
-                        score=float(aim.score),
-                    ),
-                )
-            )
+        ranked = rank_object_balls_in_corridor(
+            cue_ball=cue_ball,
+            balls=balls,
+            direction_px=direction,
+            half_width_px=half_width,
+        )
         if ranked:
-            ranked.sort(key=lambda item: item[0])
-            return ranked[0][1]
+            return _PointedBall(
+                track_id=int(ranked[0].track_id),
+                group=str(ranked[0].group),
+                score=float(aim.score),
+            )
         return _PointedBall(
             track_id=int(getattr(cue_ball, "track_id")),
             group="cue",
@@ -464,7 +446,7 @@ class TargetShotPlanner:
         rect: _Rect,
     ) -> list[np.ndarray] | None:
         if not rails:
-            if not self._segment_reaches_pocket(target, pocket, rect):
+            if not self._direct_segment_reaches_pocket(target, pocket, rect):
                 return None
             return [target.astype(np.float32), pocket.astype(np.float32)]
 
@@ -492,6 +474,18 @@ class TargetShotPlanner:
             return None
         points.append(pocket.astype(np.float32))
         return points
+
+    def _direct_segment_reaches_pocket(self, start: np.ndarray, pocket: np.ndarray, rect: _Rect) -> bool:
+        polygon = self._playable_polygon()
+        if polygon.shape[0] < 3:
+            return self._segment_reaches_pocket(start, pocket, rect)
+        return segment_inside_polygon_to_pocket(
+            polygon,
+            start,
+            pocket,
+            margin_mm=max(0.0, float(self.config.collision_padding_mm)),
+            pocket_relief_mm=max(18.0, 2.0 * float(self.calibration.table.ball_diameter_mm)),
+        )
 
     def _segment_reaches_pocket(self, start: np.ndarray, pocket: np.ndarray, rect: _Rect) -> bool:
         direction = unit(pocket - start)
@@ -558,6 +552,12 @@ class TargetShotPlanner:
         if arr.shape[0] >= 3:
             return _Rect(float(np.min(arr[:, 0])), float(np.max(arr[:, 0])), float(np.min(arr[:, 1])), float(np.max(arr[:, 1])))
         return _Rect(0.0, float(self.calibration.table.width_mm), 0.0, float(self.calibration.table.height_mm))
+
+    def _playable_polygon(self) -> np.ndarray:
+        polygon = self.calibration.table.center_playable_polygon_mm or self.calibration.table.inner_polygon_mm
+        if not polygon:
+            return np.empty((0, 2), dtype=np.float32)
+        return np.asarray(polygon, dtype=np.float32).reshape((-1, 2))
 
     def _point_in_rect(self, point: np.ndarray, rect: _Rect, *, margin: float = 0.0) -> bool:
         return (

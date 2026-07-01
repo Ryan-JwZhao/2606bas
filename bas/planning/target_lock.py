@@ -8,6 +8,7 @@ import numpy as np
 from ..config import PlannerConfig
 from ..schemas import MatchStateFrame
 from ..utils import unit
+from .corridor_targeting import rank_object_balls_in_corridor
 
 
 OBJECT_GROUPS = {"solid", "stripe", "black"}
@@ -166,9 +167,6 @@ class TargetLockController:
         direction = unit(np.asarray(getattr(aim, "direction_px", (0.0, 0.0)), dtype=np.float32))
         if float(np.linalg.norm(direction)) < 1e-6:
             return None
-        cue_center = self._center_px(cue_ball)
-        cue = np.asarray(cue_center, dtype=np.float32)
-        normal = np.asarray([-float(direction[1]), float(direction[0])], dtype=np.float32)
         half_width = 0.5 * max(
             1.0,
             float(
@@ -179,30 +177,22 @@ class TargetLockController:
                 )
             ),
         )
-
-        best: tuple[float, _AimTarget] | None = None
-        for ball in balls:
-            center_tuple = self._center_px(ball)
-            center = np.asarray(center_tuple, dtype=np.float32)
-            vec = center - cue
-            forward = float(np.dot(vec, direction))
-            if forward <= 0.0:
-                continue
-            lateral = float(np.dot(vec, normal))
-            radius_px = max(0.0, float(getattr(ball, "radius_px", 0.0)))
-            if abs(lateral) > half_width + radius_px:
-                continue
-            score = abs(lateral) / max(1.0, half_width + radius_px) + 0.0015 * forward
-            target = _AimTarget(
-                track_id=int(getattr(ball, "track_id")),
-                group=str(getattr(ball, "group", "")).strip().lower(),
-                center_px=center_tuple,
-                lateral_px=float(lateral),
-                forward_px=float(forward),
-            )
-            if best is None or score < best[0]:
-                best = (float(score), target)
-        return best[1] if best is not None else None
+        ranked = rank_object_balls_in_corridor(
+            cue_ball=cue_ball,
+            balls=balls,
+            direction_px=direction,
+            half_width_px=half_width,
+        )
+        if not ranked:
+            return None
+        best = ranked[0]
+        return _AimTarget(
+            track_id=int(best.track_id),
+            group=str(best.group).strip().lower(),
+            center_px=best.center_px,
+            lateral_px=float(best.lateral_px),
+            forward_px=float(best.forward_px),
+        )
 
     def _object_balls(self, balls: Sequence[object]) -> list[object]:
         objects: list[object] = []

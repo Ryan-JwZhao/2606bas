@@ -18,21 +18,25 @@ from bas.schemas import MatchStateFrame, ShotCandidate, ShotPlan, TableModel, Tr
 
 
 def _service() -> CalibrationService:
+    return _service_for_table(1000.0, 500.0)
+
+
+def _service_for_table(width_mm: float, height_mm: float) -> CalibrationService:
     projection = ProjectionCalibration.fit_from_correspondences(
-        np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
-        np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
-        projector_size=(1000, 500),
+        np.array([[0, 0], [width_mm, 0], [width_mm, height_mm], [0, height_mm]], dtype=np.float64),
+        np.array([[0, 0], [width_mm, 0], [width_mm, height_mm], [0, height_mm]], dtype=np.float64),
+        projector_size=(int(round(width_mm)), int(round(height_mm))),
     )
-    projection.table_polygon_proj = np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64)
+    projection.table_polygon_proj = np.array([[0, 0], [width_mm, 0], [width_mm, height_mm], [0, height_mm]], dtype=np.float64)
     return CalibrationService(
         camera=CameraCalibration(metadata={}),
         projection=projection,
         table=TableModel(
-            width_mm=1000,
-            height_mm=500,
+            width_mm=width_mm,
+            height_mm=height_mm,
             ball_diameter_mm=57.15,
-            inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
-            pockets_mm=[(0, 0), (500, 0), (1000, 0), (1000, 500), (500, 500), (0, 500)],
+            inner_polygon_mm=[(0, 0), (width_mm, 0), (width_mm, height_mm), (0, height_mm)],
+            pockets_mm=[(0, 0), (width_mm * 0.5, 0), (width_mm, 0), (width_mm, height_mm), (width_mm * 0.5, height_mm), (0, height_mm)],
         ),
     )
 
@@ -422,6 +426,88 @@ def test_target_lock_switches_only_after_user_points_elsewhere_for_confirmation_
     assert committed.best is not None
     assert committed.best.target_track_id == 3
     assert committed.target_lock_status == "switch_commit"
+
+
+def test_target_lock_ignores_ball_that_only_overlaps_corridor_edge(monkeypatch) -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_lock_confirm_frames=1,
+            target_lock_switch_confirm_frames=2,
+        ),
+        _service(),
+    )
+    raw_aims = iter(
+        [
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([1.0, 0.0], dtype=np.float32),
+                source="test_lock_seed",
+                score=1.0,
+            ),
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([1.0, 0.0], dtype=np.float32),
+                source="test_lock_hold_1",
+                score=1.0,
+            ),
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([1.0, 0.0], dtype=np.float32),
+                source="test_lock_hold_2",
+                score=1.0,
+            ),
+        ]
+    )
+    monkeypatch.setattr(planner.cue_sector.aim_detector, "detect", lambda **_kwargs: next(raw_aims))
+    seed_layout = [
+        _obs(1, "cue", 120, 250),
+        _obs(2, "stripe", 720, 298),
+    ]
+    edge_layout = [
+        _obs(1, "cue", 120, 250),
+        _obs(2, "stripe", 720, 298),
+        _obs(3, "stripe", 350, 325),
+    ]
+
+    planner.plan(
+        MatchStateFrame(
+            frame_id=1,
+            ts_cam_ns=1,
+            phase="PRE_SHOT_ARMED",
+            turn_target_group="stripe",
+            layout=seed_layout,
+        )
+    )
+    held_1 = planner.plan(
+        MatchStateFrame(
+            frame_id=2,
+            ts_cam_ns=2,
+            phase="PRE_SHOT_ARMED",
+            turn_target_group="stripe",
+            layout=edge_layout,
+        )
+    )
+    held_2 = planner.plan(
+        MatchStateFrame(
+            frame_id=3,
+            ts_cam_ns=3,
+            phase="PRE_SHOT_ARMED",
+            turn_target_group="stripe",
+            layout=edge_layout,
+        )
+    )
+
+    assert held_1.best is not None
+    assert held_1.best.target_track_id == 2
+    assert held_1.locked_target_id == 2
+    assert held_2.best is not None
+    assert held_2.best.target_track_id == 2
+    assert held_2.locked_target_id == 2
+    assert held_2.target_lock_status == "locked_hold_same"
 
 
 def test_target_lock_ignores_new_aim_during_shot_motion(monkeypatch) -> None:
@@ -864,6 +950,144 @@ def test_target_shot_mode_can_choose_bank_route_when_direct_route_is_not_possibl
     assert plan.best is not None
     assert plan.best.explanation["target_shot_rebounds"] == 1
     assert len(plan.best.object_line) == 3
+
+
+def test_target_shot_direct_route_matches_rule_route_pocket_relief(monkeypatch) -> None:
+    service = _service_for_table(2540.0, 1270.0)
+    service.table.inner_polygon_mm = [(172.16, 143.93), (2373.49, 143.93), (2373.49, 1117.6), (172.16, 1117.6)]
+    service.table.center_playable_polygon_mm = list(service.table.inner_polygon_mm)
+    service.table.pockets_mm = [
+        (163.7, 148.2),
+        (1259.41, 118.99),
+        (2375.26, 137.54),
+        (2383.8, 1118.35),
+        (1261.18, 1142.0),
+        (160.53, 1113.65),
+    ]
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_lock_enabled=False,
+            target_shot_activate_hold_ms=100,
+        ),
+        service,
+    )
+    layout = [
+        _obs(1, "cue", 1158.54, 225.0),
+        _obs(2, "stripe", 378.95, 206.16),
+    ]
+    pointed = SimpleNamespace(track_id=2, group="stripe", score=1.0)
+    monkeypatch.setattr(planner.target_shot_mode, "_pointed_ball", lambda *args, **kwargs: pointed)
+
+    pending = planner.plan(
+        MatchStateFrame(
+            frame_id=1,
+            ts_cam_ns=_ts_ms(0),
+            phase="PRE_SHOT_ARMED",
+            turn_target_group="stripe",
+            layout=layout,
+        )
+    )
+    active = planner.plan(
+        MatchStateFrame(
+            frame_id=2,
+            ts_cam_ns=_ts_ms(100),
+            phase="PRE_SHOT_ARMED",
+            turn_target_group="stripe",
+            layout=layout,
+        )
+    )
+
+    assert pending.shot_mode == "rule"
+    assert pending.best is not None
+    assert pending.best.target_track_id == 2
+    assert active.shot_mode == "target"
+    assert active.best is not None
+    assert active.best.target_track_id == 2
+    assert "no_theoretical_route" not in active.target_shot_status
+
+
+def test_target_shot_activation_keeps_original_target_when_edge_grazer_appears(monkeypatch) -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_lock_confirm_frames=1,
+            target_lock_switch_confirm_frames=2,
+            target_shot_activate_hold_ms=200,
+        ),
+        _service(),
+    )
+    raw_aims = iter(
+        [
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([1.0, 0.0], dtype=np.float32),
+                source="test_lock_seed",
+                score=1.0,
+            ),
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([1.0, 0.0], dtype=np.float32),
+                source="test_lock_hold_1",
+                score=1.0,
+            ),
+            CueStickAimPx(
+                tip_px=np.asarray([140.0, 250.0], dtype=np.float32),
+                tail_px=np.asarray([80.0, 250.0], dtype=np.float32),
+                direction_px=np.asarray([1.0, 0.0], dtype=np.float32),
+                source="test_lock_hold_2",
+                score=1.0,
+            ),
+        ]
+    )
+    monkeypatch.setattr(planner.cue_sector.aim_detector, "detect", lambda **_kwargs: next(raw_aims))
+    seed_layout = [
+        _obs(1, "cue", 120, 250),
+        _obs(2, "stripe", 720, 298),
+    ]
+    edge_layout = [
+        _obs(1, "cue", 120, 250),
+        _obs(2, "stripe", 720, 298),
+        _obs(3, "stripe", 350, 325),
+    ]
+
+    pending = planner.plan(
+        MatchStateFrame(
+            frame_id=1,
+            ts_cam_ns=_ts_ms(0),
+            phase="PRE_SHOT_ARMED",
+            turn_target_group="stripe",
+            layout=seed_layout,
+        )
+    )
+    progress = planner.plan(
+        MatchStateFrame(
+            frame_id=2,
+            ts_cam_ns=_ts_ms(100),
+            phase="PRE_SHOT_ARMED",
+            turn_target_group="stripe",
+            layout=edge_layout,
+        )
+    )
+    active = planner.plan(
+        MatchStateFrame(
+            frame_id=3,
+            ts_cam_ns=_ts_ms(200),
+            phase="PRE_SHOT_ARMED",
+            turn_target_group="stripe",
+            layout=edge_layout,
+        )
+    )
+
+    assert pending.shot_mode == "rule"
+    assert progress.shot_mode == "rule"
+    assert progress.locked_target_id == 2
+    assert active.shot_mode == "target"
+    assert active.locked_target_id == 2
+    assert active.best is not None
+    assert active.best.target_track_id == 2
 
 
 def test_cue_sector_correction_holds_locked_target_when_strict_corridor_temporarily_loses_it(monkeypatch) -> None:
