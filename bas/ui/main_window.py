@@ -1564,15 +1564,17 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.center_layout = QtWidgets.QVBoxLayout(self.center_panel)
 
         self.preview_panel = self._panel()
+        self.preview_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.preview_layout = QtWidgets.QVBoxLayout(self.preview_panel)
         self.preview_layout.addWidget(self._section_label("实时预览"))
         self.preview_frame = AspectRatioPreviewFrame()
         self.preview_label = self.preview_frame.label()
         self.preview_frame.viewportChanged.connect(self._refresh_preview_pixmap)
         self.preview_layout.addWidget(self.preview_frame, 0, QtCore.Qt.AlignHCenter)
-        self.center_layout.addWidget(self.preview_panel)
+        self.center_layout.addWidget(self.preview_panel, 3)
 
         self.plan_panel = self._panel()
+        self.plan_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
         self.plan_layout = QtWidgets.QVBoxLayout(self.plan_panel)
         self.plan_layout.addWidget(self._section_label("最佳路线"))
         self.best_label = QtWidgets.QLabel("无")
@@ -1587,7 +1589,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.candidates.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.candidates.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         self.plan_layout.addWidget(self.candidates, 1)
-        self.center_layout.addWidget(self.plan_panel, 1)
+        self.center_layout.addWidget(self.plan_panel, 0)
 
     def _build_right_sidebar(self) -> None:
         self.right_scroll_area = self._scroll_area()
@@ -1820,7 +1822,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if force:
             self.main_splitter.setSizes([px(304), px(700), px(372)])
         self.preview_frame.setPreferredSize(px(680), px(382))
-        self.preview_frame.setMaximumHeight(px(394))
+        self.preview_frame.setMaximumHeight(px(540))
+        self.best_label.setMaximumHeight(px(72))
+        self.plan_panel.setMaximumHeight(px(236))
         for layout in self._section_content_layouts:
             layout.setContentsMargins(0, px(8), 0, 0)
             layout.setSpacing(px(8))
@@ -1837,6 +1841,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.module_status.setMaximumHeight(px(230))
         self.module_status.verticalHeader().setDefaultSectionSize(px(22))
         self.candidates.verticalHeader().setDefaultSectionSize(px(28))
+        self.candidates.setMinimumHeight(px(96))
+        self.candidates.setMaximumHeight(px(136))
         self.review_pending_list.setMinimumHeight(px(86))
         self.review_pending_list.setMaximumHeight(px(132))
         self.event_list.setMinimumHeight(px(150))

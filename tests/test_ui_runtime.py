@@ -52,6 +52,7 @@ def test_operator_window_uses_scrollable_three_column_layout() -> None:
     assert window.right_panel.isAncestorOf(window.log_box) is True
     assert window.preview_label.parent() is window.preview_frame
     assert abs((window.preview_label.width() / max(1, window.preview_label.height())) - (16.0 / 9.0)) < 0.05
+    assert window.preview_panel.height() > window.plan_panel.height()
 
     window.close()
     app.processEvents()
@@ -67,6 +68,7 @@ def test_operator_window_preserves_preview_ratio_at_minimum_size() -> None:
     assert abs((window.preview_label.width() / max(1, window.preview_label.height())) - (16.0 / 9.0)) < 0.05
     assert window.left_scroll_area.verticalScrollBarPolicy() == main_window.QtCore.Qt.ScrollBarAsNeeded
     assert window.right_scroll_area.verticalScrollBarPolicy() == main_window.QtCore.Qt.ScrollBarAsNeeded
+    assert window.candidates.maximumHeight() > 0
 
     window.close()
     app.processEvents()
