@@ -68,7 +68,7 @@ class AspectRatioPreviewFrame(QtWidgets.QFrame):
         self._label.setObjectName("preview")
         self._label.setAlignment(QtCore.Qt.AlignCenter)
 
-        size_policy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        size_policy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         size_policy.setHeightForWidth(True)
         self.setSizePolicy(size_policy)
 
@@ -107,7 +107,7 @@ class AspectRatioPreviewFrame(QtWidgets.QFrame):
             target_width = max(1, int(round(target_height * self._aspect_ratio)))
 
         x = rect.x() + (rect.width() - target_width) // 2
-        y = rect.y() + (rect.height() - target_height) // 2
+        y = rect.y()
         self._label.setGeometry(x, y, max(1, target_width), max(1, target_height))
         self.viewportChanged.emit()
         super().resizeEvent(event)

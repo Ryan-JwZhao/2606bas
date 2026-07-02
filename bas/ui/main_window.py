@@ -1572,7 +1572,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.preview_frame = AspectRatioPreviewFrame()
         self.preview_label = self.preview_frame.label()
         self.preview_frame.viewportChanged.connect(self._refresh_preview_pixmap)
-        self.preview_layout.addWidget(self.preview_frame, 0, QtCore.Qt.AlignHCenter)
+        self.preview_layout.addWidget(self.preview_frame, 1)
         self.center_layout.addWidget(self.preview_panel, 3)
 
         self.plan_panel = self._panel()
@@ -1812,8 +1812,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.left_scroll_area.setMinimumWidth(px(304))
         self.left_scroll_area.setMaximumWidth(px(304))
         self.center_layout.setSpacing(px(12))
-        self.preview_layout.setContentsMargins(px(6), px(6), px(6), px(6))
-        self.preview_layout.setSpacing(px(4))
+        self.preview_layout.setContentsMargins(px(4), px(3), px(4), px(4))
+        self.preview_layout.setSpacing(px(3))
         self.plan_layout.setContentsMargins(px(12), px(12), px(12), px(12))
         self.plan_layout.setSpacing(px(8))
         self.right_layout.setContentsMargins(px(14), px(14), px(14), px(14))
@@ -1824,7 +1824,6 @@ class OperatorWindow(QtWidgets.QMainWindow):
         if force:
             self.main_splitter.setSizes([px(304), px(700), px(372)])
         self.preview_frame.setPreferredSize(px(680), px(382))
-        self.preview_frame.setMaximumHeight(px(540))
         self.best_label.setMaximumHeight(px(72))
         self.plan_panel.setMaximumHeight(px(236))
         for layout in self._section_content_layouts:
@@ -3949,13 +3948,11 @@ class OperatorWindow(QtWidgets.QMainWindow):
         target_w = max(1, int(target.width()))
         target_h = max(1, int(target.height()))
         h0, w0 = image.shape[:2]
-        scale = min(target_w / max(1, w0), target_h / max(1, h0), 1.0)
-        if scale < 1.0:
-            image = cv2.resize(
-                image,
-                (max(1, int(w0 * scale)), max(1, int(h0 * scale))),
-                interpolation=cv2.INTER_AREA,
-            )
+        scale = min(target_w / max(1, w0), target_h / max(1, h0))
+        scaled_size = (max(1, int(round(w0 * scale))), max(1, int(round(h0 * scale))))
+        if scaled_size != (w0, h0):
+            interpolation = cv2.INTER_AREA if scale < 1.0 else cv2.INTER_LINEAR
+            image = cv2.resize(image, scaled_size, interpolation=interpolation)
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         h, w = rgb.shape[:2]
         qimg = QtGui.QImage(rgb.data, w, h, 3 * w, QtGui.QImage.Format_RGB888).copy()

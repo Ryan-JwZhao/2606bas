@@ -82,6 +82,8 @@ Start_BAS.cmd
 
 界面改动后，左侧和右侧都支持滚动，交互调试与复核区域支持折叠。若窗口缩小，预览区域会继续保持 16:9 比例，避免黑边占满整块布局。
 
+当前实时预览会按可用空间计算最大的 16:9 画面，宽或高至少有一边顶满预览视口；小尺寸输入帧也会被放大到预览区域内显示，保持不裁切。预览标题与画面之间只保留紧凑间距，避免标题上下出现大块空白。
+
 ## 测试与回归
 
 执行规划相关回归：
@@ -94,6 +96,12 @@ Start_BAS.cmd
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_planner.py -q --basetemp=pytest_tmp_codex -o cache_dir=pytest_cache_local\pytest_cache
+```
+
+检查主控制台前端布局、预览缩放和按钮关联：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_ui_runtime.py -q --basetemp=pytest_tmp_codex -o cache_dir=pytest_cache_local\pytest_cache
 ```
 
 ## 最近一次规划修复说明

@@ -75,6 +75,50 @@ def test_operator_window_preserves_preview_ratio_at_minimum_size() -> None:
     app.processEvents()
 
 
+def test_operator_window_preview_fills_available_viewport_without_top_gap() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    window.resize(1920, 1080)
+    window.show()
+    app.processEvents()
+
+    margins = window.preview_layout.contentsMargins()
+    available_width = window.preview_panel.width() - margins.left() - margins.right()
+    caption_bottom = window.preview_caption.y() + window.preview_caption.height()
+    caption_gap = window.preview_frame.y() - caption_bottom
+    one_side_fills = (
+        abs(window.preview_label.width() - window.preview_frame.width()) <= 2
+        or abs(window.preview_label.height() - window.preview_frame.height()) <= 2
+    )
+
+    assert window.preview_frame.width() >= available_width - 4
+    assert caption_gap <= window.preview_layout.spacing() + 2
+    assert window.preview_label.y() <= 1
+    assert one_side_fills is True
+    assert abs((window.preview_label.width() / max(1, window.preview_label.height())) - (16.0 / 9.0)) < 0.02
+
+    window.close()
+    app.processEvents()
+
+
+def test_refresh_preview_pixmap_scales_small_frame_to_preview_label() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    window.resize(1920, 1080)
+    window.show()
+    app.processEvents()
+
+    window._set_preview_image(np.zeros((360, 640, 3), dtype=np.uint8))
+    pixmap = window.preview_label.pixmap()
+
+    assert pixmap is not None
+    assert abs(pixmap.width() - window.preview_label.width()) <= 1
+    assert abs(pixmap.height() - window.preview_label.height()) <= 1
+
+    window.close()
+    app.processEvents()
+
+
 def test_operator_window_scene_capture_buttons_keep_tooltips_after_shortening_labels() -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())
@@ -198,23 +242,31 @@ def test_operator_window_buttons_remain_wired_after_layout_refactor(monkeypatch)
     calls: list[str] = []
 
     def _record(name: str):
-        def _handler(self) -> None:
-            calls.append(name)
+        def _handler(self, *args) -> None:
+            suffix = f":{args[0]}" if name == "pocket" and args else ""
+            calls.append(f"{name}{suffix}")
 
         return _handler
 
     patched_methods = [
         ("toggle_capture", "capture"),
         ("toggle_projection_window", "projection"),
+        ("initialize_graphics_image_module", "init_module"),
+        ("calibrate_projector", "projector_calib"),
         ("open_settings", "settings"),
         ("probe_camera_devices", "probe"),
+        ("export_diagnostic_snapshot", "export_diag"),
         ("capture_raw_photo", "raw_photo"),
         ("trigger_instant_replay_export", "instant_replay"),
         ("toggle_raw_video_recording", "raw_video"),
         ("toggle_route_video_recording", "route_video"),
+        ("_trigger_interaction_test_pocket", "pocket"),
+        ("_trigger_interaction_test_victory", "victory"),
         ("force_state_phase", "force_phase"),
         ("toggle_state_hold", "hold_state"),
         ("toggle_deep_debug_mode", "deep_debug"),
+        ("snapshot_stable_layout", "snapshot_state"),
+        ("reset_state_machine", "reset_state"),
         ("confirm_state_review", "confirm_review"),
         ("reject_state_review", "reject_review"),
         ("resolve_state_open_table_group", "resolve_group"),
@@ -223,26 +275,39 @@ def test_operator_window_buttons_remain_wired_after_layout_refactor(monkeypatch)
         monkeypatch.setattr(main_window.OperatorWindow, attr, _record(name))
 
     window = main_window.OperatorWindow(AppConfig())
-    for button in [
-        window.capture_btn,
-        window.projection_btn,
-        window.settings_btn,
-        window.probe_btn,
-        window.raw_photo_btn,
-        window.instant_replay_export_btn,
-        window.raw_video_btn,
-        window.route_video_btn,
-        window.force_phase_btn,
-        window.hold_state_btn,
-        window.deep_debug_btn,
-        window.confirm_review_btn,
-        window.reject_review_btn,
-        window.resolve_open_table_group_btn,
-    ]:
+    button_expectations = [
+        (window.capture_btn, "capture"),
+        (window.projection_btn, "projection"),
+        (window.init_module_btn, "init_module"),
+        (window.projector_calib_btn, "projector_calib"),
+        (window.settings_btn, "settings"),
+        (window.probe_btn, "probe"),
+        (window.export_diag_btn, "export_diag"),
+        (window.raw_photo_btn, "raw_photo"),
+        (window.instant_replay_export_btn, "instant_replay"),
+        (window.raw_video_btn, "raw_video"),
+        (window.route_video_btn, "route_video"),
+        (window.interaction_test_buttons["pocket0"], "pocket:0"),
+        (window.interaction_test_buttons["pocket1"], "pocket:1"),
+        (window.interaction_test_buttons["pocket2"], "pocket:2"),
+        (window.interaction_test_buttons["pocket3"], "pocket:3"),
+        (window.interaction_test_buttons["pocket4"], "pocket:4"),
+        (window.interaction_test_buttons["pocket5"], "pocket:5"),
+        (window.interaction_test_buttons["victory"], "victory"),
+        (window.force_phase_btn, "force_phase"),
+        (window.hold_state_btn, "hold_state"),
+        (window.deep_debug_btn, "deep_debug"),
+        (window.snapshot_state_btn, "snapshot_state"),
+        (window.reset_state_btn, "reset_state"),
+        (window.confirm_review_btn, "confirm_review"),
+        (window.reject_review_btn, "reject_review"),
+        (window.resolve_open_table_group_btn, "resolve_group"),
+    ]
+    for button, _expected in button_expectations:
         button.setEnabled(True)
         button.click()
 
-    assert calls == [name for _, name in patched_methods]
+    assert calls == [expected for _button, expected in button_expectations]
 
     window.close()
     app.processEvents()
