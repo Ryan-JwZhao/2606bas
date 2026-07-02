@@ -51,6 +51,7 @@ def test_operator_window_uses_scrollable_three_column_layout() -> None:
     assert window.outer_layout.indexOf(window.log_box) == -1
     assert window.right_panel.isAncestorOf(window.log_box) is True
     assert window.preview_label.parent() is window.preview_frame
+    assert window.preview_caption.height() < 30
     assert abs((window.preview_label.width() / max(1, window.preview_label.height())) - (16.0 / 9.0)) < 0.05
     assert window.preview_panel.height() > window.plan_panel.height()
 

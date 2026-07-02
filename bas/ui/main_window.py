@@ -1566,7 +1566,9 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.preview_panel = self._panel()
         self.preview_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.preview_layout = QtWidgets.QVBoxLayout(self.preview_panel)
-        self.preview_layout.addWidget(self._section_label("实时预览"))
+        self.preview_caption = QtWidgets.QLabel("实时预览")
+        self.preview_caption.setObjectName("previewCaption")
+        self.preview_layout.addWidget(self.preview_caption)
         self.preview_frame = AspectRatioPreviewFrame()
         self.preview_label = self.preview_frame.label()
         self.preview_frame.viewportChanged.connect(self._refresh_preview_pixmap)
@@ -1810,8 +1812,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.left_scroll_area.setMinimumWidth(px(304))
         self.left_scroll_area.setMaximumWidth(px(304))
         self.center_layout.setSpacing(px(12))
-        self.preview_layout.setContentsMargins(px(8), px(8), px(8), px(8))
-        self.preview_layout.setSpacing(px(8))
+        self.preview_layout.setContentsMargins(px(6), px(6), px(6), px(6))
+        self.preview_layout.setSpacing(px(4))
         self.plan_layout.setContentsMargins(px(12), px(12), px(12), px(12))
         self.plan_layout.setSpacing(px(8))
         self.right_layout.setContentsMargins(px(14), px(14), px(14), px(14))
@@ -1908,6 +1910,14 @@ class OperatorWindow(QtWidgets.QMainWindow):
             border: 1px solid #3a3a3a;
             color: #cfcfcf;
             font-size: {px(16)}px;
+        }}
+        QLabel#previewCaption {{
+            color: #b8b8b8;
+            font-size: {px(11)}px;
+            font-weight: 600;
+            padding: 0;
+            min-height: {px(14)}px;
+            max-height: {px(18)}px;
         }}
         QLabel#section {{ color: #ffffff; font-weight: 700; padding-top: {px(5)}px; }}
         QLabel#metricName {{ color: #b8b8b8; font-size: {px(12)}px; }}
