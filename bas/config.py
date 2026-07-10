@@ -283,6 +283,12 @@ class InstantReplayConfig:
 
 
 @dataclass
+class WebControlConfig:
+    host: str = "0.0.0.0"
+    port: int = 17070
+
+
+@dataclass
 class LoggingConfig:
     directory: str = "logs"
     level: str = "INFO"
@@ -301,6 +307,7 @@ class AppConfig:
     projection: ProjectionConfig = field(default_factory=ProjectionConfig)
     replay: ReplayConfig = field(default_factory=ReplayConfig)
     instant_replay: InstantReplayConfig = field(default_factory=InstantReplayConfig)
+    web_control: WebControlConfig = field(default_factory=WebControlConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     def __post_init__(self) -> None:
@@ -335,6 +342,7 @@ class AppConfig:
             projection=section("projection", ProjectionConfig),
             replay=section("replay", ReplayConfig),
             instant_replay=section("instant_replay", InstantReplayConfig),
+            web_control=section("web_control", WebControlConfig),
             logging=section("logging", LoggingConfig),
         )
         config.calibration.sync_projection_file_alias()
@@ -361,6 +369,8 @@ class AppConfig:
             DEFAULT_TARGET_SHOT_RELEASE_CONFIRM_MS,
         )
         planner.target_shot_trigger_frames = None
+        self.web_control.host = str(self.web_control.host or "0.0.0.0").strip() or "0.0.0.0"
+        self.web_control.port = max(1, min(65535, int(self.web_control.port or 17070)))
         return self
 
     def resolve_paths(self) -> "AppConfig":

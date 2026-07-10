@@ -48,6 +48,16 @@ class GeometryPhysicsPlanner:
         self.target_lock = TargetLockController(config)
         self.target_shot_mode = TargetShotModeController(config, aim_detector=self.aim_detector)
         self.target_shot_planner = TargetShotPlanner(config, calibration)
+        self.manual_target_id: Optional[int] = None
+
+    def set_manual_target(self, track_id: int) -> None:
+        self.manual_target_id = int(track_id)
+        self.target_lock.reset()
+        self.target_shot_mode.reset()
+
+    def clear_manual_target(self) -> None:
+        self.manual_target_id = None
+        self.target_lock.reset()
 
     def plan(
         self,
@@ -93,7 +103,8 @@ class GeometryPhysicsPlanner:
             frame_bgr=frame_bgr,
             frame_context=frame_context,
         )
-        if target_shot.active:
+        manual_target = self._manual_target(balls)
+        if target_shot.active and manual_target is None:
             return self._target_shot_plan(state, cue, balls, target_shot)
         turn_target_group = forced_turn_target_group if forced_turn_target_group is not None else getattr(state, "turn_target_group", None)
         cue_sector_aim = self.cue_sector.detect_aim(
@@ -102,9 +113,15 @@ class GeometryPhysicsPlanner:
             frame_bgr=frame_bgr,
             frame_context=frame_context,
         )
-        target_lock = self.target_lock.update(state=state, cue_ball=cue, balls=balls, aim=cue_sector_aim)
-        locked_target = self._locked_target(balls, target_lock)
-        if locked_target is not None:
+        if manual_target is not None:
+            target_lock = TargetLockDecision(manual_target.track_id, manual_target.group, "manual")
+            locked_target = manual_target
+        else:
+            target_lock = self.target_lock.update(state=state, cue_ball=cue, balls=balls, aim=cue_sector_aim)
+            locked_target = self._locked_target(balls, target_lock)
+        if manual_target is not None:
+            targets = [manual_target]
+        elif locked_target is not None:
             targets = [locked_target]
         elif cue_sector_aim is not None:
             targets = self.cue_sector.all_object_targets(balls)
@@ -248,6 +265,14 @@ class GeometryPhysicsPlanner:
             return None
         for ball in balls:
             if int(ball.track_id) == int(target_lock.locked_target_id) and ball.group in {"solid", "stripe", "black"} and ball.quality > 0.25:
+                return ball
+        return None
+
+    def _manual_target(self, balls: Sequence[_Ball]) -> Optional[_Ball]:
+        if self.manual_target_id is None:
+            return None
+        for ball in balls:
+            if int(ball.track_id) == int(self.manual_target_id) and ball.group in {"solid", "stripe", "black"}:
                 return ball
         return None
 

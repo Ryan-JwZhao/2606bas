@@ -85,6 +85,31 @@ def test_planner_generates_candidate() -> None:
     assert plan.best.score > -5
 
 
+def test_planner_manual_web_target_limits_candidates_until_cleared() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20), _service())
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="STABLE_IDLE",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _obs(2, "solid", 620, 250),
+            _obs(3, "stripe", 620, 350),
+        ],
+    )
+
+    planner.set_manual_target(3)
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert plan.locked_target_id == 3
+    assert plan.target_lock_status == "manual"
+    assert all(candidate.target_track_id == 3 for candidate in plan.candidates)
+
+    planner.clear_manual_target()
+    assert planner.manual_target_id is None
+
+
 def test_planner_excludes_black_on_open_table() -> None:
     planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20), _service())
     state = MatchStateFrame(

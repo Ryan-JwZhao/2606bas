@@ -6,6 +6,19 @@ from bas.config import AppConfig
 from bas.user_settings import UserSettings
 
 
+def test_web_control_settings_default_and_roundtrip(tmp_path) -> None:
+    config = AppConfig()
+    assert config.web_control.host == "0.0.0.0"
+    assert config.web_control.port == 17070
+
+    path = tmp_path / "user_settings.json"
+    UserSettings(web_control_host="127.0.0.1", web_control_port=18080).save(path)
+    loaded = UserSettings.load(path).apply_to_config(config)
+
+    assert loaded.web_control.host == "127.0.0.1"
+    assert loaded.web_control.port == 18080
+
+
 def test_user_settings_can_clear_default_paths_and_save_false_values(tmp_path) -> None:
     path = tmp_path / "user_settings.json"
     path.write_text(

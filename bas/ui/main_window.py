@@ -56,10 +56,12 @@ from ..schemas import MatchPhase, OverlayCircle, OverlayLine, ProjectionOverlay,
 from ..state import normalize_state_machine_engine
 from ..state_debug import StateDebugSession, StateDebugSessionResult
 from ..utils import unit
+from ..web_control import WebControlServer
 from .cue_sector_preview import draw_cue_sector_candidate_box
 from .engineered_ball_compensation_wizard import EngineeredBallCompensationWizardDialog
 from .geometry_reference import draw_geometry_reference_lines
 from .projection_debug import append_projected_ball_overlays, append_projected_boundary_overlays
+from .web_control_bridge import WebControlOperatorMixin
 from .widgets import AspectRatioPreviewFrame, CollapsibleSection, CompactButtonGrid
 
 LOGGER = logging.getLogger(__name__)
@@ -219,6 +221,11 @@ class SettingsDialog(QtWidgets.QDialog):
         self.state_machine_engine.setCurrentIndex(max(0, state_engine_index))
         self.detect_interval = self._spin(int(config.detector.detect_interval_frames), 1, 12)
         self.detect_fps_limit = self._dspin(float(config.detector.detect_fps_limit_hz), 0.0, 30.0, 0.5)
+        self.web_control_host = QtWidgets.QLineEdit(str(config.web_control.host or "0.0.0.0"))
+        self.web_control_host.setPlaceholderText("0.0.0.0")
+        self.web_control_port = self._spin(int(config.web_control.port), 1, 65535)
+        web_control_note = QtWidgets.QLabel("0.0.0.0 表示允许局域网设备访问；保存后由主界面的“开启 Web 控制”按钮启动。")
+        web_control_note.setWordWrap(True)
         self.proj_screen = QtWidgets.QComboBox()
         for idx, screen in enumerate(QtWidgets.QApplication.screens()):
             geo = screen.geometry()
@@ -466,6 +473,15 @@ class SettingsDialog(QtWidgets.QDialog):
                 ("学习样本目录", learning_collect_box),
             ],
         )
+        self._add_form_tab(
+            tabs,
+            "Web 控制",
+            [
+                ("监听地址", self.web_control_host),
+                ("接口端口", self.web_control_port),
+                ("说明", web_control_note),
+            ],
+        )
 
         tuning = QtWidgets.QWidget()
         tuning_layout = QtWidgets.QVBoxLayout(tuning)
@@ -629,6 +645,8 @@ class SettingsDialog(QtWidgets.QDialog):
         return scroll
 
     def apply_to_config(self, config: AppConfig) -> None:
+        config.web_control.host = self.web_control_host.text().strip() or "0.0.0.0"
+        config.web_control.port = int(self.web_control_port.value())
         config.detector.model_path = self.model_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.detector.class_file_path = self.class_file_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.learning.ranker_enabled = self.learning_ranker_enabled.isChecked()
@@ -1288,7 +1306,7 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
         )
 
 
-class OperatorWindow(QtWidgets.QMainWindow):
+class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
     BASE_WIDTH = 1420
     BASE_HEIGHT = 860
     RAW_PHOTO_LABEL = "抓拍原图"
@@ -1345,6 +1363,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._recording_fps_estimator = RecordingFpsEstimator()
         self._pending_turn_target_group: Optional[str] = None
         self._remote_command_queue = RemoteCommandQueue()
+        self.web_control = WebControlServer()
+        self._manual_web_target_id: Optional[int] = None
 
         self.timer = QtCore.QTimer(self)
         self.timer.setSingleShot(True)
@@ -1439,6 +1459,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.settings_btn = self._button("设置", variant="compact")
         self.probe_btn = self._button("探测相机", variant="compact")
         self.export_diag_btn = self._button("导出诊断快照", variant="compact")
+        self.web_control_btn = self._button("开启 Web 控制", variant="compact")
         self.capture_btn.clicked.connect(self.toggle_capture)
         self.projection_btn.clicked.connect(self.toggle_projection_window)
         self.init_module_btn.clicked.connect(self.initialize_graphics_image_module)
@@ -1446,6 +1467,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self.settings_btn.clicked.connect(self.open_settings)
         self.probe_btn.clicked.connect(self.probe_camera_devices)
         self.export_diag_btn.clicked.connect(self.export_diagnostic_snapshot)
+        self.web_control_btn.clicked.connect(self.toggle_web_control)
         control_layout.addWidget(self.capture_btn)
         control_layout.addWidget(self.projection_btn)
         control_grid = CompactButtonGrid(columns=2)
@@ -1453,6 +1475,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         for button in [self.init_module_btn, self.projector_calib_btn, self.settings_btn, self.probe_btn]:
             control_grid.addButton(button)
         control_grid.addButton(self.export_diag_btn, column_span=2)
+        control_grid.addButton(self.web_control_btn, column_span=2)
         control_layout.addWidget(control_grid)
         self.side_layout.addWidget(control_section)
 
@@ -2306,6 +2329,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._queue_projection_notice("下一杆黑球")
 
     def _process_remote_commands(self) -> None:
+        self.web_control.process_actions(self._handle_web_action, limit=32)
         try:
             commands = self._remote_command_queue.drain(limit=24)
         except Exception as exc:
@@ -3653,6 +3677,8 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def _pipeline_started(self, pipeline: RuntimePipeline) -> None:
         self._pipeline_start_pending = False
         self.pipeline = pipeline
+        if self._manual_web_target_id is not None:
+            self.pipeline.planner.set_manual_target(self._manual_web_target_id)
         self._refresh_recording_frame_corrector()
         self._recording_fps_estimator.reset()
         self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
@@ -3703,6 +3729,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
     def open_settings(self) -> None:
         pipeline_signature_before = self._pipeline_restart_signature()
         projection_signature_before = self._projection_signature()
+        web_signature_before = (self.config.web_control.host, self.config.web_control.port)
         dialog = SettingsDialog(self.config, self.star_formula, self)
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
@@ -3714,6 +3741,10 @@ class OperatorWindow(QtWidgets.QMainWindow):
         self._save_user_settings()
         pipeline_changed = pipeline_signature_before != self._pipeline_restart_signature()
         projection_changed = projection_signature_before != self._projection_signature()
+        web_changed = web_signature_before != (self.config.web_control.host, self.config.web_control.port)
+        if web_changed and self.web_control.is_running:
+            self.stop_web_control()
+            self.start_web_control()
         if self.projection_window is not None:
             if projection_changed:
                 self.projection_window.close()
@@ -3938,6 +3969,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     def _set_preview_image(self, image_bgr: np.ndarray) -> None:
         self._last_preview_bgr = image_bgr.copy()
+        self.web_control.update_frame(image_bgr)
         self._refresh_preview_pixmap()
 
     def _refresh_preview_pixmap(self) -> None:
@@ -4090,6 +4122,7 @@ class OperatorWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         self._projection_effect_timer.stop()
+        self.web_control.stop()
         self.stop_pipeline()
         if self.projection_window is not None:
             self.projection_window.close()

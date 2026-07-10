@@ -21,6 +21,7 @@ BAS 是一个台球辅助系统，主要能力包括：
 - `bas/planning`：路线规划、target shot、free shot、cue sector 等模块
 - `bas/projection`：投影叠加与渲染
 - `bas/ui`：桌面控制台
+- `bas/web_control`：局域网 Web 控制服务、HTTP API、MJPEG 与 2604 移动端页面
 - `scripts`：本地调试、基准和辅助脚本
 - `tests`：单元测试与回归测试
 
@@ -76,6 +77,7 @@ Start_BAS.cmd
 
 - `开始采集`：启动或停止实时采集链路。
 - `开始投影`：打开或关闭投影窗口。
+- `开启 Web 控制`：按“设置 → Web 控制”中的监听地址和端口启动局域网控制页。
 - `抓拍原图`：保存当前无画线校正照片。
 - `导出纯净回放`：导出前 60 秒纯净视频回放。
 - `开始原始录制` / `开始路线录制`：分别录制无画线视频和进洞路线画线视频。
@@ -83,6 +85,17 @@ Start_BAS.cmd
 界面改动后，左侧和右侧都支持滚动，交互调试与复核区域支持折叠。若窗口缩小，预览区域会继续保持 16:9 比例，避免黑边占满整块布局。
 
 当前实时预览会按可用空间计算最大的 16:9 画面，宽或高至少有一边顶满预览视口；小尺寸输入帧也会被放大到预览区域内显示，保持不裁切。预览标题与画面之间只保留紧凑间距，避免标题上下出现大块空白。
+
+## 局域网 Web 控制
+
+Web 控制沿用 `2604BilliardsAssistanceSystem` 的移动端页面与接口设计，默认监听 `0.0.0.0:17070`。使用步骤：
+
+1. 打开桌面控制台的 `设置 → Web 控制`，确认监听地址为 `0.0.0.0`、接口端口为 `17070`；如端口冲突可在此修改并保存。
+2. 回到主界面，点击 `开启 Web 控制`。按钮变为 `关闭 Web 控制` 即表示服务已启动。
+3. 同一局域网内的手机或电脑访问 `http://<运行 BAS 的电脑 IP>:17070`。
+4. 开始采集后，网页会显示实时 MJPEG 画面、运行状态和路线；点击画面中的目标球可临时指定规划目标。
+
+兼容接口包括 `/health`、`/state`、`/frame.jpg`、`/mjpeg` 及对应的 `/api/*` 别名；控制请求由 HTTP 线程排队后交给 Qt 主线程执行。若其它设备无法打开，请检查 Windows 防火墙是否允许 Python 监听当前端口，并确认两台设备处于同一局域网。该服务默认不含身份认证，请只在可信局域网内开启。
 
 ## 测试与回归
 
@@ -102,6 +115,12 @@ Start_BAS.cmd
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_ui_runtime.py -q --basetemp=pytest_tmp_codex -o cache_dir=pytest_cache_local\pytest_cache
+```
+
+检查 Web 控制接口：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_web_control.py -q --basetemp=pytest_tmp_codex -o cache_dir=pytest_cache_local\pytest_cache
 ```
 
 ## 最近一次规划修复说明

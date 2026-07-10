@@ -256,6 +256,7 @@ def test_operator_window_buttons_remain_wired_after_layout_refactor(monkeypatch)
         ("open_settings", "settings"),
         ("probe_camera_devices", "probe"),
         ("export_diagnostic_snapshot", "export_diag"),
+        ("toggle_web_control", "web_control"),
         ("capture_raw_photo", "raw_photo"),
         ("trigger_instant_replay_export", "instant_replay"),
         ("toggle_raw_video_recording", "raw_video"),
@@ -283,6 +284,7 @@ def test_operator_window_buttons_remain_wired_after_layout_refactor(monkeypatch)
         (window.settings_btn, "settings"),
         (window.probe_btn, "probe"),
         (window.export_diag_btn, "export_diag"),
+        (window.web_control_btn, "web_control"),
         (window.raw_photo_btn, "raw_photo"),
         (window.instant_replay_export_btn, "instant_replay"),
         (window.raw_video_btn, "raw_video"),
@@ -367,6 +369,7 @@ def test_settings_dialog_groups_controls_into_clear_tabs() -> None:
         "投影输出",
         "路线策略",
         "学习数据",
+        "Web 控制",
         "投影修正",
         "颗星公式",
     ]

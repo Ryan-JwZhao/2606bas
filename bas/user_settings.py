@@ -104,6 +104,8 @@ class UserSettings:
     learning_score_blend: Optional[float] = None
     learning_collect_enabled: Optional[bool] = None
     learning_samples_directory: Optional[str] = None
+    web_control_host: Optional[str] = None
+    web_control_port: Optional[int] = None
     star_formula: Dict[str, Any] = field(default_factory=dict)
     _provided_keys: set[str] = field(default_factory=set, repr=False, compare=False)
     _loaded_from_file: bool = field(default=False, repr=False, compare=False)
@@ -131,6 +133,10 @@ class UserSettings:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
     def apply_to_config(self, config: AppConfig) -> AppConfig:
+        if self._has("web_control_host"):
+            config.web_control.host = _clean_optional_text(self.web_control_host) or "0.0.0.0"
+        if self.web_control_port is not None:
+            config.web_control.port = max(1, min(65535, int(self.web_control_port)))
         if self._has("camera_backend") and self.camera_backend:
             config.camera.backend = self.camera_backend
         if self.camera_device_index is not None:
@@ -433,6 +439,8 @@ class UserSettings:
             learning_score_blend=config.learning.score_blend,
             learning_collect_enabled=config.learning.collect_enabled,
             learning_samples_directory=config.learning.samples_directory,
+            web_control_host=config.web_control.host,
+            web_control_port=config.web_control.port,
             star_formula=dict(star_formula or {}),
         )
 
