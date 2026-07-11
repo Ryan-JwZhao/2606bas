@@ -1,0 +1,351 @@
+:root {
+  color-scheme: dark;
+  --bg: #111318;
+  --surface: #1a1c20;
+  --surface-raised: #23262d;
+  --surface-active: #26364c;
+  --line: #30343d;
+  --text: #e2e2e8;
+  --text-muted: #9da4b1;
+  --accent: #8eb7eb;
+  --accent-strong: #4c78ad;
+  --ok: #5cde97;
+  --warning: #f0be61;
+  --danger: #ff6c7a;
+  --page-padding: clamp(0.75rem, 3.5vw, 1.4rem);
+  --control-gap: clamp(0.55rem, 2.4vw, 0.9rem);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  overscroll-behavior-y: contain;
+}
+
+body {
+  min-height: 100dvh;
+}
+
+button {
+  border: 0;
+  color: inherit;
+  font: inherit;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.app {
+  width: 100%;
+  min-height: 100dvh;
+  background: var(--bg);
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+.system-bar {
+  min-height: calc(2.55rem + env(safe-area-inset-top));
+  padding: calc(0.58rem + env(safe-area-inset-top)) var(--page-padding) 0.58rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: clamp(0.78rem, 3.3vw, 0.94rem);
+}
+
+.system-name {
+  overflow: hidden;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-state {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.state-dot {
+  width: 0.56rem;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0.5rem color-mix(in srgb, var(--danger) 58%, transparent);
+}
+
+.state-dot--running {
+  background: var(--ok);
+  box-shadow: 0 0 0.5rem color-mix(in srgb, var(--ok) 58%, transparent);
+}
+
+.state-dot--waiting {
+  background: var(--warning);
+  box-shadow: 0 0 0.5rem color-mix(in srgb, var(--warning) 58%, transparent);
+}
+
+.state-dot--offline {
+  background: var(--danger);
+}
+
+.video-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: #050608;
+}
+
+#stream {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #050608;
+  cursor: crosshair;
+  image-orientation: none;
+  user-select: none;
+  -webkit-user-drag: none;
+  touch-action: manipulation;
+}
+
+.fullscreen-button {
+  position: absolute;
+  right: max(0.7rem, env(safe-area-inset-right));
+  bottom: 0.7rem;
+  width: clamp(2.35rem, 10vw, 2.85rem);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  padding: 0.58rem;
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 0.65rem;
+  background: rgb(17 19 24 / 82%);
+  backdrop-filter: blur(6px);
+  cursor: pointer;
+}
+
+.fullscreen-button svg,
+.replay-button svg {
+  width: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--control-gap);
+  padding: var(--page-padding);
+  border-bottom: 1px solid var(--line);
+}
+
+.mode-button {
+  min-width: 0;
+  padding: clamp(1.35rem, 6.5vw, 2.35rem) 0.55rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--line);
+  border-radius: clamp(0.8rem, 3.5vw, 1.15rem);
+  background: var(--surface-raised);
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, transform 100ms ease;
+}
+
+.mode-button:active,
+.control-button:active,
+.replay-button:active {
+  transform: scale(0.98);
+}
+
+.mode-button.is-active {
+  border-color: var(--accent-strong);
+  background: var(--surface-active);
+}
+
+.mode-button__title {
+  font-size: clamp(1.1rem, 5vw, 1.5rem);
+  font-weight: 680;
+}
+
+.mode-button__hint {
+  color: var(--text-muted);
+  font-size: clamp(0.68rem, 2.8vw, 0.8rem);
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.9rem, 4vw, 1.25rem);
+  padding: clamp(0.95rem, 4vw, 1.4rem) var(--page-padding) 0;
+}
+
+.control-group {
+  min-width: 0;
+}
+
+.control-label {
+  margin: 0 0 0.5rem;
+  color: var(--text-muted);
+  font-size: clamp(0.76rem, 3.1vw, 0.88rem);
+  font-weight: 580;
+  letter-spacing: 0.06em;
+}
+
+.control-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--control-gap);
+}
+
+.control-button {
+  min-width: 0;
+  padding: clamp(0.88rem, 4.2vw, 1.15rem) 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: clamp(0.68rem, 3vw, 0.9rem);
+  background: var(--surface-raised);
+  font-size: clamp(0.9rem, 4vw, 1.05rem);
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease, transform 100ms ease;
+}
+
+.control-button.is-active {
+  border-color: var(--accent-strong);
+  background: var(--surface-active);
+  color: var(--accent);
+}
+
+.replay-button {
+  width: min(76%, 24rem);
+  margin: 0.15rem auto 0;
+  padding: clamp(0.86rem, 4vw, 1.05rem) clamp(1rem, 5vw, 1.5rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  border: 1px solid var(--accent-strong);
+  border-radius: clamp(0.75rem, 3vw, 0.95rem);
+  background: var(--surface-active);
+  font-size: clamp(0.9rem, 4vw, 1.05rem);
+  font-weight: 620;
+  cursor: pointer;
+  transition: opacity 150ms ease, transform 100ms ease;
+}
+
+.replay-button svg {
+  width: 1.25rem;
+}
+
+.replay-button:disabled,
+.control-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  z-index: 20;
+  max-width: calc(100vw - 2rem);
+  padding: 0.65rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 0.7rem;
+  background: rgb(26 28 32 / 94%);
+  box-shadow: 0 0.65rem 1.8rem rgb(0 0 0 / 34%);
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, 0.6rem);
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.toast.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.video-stage:fullscreen,
+.video-stage:-webkit-full-screen,
+.video-stage.is-fallback-fullscreen {
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  aspect-ratio: auto;
+  background: #000;
+}
+
+.video-stage:fullscreen #stream,
+.video-stage:-webkit-full-screen #stream,
+.video-stage.is-fallback-fullscreen #stream {
+  object-fit: contain;
+}
+
+.video-stage:fullscreen .fullscreen-button,
+.video-stage:-webkit-full-screen .fullscreen-button,
+.video-stage.is-fallback-fullscreen .fullscreen-button {
+  display: none;
+}
+
+body.has-fallback-fullscreen {
+  overflow: hidden;
+}
+
+.video-stage.is-fallback-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+}
+
+@media (orientation: portrait) {
+  .video-stage.is-fallback-fullscreen {
+    inset: auto;
+    top: 50%;
+    left: 50%;
+    width: 100dvh;
+    height: 100vw;
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+}
+
+@media (orientation: landscape) and (max-height: 34rem) {
+  .video-stage:fullscreen #stream,
+  .video-stage:-webkit-full-screen #stream,
+  .video-stage.is-fallback-fullscreen #stream {
+    width: 100vw;
+    height: 100dvh;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -36,7 +36,16 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
         with urlopen(f"{base}/api/state", timeout=2.0) as response:
             assert json.load(response)["frame_idx"] == 7
         with urlopen(f"{base}/", timeout=2.0) as response:
-            assert "PRECISION AI Web Client" in response.read().decode("utf-8")
+            html = response.read().decode("utf-8")
+            assert "BAS台球系统" in html
+            assert "/mobile_web_client.css" in html
+            assert "/mobile_web_client.js" in html
+        with urlopen(f"{base}/mobile_web_client.css", timeout=2.0) as response:
+            assert response.headers.get_content_type() == "text/css"
+            assert b"aspect-ratio: 16 / 9" in response.read()
+        with urlopen(f"{base}/mobile_web_client.js", timeout=2.0) as response:
+            assert response.headers.get_content_type() == "text/javascript"
+            assert b"/api/shot_mode/set" in response.read()
 
         request = Request(
             f"{base}/api/compute",
@@ -47,12 +56,22 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
         with urlopen(request, timeout=2.0) as response:
             assert json.load(response)["message"] == "compute"
 
+        replay_request = Request(
+            f"{base}/api/instant_replay/export",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(replay_request, timeout=2.0) as response:
+            assert json.load(response)["message"] == "instant_replay_export"
+
         assert bridge.update_frame(np.zeros((9, 16, 3), dtype=np.uint8)) is True
         with urlopen(f"{base}/api/frame.jpg", timeout=2.0) as response:
             assert response.headers.get_content_type() == "image/jpeg"
             assert response.read(2) == b"\xff\xd8"
         assert ("state", {}) in seen
         assert ("compute", {}) in seen
+        assert ("instant_replay_export", {}) in seen
     finally:
         stopped.set()
         bridge.stop()

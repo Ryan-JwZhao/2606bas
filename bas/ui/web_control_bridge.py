@@ -119,6 +119,9 @@ class WebControlOperatorMixin:
             enabled = not self.star_formula.enabled if action.endswith("toggle") else bool(payload.get("enabled", False))
             self._set_star_formula_enabled(enabled, source="web")
             return self._web_result(True, "颗星公式已开启" if enabled else "颗星公式已关闭")
+        if action == "instant_replay_export":
+            accepted = self._trigger_instant_replay_export(source="web")
+            return self._web_result(bool(accepted), "精彩瞬间录制已触发" if accepted else "精彩瞬间录制触发失败")
         if action == "compute":
             self._refresh_current_plan()
             return self._web_result(True, "当前版本实时自动计算路线")
@@ -234,5 +237,5 @@ class WebControlOperatorMixin:
             "capture_running": self.pipeline is not None,
             "projection": {"active": self.projection_window is not None},
             "star_formula_enabled": bool(self.star_formula.enabled),
+            "instant_replay_enabled": bool(self.config.instant_replay.enabled),
         }
-

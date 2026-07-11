@@ -58,6 +58,7 @@ class WebControlServer:
         "/shot_once/black/toggle": "shot_once_black_toggle",
         "/star_formula/toggle": "star_formula_toggle",
         "/star_formula/set": "star_formula_set",
+        "/instant_replay/export": "instant_replay_export",
         "/compute": "compute",
         "/detect": "detect",
     }
@@ -75,8 +76,12 @@ class WebControlServer:
         self._last_jpeg_encode_ts = 0.0
         self._host = "0.0.0.0"
         self._port = 17070
-        client_path = Path(__file__).with_name("mobile_web_client.html")
-        self._client_html = client_path.read_bytes()
+        asset_dir = Path(__file__).parent
+        self._client_assets = {
+            "/": ("text/html; charset=utf-8", (asset_dir / "mobile_web_client.html").read_bytes()),
+            "/mobile_web_client.css": ("text/css; charset=utf-8", (asset_dir / "mobile_web_client.css").read_bytes()),
+            "/mobile_web_client.js": ("text/javascript; charset=utf-8", (asset_dir / "mobile_web_client.js").read_bytes()),
+        }
 
     @property
     def is_running(self) -> bool:
@@ -214,9 +219,10 @@ class WebControlServer:
                     return {}
                 return obj if isinstance(obj, dict) else {}
 
-            def _serve_html(self) -> None:
-                self._send_headers(200, "text/html; charset=utf-8", len(bridge._client_html))
-                self.wfile.write(bridge._client_html)
+            def _serve_client_asset(self, asset_path: str) -> None:
+                content_type, data = bridge._client_assets[asset_path]
+                self._send_headers(200, content_type, len(data))
+                self.wfile.write(data)
 
             def _serve_jpeg(self) -> None:
                 jpg = bridge._get_jpeg()
@@ -259,7 +265,9 @@ class WebControlServer:
             def do_GET(self) -> None:  # noqa: N802
                 path = bridge._normalize_path(urlparse(self.path).path)
                 if path in {"/", "/index.html"}:
-                    self._serve_html()
+                    self._serve_client_asset("/")
+                elif path in bridge._client_assets:
+                    self._serve_client_asset(path)
                 elif path == "/health":
                     self._send_json(200, {"ok": True, "service": "billiards-assistance-system"})
                 elif path == "/state":

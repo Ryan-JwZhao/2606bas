@@ -2696,33 +2696,34 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
     def trigger_instant_replay_export(self) -> None:
         self._trigger_instant_replay_export(source="ui")
 
-    def _trigger_instant_replay_export(self, *, source: str) -> None:
+    def _trigger_instant_replay_export(self, *, source: str) -> bool:
         if self.pipeline is None or self.last_output is None:
             self._append_log(f"前60秒纯净视频导出失败：请先开始采集 ({source})")
-            return
+            return False
         if not self.config.instant_replay.enabled:
             self._append_log(f"前60秒纯净视频缓存已关闭，当前导出请求忽略 ({source})")
-            return
+            return False
         if self._instant_replay_start_failed:
             self._append_log(f"前60秒纯净视频缓存未正常启动，当前导出请求忽略 ({source})")
-            return
+            return False
         frame = self._current_recording_frame()
         if frame is None:
             self._append_log(f"{self._recording_frame_error()} ({source})")
-            return
+            return False
         self._ensure_instant_replay_started(frame)
         if not self._instant_replay.is_running:
             self._append_log(f"前60秒纯净视频缓存仍在预热帧率，请等待几帧后再试 ({source})")
-            return
+            return False
         if self._instant_replay_start_failed:
             self._append_log(f"前60秒纯净视频缓存启动失败，无法导出 ({source})")
-            return
+            return False
         result = self._instant_replay.request_export(trigger_ts_ns=self.last_output.frame.ts_cam_ns)
         self._append_log(f"{result.message} ({source})")
         if result.accepted:
             self._queue_projection_notice("精彩时刻已触发")
         self._flush_instant_replay_events()
         self._update_module_status(self.last_output)
+        return bool(result.accepted)
 
     def _ensure_instant_replay_started(self, frame: np.ndarray) -> None:
         if not self.config.instant_replay.enabled or self._instant_replay_start_failed:
