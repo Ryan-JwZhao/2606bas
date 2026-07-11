@@ -57,7 +57,7 @@ function renderGameMode() {
 }
 
 function renderState(state) {
-  if (!state) return;
+  if (!state || state.ok === false) return;
   setConnectionState(state.pipeline_ready ? 'running' : 'waiting');
 
   const baseShotMode = state.base_shot_mode?.code || state.shot_mode?.base_code || state.shot_mode?.code || 'rule';
@@ -117,10 +117,14 @@ async function fetchState() {
   try {
     const response = await fetch('/api/state', { cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    lastState = await response.json();
+    const data = await response.json();
+    if (!data || data.ok === false) {
+      throw new Error(data?.message || '状态数据无效');
+    }
+    lastState = data;
     renderState(lastState);
   } catch (_error) {
-    setConnectionState('offline');
+    if (!lastState) setConnectionState('offline');
   }
 }
 

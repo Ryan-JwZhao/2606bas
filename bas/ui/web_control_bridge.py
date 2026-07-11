@@ -4,6 +4,7 @@ import numpy as np
 from PyQt5 import QtCore, QtWidgets
 
 from ..operator_controls import normalize_shot_mode
+from ..schemas import to_jsonable
 
 
 class WebControlOperatorMixin:

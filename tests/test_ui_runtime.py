@@ -512,6 +512,50 @@ def test_web_state_keeps_base_rule_separate_from_single_shot_override() -> None:
     assert state["shot_overrides"]["free_shot_once"]["active"] is True
 
 
+def test_web_state_serializes_an_available_route_for_control_responses() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    window.config = AppConfig()
+    window.control_state = RuntimeControlState()
+    window.pipeline = None
+    window.projection_window = None
+    window.star_formula = SimpleNamespace(enabled=False)
+    window._pending_turn_target_group = "solid"
+    window._manual_web_target_id = None
+
+    candidate = ShotCandidate(
+        candidate_id="web-route",
+        cue_track_id=1,
+        target_track_id=2,
+        target_group="solid",
+        pocket_index=0,
+        cue_ball=(100.0, 100.0),
+        object_ball=(200.0, 100.0),
+        ghost_ball=(180.0, 100.0),
+        pocket_point=(300.0, 100.0),
+        aim_line=[(100.0, 100.0), (180.0, 100.0)],
+        object_line=[(200.0, 100.0), (300.0, 100.0)],
+        cut_angle_deg=0.0,
+        cue_distance_mm=80.0,
+        object_distance_mm=100.0,
+        score=0.9,
+        risk=0.1,
+    )
+    window.last_output = main_window.PipelineOutput(
+        frame=FramePacket(frame_id=7, ts_cam_ns=9, camera_id="test", image=np.zeros((9, 16, 3), dtype=np.uint8)),
+        detections=DetectionsFrame(frame_id=7, ts_cam_ns=9),
+        tracks=TracksFrame(frame_id=7, ts_cam_ns=9),
+        state=MatchStateFrame(frame_id=7, ts_cam_ns=9, phase="STABLE_IDLE", turn_target_group="solid"),
+        plan=ShotPlan(plan_id="web-plan", frame_id=7, ts_cam_ns=9, best=candidate),
+        overlay=ProjectionOverlay(overlay_id="web-overlay", frame_id=7, projector_size=(16, 9)),
+    )
+
+    state = main_window.OperatorWindow._build_web_state(window)
+
+    assert state["ok"] is True
+    assert state["route"]["candidate_id"] == "web-route"
+    assert state["route"]["shot_type"] == "rule"
+
+
 def test_toggle_turn_group_flips_known_group_and_does_not_guess_unknown_group() -> None:
     window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
     window.pipeline = None
