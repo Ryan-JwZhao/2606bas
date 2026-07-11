@@ -85,8 +85,8 @@ class WebControlOperatorMixin:
             self.reset_state_machine()
             return self._web_result(True, "已重置并开始新局")
         if action == "match_switch_turn":
-            self._toggle_turn_target_group(source="web")
-            return self._web_result(True, "已切换当前目标花色")
+            switched = self._toggle_turn_target_group(source="web")
+            return self._web_result(switched, "已切换到另一花色" if switched else "当前花色尚未确定，无法切换")
         if action in {"match_stage", "match_undo"}:
             return self._web_result(False, "2606 状态机不支持此旧版阶段命令")
         if action == "shot_mode_toggle":

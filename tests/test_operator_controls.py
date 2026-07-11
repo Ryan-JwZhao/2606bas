@@ -13,7 +13,8 @@ def test_runtime_control_state_clears_single_turn_overrides_after_turn_resolve()
     assert state.black_shot_active is False
 
 
-def test_toggle_object_group_defaults_to_solid() -> None:
-    assert toggled_object_group(None) == "solid"
+def test_toggle_object_group_only_flips_a_known_object_group() -> None:
+    assert toggled_object_group(None) is None
     assert toggled_object_group("solid") == "stripe"
     assert toggled_object_group("stripe") == "solid"
+    assert toggled_object_group("black") is None

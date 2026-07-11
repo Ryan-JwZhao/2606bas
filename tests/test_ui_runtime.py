@@ -512,6 +512,25 @@ def test_web_state_keeps_base_rule_separate_from_single_shot_override() -> None:
     assert state["shot_overrides"]["free_shot_once"]["active"] is True
 
 
+def test_toggle_turn_group_flips_known_group_and_does_not_guess_unknown_group() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    window.pipeline = None
+    window._pending_turn_target_group = None
+    messages: list[str] = []
+    window._append_log = messages.append
+
+    assert main_window.OperatorWindow._toggle_turn_target_group(window, source="test") is False
+    assert window._pending_turn_target_group is None
+    assert "尚未确定" in messages[-1]
+
+    window._pending_turn_target_group = "solid"
+    assert main_window.OperatorWindow._toggle_turn_target_group(window, source="test") is True
+    assert window._pending_turn_target_group == "stripe"
+
+    assert main_window.OperatorWindow._toggle_turn_target_group(window, source="test") is True
+    assert window._pending_turn_target_group == "solid"
+
+
 def test_refresh_projection_uses_composed_interaction_frame() -> None:
     window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
     captured: list[np.ndarray] = []

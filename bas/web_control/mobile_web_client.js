@@ -79,11 +79,7 @@ function renderState(state) {
     elements.shotOverrideTarget.hidden = false;
   }
 
-  const turnGroup = state.match?.turn_group;
-  const groupNames = { solid: '纯色球', stripe: '花色球' };
-  elements.switchColor.textContent = turnGroup && groupNames[turnGroup]
-    ? `切换花色 · ${groupNames[turnGroup]}`
-    : '切换花色';
+  elements.switchColor.textContent = '切换花色';
 
   if ('instant_replay_enabled' in state) {
     elements.replay.disabled = !state.instant_replay_enabled;

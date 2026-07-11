@@ -16,11 +16,13 @@ def normalize_target_group(value: str | None) -> Optional[str]:
     return group if group in {"solid", "stripe", "black"} else None
 
 
-def toggled_object_group(value: str | None) -> str:
+def toggled_object_group(value: str | None) -> Optional[str]:
     current = normalize_target_group(value)
     if current == "solid":
         return "stripe"
-    return "solid"
+    if current == "stripe":
+        return "solid"
+    return None
 
 
 @dataclass

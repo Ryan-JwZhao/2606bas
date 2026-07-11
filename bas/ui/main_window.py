@@ -2289,8 +2289,12 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             return out
         return replace(out, plan=decision.plan, overlay=decision.overlay)
 
-    def _toggle_turn_target_group(self, *, source: str) -> None:
-        next_group = toggled_object_group(self._current_turn_target_group())
+    def _toggle_turn_target_group(self, *, source: str) -> bool:
+        current_group = self._current_turn_target_group()
+        next_group = toggled_object_group(current_group)
+        if next_group is None:
+            self._append_log(f"当前目标花色尚未确定，未执行切换 ({source})")
+            return False
         self._pending_turn_target_group = next_group
         if self.pipeline is not None:
             frame_id, ts_cam_ns = self._last_frame_marker()
@@ -2303,8 +2307,9 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self._refresh_current_plan()
             self._update_module_status(self.last_output)
             self._append_log(f"当前目标花色已切换为 {next_group} ({source})")
-            return
+            return True
         self._append_log(f"当前目标花色已预设为 {next_group}，开始采集后生效 ({source})")
+        return True
 
     def _arm_free_shot_once(self, *, source: str) -> None:
         self.control_state.arm_free_shot()

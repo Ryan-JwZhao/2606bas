@@ -52,6 +52,7 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             assert b"/api/shot_once/black/clear" in client_js
             assert "临时覆盖长期规则" not in client_js.decode("utf-8")
             assert "下一杆规则" in client_js.decode("utf-8")
+            assert "切换花色 ·" not in client_js.decode("utf-8")
 
         request = Request(
             f"{base}/api/compute",
