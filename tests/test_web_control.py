@@ -45,7 +45,10 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             assert b"aspect-ratio: 16 / 9" in response.read()
         with urlopen(f"{base}/mobile_web_client.js", timeout=2.0) as response:
             assert response.headers.get_content_type() == "text/javascript"
-            assert b"/api/shot_mode/set" in response.read()
+            client_js = response.read()
+            assert b"/api/shot_mode/set" in client_js
+            assert b"/api/shot_once/free/clear" in client_js
+            assert b"/api/shot_once/black/clear" in client_js
 
         request = Request(
             f"{base}/api/compute",

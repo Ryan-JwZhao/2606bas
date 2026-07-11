@@ -44,7 +44,7 @@
       <section class="control-group" aria-labelledby="coreControlLabel">
         <h2 class="control-label" id="coreControlLabel">核心控制</h2>
         <div class="control-row">
-          <button class="control-button" id="switchColorButton" type="button">切换花色</button>
+          <button class="control-button control-button--momentary" id="switchColorButton" type="button">切换花色</button>
           <button class="control-button" id="starFormulaButton" type="button" aria-pressed="false">颗星公式</button>
         </div>
       </section>
@@ -59,9 +59,16 @@
 
       <section class="control-group" aria-labelledby="nextShotLabel">
         <h2 class="control-label" id="nextShotLabel">下一杆</h2>
-        <div class="control-row">
+        <div class="control-row" id="nextShotChoices">
           <button class="control-button" id="nextFreeButton" type="button" aria-pressed="false">下一杆自由</button>
           <button class="control-button" id="nextBlackButton" type="button" aria-pressed="false">下一杆黑球</button>
+        </div>
+        <div class="shot-override" id="shotOverrideBanner" hidden>
+          <span class="shot-override__status">
+            <strong id="shotOverrideTitle">下一杆自由</strong>
+            <span id="shotOverrideDetail">临时覆盖长期规则</span>
+          </span>
+          <button class="shot-override__cancel" id="cancelShotOverrideButton" type="button">取消</button>
         </div>
       </section>
 

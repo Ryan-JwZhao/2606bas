@@ -181,7 +181,8 @@ class WebControlOperatorMixin:
                 )
         rule_route = None
         free_route = None
-        route_type = self.control_state.effective_shot_mode(self.config.planner.shot_mode)
+        base_route_type = normalize_shot_mode(self.config.planner.shot_mode)
+        route_type = self.control_state.effective_shot_mode(base_route_type)
         if out is not None and out.plan.best is not None:
             rule_route = to_jsonable(out.plan.best)
             rule_route["pocket_id"] = rule_route.get("pocket_index")
@@ -210,6 +211,12 @@ class WebControlOperatorMixin:
                 "code": route_type,
                 "name": "自由模式" if route_type == "free" else "规则模式",
                 "effective_route_type": route_type,
+                "base_code": base_route_type,
+                "base_name": "自由模式" if base_route_type == "free" else "规则模式",
+            },
+            "base_shot_mode": {
+                "code": base_route_type,
+                "name": "自由模式" if base_route_type == "free" else "规则模式",
             },
             "route_type": route_type,
             "route": route,

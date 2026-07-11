@@ -12,6 +12,11 @@ const elements = {
   freeMode: document.getElementById('freeModeButton'),
   nextFree: document.getElementById('nextFreeButton'),
   nextBlack: document.getElementById('nextBlackButton'),
+  nextShotChoices: document.getElementById('nextShotChoices'),
+  shotOverrideBanner: document.getElementById('shotOverrideBanner'),
+  shotOverrideTitle: document.getElementById('shotOverrideTitle'),
+  shotOverrideDetail: document.getElementById('shotOverrideDetail'),
+  cancelShotOverride: document.getElementById('cancelShotOverrideButton'),
   replay: document.getElementById('replayButton'),
   toast: document.getElementById('toast'),
 };
@@ -55,15 +60,26 @@ function renderState(state) {
   if (!state) return;
   setConnectionState(state.pipeline_ready ? 'running' : 'waiting');
 
-  const shotMode = state.shot_mode?.code || state.route_type || 'rule';
-  setPressed(elements.ruleMode, shotMode === 'rule');
-  setPressed(elements.freeMode, shotMode === 'free');
+  const baseShotMode = state.base_shot_mode?.code || state.shot_mode?.base_code || state.shot_mode?.code || 'rule';
+  setPressed(elements.ruleMode, baseShotMode === 'rule');
+  setPressed(elements.freeMode, baseShotMode === 'free');
   setPressed(elements.starFormula, Boolean(state.star_formula_enabled));
-  setPressed(elements.nextFree, Boolean(state.shot_overrides?.free_shot_once?.active));
-  setPressed(elements.nextBlack, Boolean(state.shot_overrides?.black_target_once?.active));
+
+  const nextFreeActive = Boolean(state.shot_overrides?.free_shot_once?.active);
+  const nextBlackActive = Boolean(state.shot_overrides?.black_target_once?.active);
+  const hasShotOverride = nextFreeActive || nextBlackActive;
+  elements.nextShotChoices.hidden = hasShotOverride;
+  elements.shotOverrideBanner.hidden = !hasShotOverride;
+  if (nextFreeActive) {
+    elements.shotOverrideTitle.textContent = '下一杆自由';
+    elements.shotOverrideDetail.textContent = '临时覆盖长期规则';
+  } else if (nextBlackActive) {
+    elements.shotOverrideTitle.textContent = '下一杆规则';
+    elements.shotOverrideDetail.textContent = '临时指定目标：黑球';
+  }
 
   const turnGroup = state.match?.turn_group;
-  const groupNames = { solid: '全色球', stripe: '花色球', black: '黑球' };
+  const groupNames = { solid: '纯色球', stripe: '花色球' };
   elements.switchColor.textContent = turnGroup && groupNames[turnGroup]
     ? `切换花色 · ${groupNames[turnGroup]}`
     : '切换花色';
@@ -206,6 +222,15 @@ elements.ruleMode.addEventListener('click', () => runAction('/api/shot_mode/set'
 elements.freeMode.addEventListener('click', () => runAction('/api/shot_mode/set', { mode: 'free' }));
 elements.nextFree.addEventListener('click', () => runAction('/api/shot_once/free/toggle'));
 elements.nextBlack.addEventListener('click', () => runAction('/api/shot_once/black/toggle'));
+elements.cancelShotOverride.addEventListener('click', () => {
+  const freeActive = Boolean(lastState?.shot_overrides?.free_shot_once?.active);
+  const blackActive = Boolean(lastState?.shot_overrides?.black_target_once?.active);
+  if (freeActive) {
+    runAction('/api/shot_once/free/clear');
+  } else if (blackActive) {
+    runAction('/api/shot_once/black/clear');
+  }
+});
 elements.replay.addEventListener('click', () => runAction('/api/instant_replay/export'));
 
 document.addEventListener('fullscreenchange', unlockOrientationAfterFullscreen);

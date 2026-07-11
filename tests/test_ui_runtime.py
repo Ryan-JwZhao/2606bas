@@ -491,6 +491,27 @@ def test_refresh_current_plan_uses_live_state_machine_turn_group() -> None:
     assert window.last_output.state.turn_target_group == "stripe"
 
 
+def test_web_state_keeps_base_rule_separate_from_single_shot_override() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    window.config = AppConfig()
+    window.config.planner.shot_mode = "rule"
+    window.control_state = RuntimeControlState(free_shot_active=True)
+    window.last_output = None
+    window.pipeline = None
+    window.projection_window = None
+    window.star_formula = SimpleNamespace(enabled=False)
+    window._pending_turn_target_group = "solid"
+    window._manual_web_target_id = None
+
+    state = main_window.OperatorWindow._build_web_state(window)
+
+    assert state["base_shot_mode"] == {"code": "rule", "name": "规则模式"}
+    assert state["shot_mode"]["code"] == "free"
+    assert state["shot_mode"]["base_code"] == "rule"
+    assert state["match"]["turn_group"] == "solid"
+    assert state["shot_overrides"]["free_shot_once"]["active"] is True
+
+
 def test_refresh_projection_uses_composed_interaction_frame() -> None:
     window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
     captured: list[np.ndarray] = []

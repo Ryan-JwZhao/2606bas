@@ -220,6 +220,10 @@ button:focus-visible {
   gap: var(--control-gap);
 }
 
+.control-row[hidden] {
+  display: none;
+}
+
 .control-button {
   min-width: 0;
   padding: clamp(0.88rem, 4.2vw, 1.15rem) 0.5rem;
@@ -235,6 +239,67 @@ button:focus-visible {
   border-color: var(--accent-strong);
   background: var(--surface-active);
   color: var(--accent);
+}
+
+.control-button--momentary.is-active {
+  border-color: var(--line);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.shot-override {
+  width: 100%;
+  min-height: clamp(3.1rem, 14vw, 3.8rem);
+  padding: clamp(0.62rem, 3vw, 0.8rem) clamp(0.65rem, 3vw, 0.85rem) clamp(0.62rem, 3vw, 0.8rem) clamp(0.85rem, 4vw, 1.05rem);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  border: 1px solid var(--accent-strong);
+  border-radius: clamp(0.68rem, 3vw, 0.9rem);
+  background: var(--surface-active);
+}
+
+.shot-override[hidden] {
+  display: none;
+}
+
+.shot-override__status {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+}
+
+.shot-override__status strong {
+  color: var(--accent);
+  font-size: clamp(0.92rem, 4vw, 1.06rem);
+  font-weight: 650;
+}
+
+.shot-override__status span {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: clamp(0.68rem, 2.8vw, 0.8rem);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shot-override__cancel {
+  flex: 0 0 auto;
+  padding: 0.55rem clamp(0.72rem, 3.4vw, 0.95rem);
+  border: 1px solid rgb(142 183 235 / 38%);
+  border-radius: 0.62rem;
+  background: rgb(17 19 24 / 48%);
+  color: var(--text);
+  font-size: clamp(0.76rem, 3.2vw, 0.88rem);
+  cursor: pointer;
+  transition: background 150ms ease, transform 100ms ease;
+}
+
+.shot-override__cancel:active {
+  background: rgb(17 19 24 / 72%);
+  transform: scale(0.96);
 }
 
 .replay-button {
