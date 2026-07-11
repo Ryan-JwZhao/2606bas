@@ -255,9 +255,9 @@ button:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 0.8rem;
-  border: 1px solid var(--accent-strong);
+  border: 1px solid var(--line);
   border-radius: clamp(0.68rem, 3vw, 0.9rem);
-  background: var(--surface-active);
+  background: var(--surface-raised);
 }
 
 .shot-override[hidden] {
@@ -267,38 +267,45 @@ button:focus-visible {
 .shot-override__status {
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  gap: 0.18rem;
+  align-items: center;
+  gap: 0.55rem;
 }
 
 .shot-override__status strong {
-  color: var(--accent);
+  color: var(--text);
   font-size: clamp(0.92rem, 4vw, 1.06rem);
   font-weight: 650;
 }
 
-.shot-override__status span {
-  overflow: hidden;
+.shot-override__target {
+  flex: 0 0 auto;
+  padding: 0.18rem 0.42rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
   color: var(--text-muted);
-  font-size: clamp(0.68rem, 2.8vw, 0.8rem);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: clamp(0.66rem, 2.7vw, 0.76rem);
+}
+
+.shot-override__target[hidden] {
+  display: none;
 }
 
 .shot-override__cancel {
   flex: 0 0 auto;
   padding: 0.55rem clamp(0.72rem, 3.4vw, 0.95rem);
-  border: 1px solid rgb(142 183 235 / 38%);
+  border: 1px solid var(--accent-strong);
   border-radius: 0.62rem;
-  background: rgb(17 19 24 / 48%);
-  color: var(--text);
+  background: var(--surface-active);
+  color: var(--accent);
   font-size: clamp(0.76rem, 3.2vw, 0.88rem);
   cursor: pointer;
   transition: background 150ms ease, transform 100ms ease;
 }
 
 .shot-override__cancel:active {
-  background: rgb(17 19 24 / 72%);
+  background: var(--accent-strong);
+  color: var(--text);
   transform: scale(0.96);
 }
 

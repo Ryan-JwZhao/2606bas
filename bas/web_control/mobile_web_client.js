@@ -15,7 +15,7 @@ const elements = {
   nextShotChoices: document.getElementById('nextShotChoices'),
   shotOverrideBanner: document.getElementById('shotOverrideBanner'),
   shotOverrideTitle: document.getElementById('shotOverrideTitle'),
-  shotOverrideDetail: document.getElementById('shotOverrideDetail'),
+  shotOverrideTarget: document.getElementById('shotOverrideTarget'),
   cancelShotOverride: document.getElementById('cancelShotOverrideButton'),
   replay: document.getElementById('replayButton'),
   toast: document.getElementById('toast'),
@@ -72,10 +72,11 @@ function renderState(state) {
   elements.shotOverrideBanner.hidden = !hasShotOverride;
   if (nextFreeActive) {
     elements.shotOverrideTitle.textContent = '下一杆自由';
-    elements.shotOverrideDetail.textContent = '临时覆盖长期规则';
+    elements.shotOverrideTarget.hidden = true;
   } else if (nextBlackActive) {
     elements.shotOverrideTitle.textContent = '下一杆规则';
-    elements.shotOverrideDetail.textContent = '临时指定目标：黑球';
+    elements.shotOverrideTarget.textContent = '黑球';
+    elements.shotOverrideTarget.hidden = false;
   }
 
   const turnGroup = state.match?.turn_group;

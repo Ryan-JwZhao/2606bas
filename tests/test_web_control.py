@@ -40,6 +40,7 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             assert "BAS台球系统" in html
             assert "/mobile_web_client.css" in html
             assert "/mobile_web_client.js" in html
+            assert "临时覆盖长期规则" not in html
         with urlopen(f"{base}/mobile_web_client.css", timeout=2.0) as response:
             assert response.headers.get_content_type() == "text/css"
             assert b"aspect-ratio: 16 / 9" in response.read()
@@ -49,6 +50,8 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             assert b"/api/shot_mode/set" in client_js
             assert b"/api/shot_once/free/clear" in client_js
             assert b"/api/shot_once/black/clear" in client_js
+            assert "临时覆盖长期规则" not in client_js.decode("utf-8")
+            assert "下一杆规则" in client_js.decode("utf-8")
 
         request = Request(
             f"{base}/api/compute",
