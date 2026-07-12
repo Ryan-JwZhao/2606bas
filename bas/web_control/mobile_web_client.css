@@ -363,7 +363,8 @@ button:focus-visible {
 
 .video-stage:fullscreen,
 .video-stage:-webkit-full-screen,
-.video-stage.is-fallback-fullscreen {
+.video-stage.is-fallback-fullscreen,
+.video-stage.is-pwa-auto-fullscreen {
   width: 100vw;
   height: 100vh;
   height: 100dvh;
@@ -373,21 +374,30 @@ button:focus-visible {
 
 .video-stage:fullscreen #stream,
 .video-stage:-webkit-full-screen #stream,
-.video-stage.is-fallback-fullscreen #stream {
+.video-stage.is-fallback-fullscreen #stream,
+.video-stage.is-pwa-auto-fullscreen #stream {
   object-fit: contain;
 }
 
 .video-stage:fullscreen .fullscreen-button,
 .video-stage:-webkit-full-screen .fullscreen-button,
-.video-stage.is-fallback-fullscreen .fullscreen-button {
+.video-stage.is-fallback-fullscreen .fullscreen-button,
+.video-stage.is-pwa-auto-fullscreen .fullscreen-button {
   display: none;
 }
 
-body.has-fallback-fullscreen {
+body.has-fallback-fullscreen,
+body.has-pwa-auto-fullscreen {
   overflow: hidden;
 }
 
 .video-stage.is-fallback-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+}
+
+.video-stage.is-pwa-auto-fullscreen {
   position: fixed;
   inset: 0;
   z-index: 100;

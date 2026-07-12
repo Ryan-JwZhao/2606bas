@@ -25,6 +25,8 @@ let lastState = null;
 let selectedGameMode = 'eight-ball';
 let toastTimer = 0;
 let fallbackFullscreen = false;
+let pwaAutoFullscreen = false;
+let pwaOrientationTimer = 0;
 
 function showToast(message) {
   if (!message) return;
@@ -133,7 +135,54 @@ function selectGameMode(mode) {
   renderGameMode();
 }
 
+function isInstalledPwa() {
+  const displayMode = ['standalone', 'fullscreen', 'minimal-ui', 'window-controls-overlay']
+    .some((mode) => Boolean(window.matchMedia?.(`(display-mode: ${mode})`)?.matches));
+  return displayMode || window.navigator.standalone === true || document.referrer.startsWith('android-app://');
+}
+
+function isLandscapeOrientation() {
+  const mediaQuery = window.matchMedia?.('(orientation: landscape)');
+  if (mediaQuery) return mediaQuery.matches;
+  const type = screen.orientation?.type || '';
+  if (type) return type.startsWith('landscape');
+  return window.innerWidth > window.innerHeight;
+}
+
+function setPwaAutoFullscreen(active) {
+  const next = Boolean(active) && isInstalledPwa();
+  if (next === pwaAutoFullscreen) return;
+  pwaAutoFullscreen = next;
+  document.body.classList.toggle('has-pwa-auto-fullscreen', next);
+  elements.videoStage.classList.toggle('is-pwa-auto-fullscreen', next);
+}
+
+function syncPwaAutoFullscreen() {
+  if (!isInstalledPwa()) {
+    setPwaAutoFullscreen(false);
+    return;
+  }
+  if (document.fullscreenElement || document.webkitFullscreenElement || fallbackFullscreen) {
+    setPwaAutoFullscreen(false);
+    return;
+  }
+  setPwaAutoFullscreen(isLandscapeOrientation());
+}
+
+function schedulePwaAutoFullscreenSync() {
+  window.clearTimeout(pwaOrientationTimer);
+  pwaOrientationTimer = window.setTimeout(syncPwaAutoFullscreen, 140);
+}
+
+function registerPwaServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/service-worker.js', { scope: '/' }).catch(() => {
+    // Normal HTTP LAN pages may not be secure contexts; PWA mode remains opt-in.
+  });
+}
+
 async function enterVideoFullscreen() {
+  setPwaAutoFullscreen(false);
   try {
     if (elements.videoStage.requestFullscreen) {
       await elements.videoStage.requestFullscreen({ navigationUI: 'hide' });
@@ -169,6 +218,7 @@ function unlockOrientationBestEffort() {
 }
 
 function activateFallbackFullscreen() {
+  setPwaAutoFullscreen(false);
   fallbackFullscreen = true;
   document.body.classList.add('has-fallback-fullscreen');
   elements.videoStage.classList.add('is-fallback-fullscreen');
@@ -181,12 +231,14 @@ function exitFallbackFullscreen() {
   document.body.classList.remove('has-fallback-fullscreen');
   elements.videoStage.classList.remove('is-fallback-fullscreen');
   unlockOrientationBestEffort();
+  schedulePwaAutoFullscreenSync();
 }
 
 function unlockOrientationAfterFullscreen() {
   if (!document.fullscreenElement && !document.webkitFullscreenElement && screen.orientation?.unlock) {
     unlockOrientationBestEffort();
   }
+  schedulePwaAutoFullscreenSync();
 }
 
 elements.stream.addEventListener('click', async (event) => {
@@ -233,8 +285,15 @@ elements.replay.addEventListener('click', () => runAction('/api/instant_replay/e
 
 document.addEventListener('fullscreenchange', unlockOrientationAfterFullscreen);
 document.addEventListener('webkitfullscreenchange', unlockOrientationAfterFullscreen);
+window.addEventListener('orientationchange', schedulePwaAutoFullscreenSync, { passive: true });
+window.addEventListener('resize', schedulePwaAutoFullscreenSync, { passive: true });
+screen.orientation?.addEventListener?.('change', schedulePwaAutoFullscreenSync);
+const standaloneMediaQuery = window.matchMedia?.('(display-mode: standalone)');
+standaloneMediaQuery?.addEventListener?.('change', schedulePwaAutoFullscreenSync);
 
 renderGameMode();
 setConnectionState('offline');
 fetchState();
+registerPwaServiceWorker();
+schedulePwaAutoFullscreenSync();
 window.setInterval(fetchState, 1000);

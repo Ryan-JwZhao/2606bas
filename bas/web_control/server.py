@@ -81,6 +81,10 @@ class WebControlServer:
             "/": ("text/html; charset=utf-8", (asset_dir / "mobile_web_client.html").read_bytes()),
             "/mobile_web_client.css": ("text/css; charset=utf-8", (asset_dir / "mobile_web_client.css").read_bytes()),
             "/mobile_web_client.js": ("text/javascript; charset=utf-8", (asset_dir / "mobile_web_client.js").read_bytes()),
+            "/manifest.webmanifest": ("application/manifest+json; charset=utf-8", (asset_dir / "manifest.webmanifest").read_bytes()),
+            "/service-worker.js": ("text/javascript; charset=utf-8", (asset_dir / "service-worker.js").read_bytes()),
+            "/pwa/icon-192.svg": ("image/svg+xml; charset=utf-8", (asset_dir / "pwa" / "icon-192.svg").read_bytes()),
+            "/pwa/icon-512.svg": ("image/svg+xml; charset=utf-8", (asset_dir / "pwa" / "icon-512.svg").read_bytes()),
         }
 
     @property

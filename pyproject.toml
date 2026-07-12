@@ -27,7 +27,7 @@ include = ["bas*"]
 
 [tool.setuptools.package-data]
 "bas.ui" = ["assets/*.svg"]
-"bas.web_control" = ["*.html"]
+"bas.web_control" = ["*.html", "*.css", "*.js", "*.webmanifest", "pwa/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
