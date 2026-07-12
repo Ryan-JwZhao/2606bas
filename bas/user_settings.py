@@ -264,7 +264,7 @@ class UserSettings:
             config.state.engine = "modern" if engine in {"modern", "new", "v2", "state_machine_new"} else "legacy"
         if self._has("shot_mode") and self.shot_mode:
             mode = str(self.shot_mode).strip().lower()
-            config.planner.shot_mode = "free" if mode in {"free", "free_shot"} else "rule"
+            config.planner.shot_mode = "hook" if mode in {"hook", "hook_shot", "free", "free_shot"} else "rule"
         if self.planner_route_freeze_enabled is not None:
             config.planner.route_freeze_enabled = bool(self.planner_route_freeze_enabled)
         if self.planner_route_freeze_enter_frames is not None:

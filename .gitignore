@@ -9,7 +9,10 @@ pytest_cache_local/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
+*.prof
+*.trace
 
 # Virtual environments
 .venv/
@@ -84,6 +87,7 @@ weights/
 *.npy
 *.npz
 *.parquet
+*.pkl
 *.sqlite
 *.sqlite3
 *.db

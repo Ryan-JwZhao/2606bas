@@ -110,8 +110,8 @@ def test_planner_manual_web_target_limits_candidates_until_cleared() -> None:
     assert planner.manual_target_id is None
 
 
-def test_planner_manual_web_target_overrides_free_mode() -> None:
-    planner = GeometryPhysicsPlanner(PlannerConfig(shot_mode="free", top_k=20), _service())
+def test_planner_manual_web_target_overrides_hook_mode() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(shot_mode="hook", top_k=20), _service())
     state = MatchStateFrame(
         frame_id=1,
         ts_cam_ns=1,
@@ -126,11 +126,63 @@ def test_planner_manual_web_target_overrides_free_mode() -> None:
     planner.set_manual_target(3)
     plan = planner.plan(state)
 
-    assert plan.shot_mode == "target"
+    assert plan.shot_mode == "hook"
     assert plan.best is not None
     assert plan.best.target_track_id == 3
     assert plan.locked_target_id == 3
     assert plan.target_lock_status == "manual"
+    assert plan.best.explanation["hook_selection_source"] == "manual"
+
+
+def test_hook_mode_traverses_only_the_current_turn_group() -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(shot_mode="hook", top_k=20, target_shot_enabled=False),
+        _service(),
+    )
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="STABLE_IDLE",
+        turn_target_group="stripe",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _obs(2, "solid", 620, 250),
+            _obs(3, "stripe", 620, 350),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.shot_mode == "hook"
+    assert plan.best is not None
+    assert {candidate.target_track_id for candidate in plan.candidates} == {3}
+    assert plan.best.explanation["hook_selection_source"] == "automatic"
+    assert plan.target_lock_status == "hook_global"
+
+
+def test_hook_mode_global_selection_does_not_use_rule_cue_sector(monkeypatch) -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(shot_mode="hook", top_k=20, target_shot_enabled=False),
+        _service(),
+    )
+    monkeypatch.setattr(
+        planner.cue_sector,
+        "detect_aim",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("hook mode must not use cue-sector filtering")),
+    )
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="STABLE_IDLE",
+        turn_target_group="solid",
+        layout=[_obs(1, "cue", 120, 250), _obs(2, "solid", 620, 250)],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.shot_mode == "hook"
+    assert plan.best is not None
+    assert plan.best.target_track_id == 2
 
 
 def test_planner_manual_web_target_is_released_on_shot_started() -> None:
@@ -1570,9 +1622,8 @@ def test_rule_overlay_includes_dashed_object_and_cue_separation_lines() -> None:
     assert all(circle.width == style.circle_width for circle in overlay.circles)
 
 
-def test_free_mode_predicts_two_cushion_collisions() -> None:
+def test_legacy_free_mode_migrates_to_hook_without_loading_free_planner() -> None:
     service = _service()
-    config = ProjectionConfig(projector_width=1000, projector_height=500)
     planner = GeometryPhysicsPlanner(PlannerConfig(shot_mode="free", free_max_collisions=2), service)
     state = MatchStateFrame(
         frame_id=1,
@@ -1580,23 +1631,16 @@ def test_free_mode_predicts_two_cushion_collisions() -> None:
         phase="STABLE_IDLE",
         layout=[
             _obs(1, "cue", 100, 250),
-            _stick(2, 20, 240, 90, 260),
+            _obs(2, "solid", 620, 250),
         ],
     )
     plan = planner.plan(state, frame_bgr=None)
-    assert plan.shot_mode == "free"
-    assert plan.free_route is not None
-    assert len(plan.free_route.collision_points) == 2
-    assert plan.free_route.collision_types == ["edge", "edge"]
-    overlay = OverlayBuilder(config, service).from_plan(plan)
-    style = projection_route_stroke_style((config.projector_width, config.projector_height), StarFormulaConfig())
-    assert overlay.lines
-    assert all(line.color == (255, 255, 255) for line in overlay.lines)
-    assert all(line.width == style.solid_line_width for line in overlay.lines if line.style != "dashed")
-    assert all(line.width == style.dashed_line_width for line in overlay.lines if line.style == "dashed")
-    assert all(circle.color == (255, 255, 255) for circle in overlay.circles)
-    assert all(circle.width == style.circle_width for circle in overlay.circles)
-    assert all(color == (255, 255, 255) for _pos, _text, color in overlay.labels)
+    assert plan.shot_mode == "hook"
+    assert plan.free_route is None
+    assert plan.free_status == "archived"
+    assert not hasattr(planner, "free_planner")
+    assert plan.best is not None
+    assert plan.best.explanation["hook_shot"] is True
 
 
 def test_planner_can_force_black_target_for_current_turn() -> None:

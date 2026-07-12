@@ -178,7 +178,7 @@ def _plan_summary(plan: ShotPlan) -> dict[str, Any]:
     return {
         "plan_id": str(plan.plan_id),
         "shot_mode": str(plan.shot_mode),
-        "free_status": str(plan.free_status),
+        "hook_status": str(plan.hook_status),
         "planner_version": str(plan.planner_version),
         "locked_target_id": plan.locked_target_id,
         "target_lock_status": str(plan.target_lock_status),
@@ -295,8 +295,8 @@ def _compact_plan(plan: dict[str, Any]) -> str:
     shot_mode = str(plan.get("shot_mode") or "rule")
     best = plan.get("best")
     candidates = list(plan.get("candidates") or [])
-    if shot_mode == "free":
-        return f"free status={plan.get('free_status')}"
+    if shot_mode == "hook":
+        return f"hook status={plan.get('hook_status')}"
     lock = ""
     if plan.get("locked_target_id") is not None:
         lock = f" lock=t{plan.get('locked_target_id')}:{plan.get('target_lock_status')}"

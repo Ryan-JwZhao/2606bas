@@ -14,7 +14,7 @@ from ..utils import angle_deg, clamp, point_segment_distance, unit, wall_time_id
 from .aim_context import PlannerAimFrameContext
 from .cue_aim import CueStickAimDetector
 from .cue_sector import CueSectorCorrection
-from .free_shot import FreeShotPlanner
+from .hook_shot import HookShotPlanner
 from .learning import create_learning_ranker
 from .target_shot import TargetShotDecision, TargetShotModeController, TargetShotPlanner
 from .target_lock import TargetLockController, TargetLockDecision
@@ -43,11 +43,11 @@ class GeometryPhysicsPlanner:
             table_height_mm=self.calibration.table.height_mm,
         )
         self.aim_detector = CueStickAimDetector()
-        self.free_planner = FreeShotPlanner(config, calibration)
         self.cue_sector = CueSectorCorrection(config, calibration, aim_detector=self.aim_detector)
         self.target_lock = TargetLockController(config)
         self.target_shot_mode = TargetShotModeController(config, aim_detector=self.aim_detector)
         self.target_shot_planner = TargetShotPlanner(config, calibration)
+        self.hook_shot_planner = HookShotPlanner(config, self.target_shot_planner)
         self.manual_target_id: Optional[int] = None
 
     def set_manual_target(self, track_id: int) -> None:
@@ -70,30 +70,22 @@ class GeometryPhysicsPlanner:
         self._release_manual_target_on_shot_start(state)
         shot_mode = self._shot_mode(forced_shot_mode=forced_shot_mode)
         if not self.config.enabled:
-            return self._empty_plan(state, shot_mode=shot_mode, free_status="disabled")
+            return self._empty_plan(state, shot_mode=shot_mode, hook_status="disabled")
         balls = self._extract_balls(state.layout)
         cue = next((b for b in balls if b.group == "cue"), None)
+        if shot_mode == "hook":
+            self.target_lock.reset()
+            return self._hook_plan(
+                state,
+                cue,
+                balls,
+                frame_bgr=frame_bgr,
+                turn_target_group=forced_turn_target_group,
+            )
         if self.manual_target_id is not None:
             return self._manual_target_plan(state, cue, balls)
-        if shot_mode == "free":
-            free_route = self.free_planner.plan(state, frame_bgr=frame_bgr)
-            self.target_lock.reset()
-            self.target_shot_mode.reset()
-            target_lock = TargetLockDecision(None, None, "free_mode")
-            return ShotPlan(
-                plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
-                frame_id=state.frame_id,
-                ts_cam_ns=state.ts_cam_ns,
-                shot_mode="free",
-                free_route=free_route,
-                free_status=self.free_planner.last_status,
-                planner_version=f"{self.version}+{self.free_planner.version}",
-                locked_target_id=target_lock.locked_target_id,
-                target_lock_status=target_lock.status,
-                target_shot_status="free_mode",
-            )
         if cue is None:
-            return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
+            return self._empty_plan(state, shot_mode=shot_mode)
         frame_context = self._build_aim_frame_context(
             cue=cue,
             tracks=state.layout,
@@ -130,7 +122,6 @@ class GeometryPhysicsPlanner:
             return self._empty_plan(
                 state,
                 shot_mode=shot_mode,
-                free_status=self.free_planner.last_status,
                 target_lock=target_lock,
             )
         candidates: List[ShotCandidate] = []
@@ -163,7 +154,6 @@ class GeometryPhysicsPlanner:
             candidates=candidates,
             best=best,
             shot_mode="rule",
-            free_status=self.free_planner.last_status,
             planner_version=self.version,
             locked_target_id=target_lock.locked_target_id,
             target_lock_status=target_lock.status,
@@ -172,14 +162,14 @@ class GeometryPhysicsPlanner:
 
     def _shot_mode(self, *, forced_shot_mode: Optional[str] = None) -> str:
         mode = str(forced_shot_mode if forced_shot_mode is not None else getattr(self.config, "shot_mode", "rule") or "rule").strip().lower()
-        return "free" if mode in {"free", "free_shot"} else "rule"
+        return "hook" if mode in {"hook", "hook_shot", "free", "free_shot"} else "rule"
 
     def _empty_plan(
         self,
         state: MatchStateFrame,
         *,
         shot_mode: str,
-        free_status: str = "idle",
+        hook_status: str = "off",
         target_lock: TargetLockDecision | None = None,
     ) -> ShotPlan:
         return ShotPlan(
@@ -187,11 +177,73 @@ class GeometryPhysicsPlanner:
             frame_id=state.frame_id,
             ts_cam_ns=state.ts_cam_ns,
             shot_mode=shot_mode,
-            free_status=free_status,
-            planner_version=self.version if shot_mode == "rule" else f"{self.version}+{self.free_planner.version}",
+            hook_status=hook_status,
+            planner_version=self.version if shot_mode == "rule" else f"{self.version}+{self.hook_shot_planner.version}",
             locked_target_id=target_lock.locked_target_id if target_lock is not None else None,
             target_lock_status=target_lock.status if target_lock is not None else "off",
             target_shot_status="off",
+        )
+
+    def _hook_plan(
+        self,
+        state: MatchStateFrame,
+        cue: Optional[_Ball],
+        balls: Sequence[_Ball],
+        *,
+        frame_bgr: Optional[np.ndarray],
+        turn_target_group: Optional[str],
+    ) -> ShotPlan:
+        if cue is None:
+            return self._empty_plan(state, shot_mode="hook", hook_status="no_cue_ball")
+
+        manual_target = self._manual_target(balls)
+        frame_context = self._build_aim_frame_context(cue=cue, tracks=state.layout, frame_bgr=frame_bgr)
+        if manual_target is not None:
+            targets = [manual_target]
+            selection_source = "manual"
+            locked_target_id = int(manual_target.track_id)
+            lock_status = "manual"
+            target_shot_status = "manual_target"
+        else:
+            target_shot = self.target_shot_mode.update(
+                state=state,
+                balls=balls,
+                tracks=state.layout,
+                frame_bgr=frame_bgr,
+                frame_context=frame_context,
+            )
+            pointed_target = self._target_shot_target(balls, target_shot) if target_shot.active else None
+            if pointed_target is not None:
+                targets = [pointed_target]
+                selection_source = "cue_hold"
+                locked_target_id = int(pointed_target.track_id)
+                lock_status = f"hook_cue_hold:{target_shot.status}"
+            else:
+                effective_group = turn_target_group if turn_target_group is not None else getattr(state, "turn_target_group", None)
+                targets = self._eligible_targets(balls, turn_target_group=effective_group)
+                selection_source = "automatic"
+                locked_target_id = None
+                lock_status = "hook_global"
+            target_shot_status = target_shot.status
+
+        result = self.hook_shot_planner.plan(
+            cue_ball=cue,
+            targets=targets,
+            balls=balls,
+            selection_source=selection_source,
+        )
+        return ShotPlan(
+            plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
+            frame_id=state.frame_id,
+            ts_cam_ns=state.ts_cam_ns,
+            candidates=result.candidates,
+            best=result.best,
+            shot_mode="hook",
+            hook_status=result.status,
+            planner_version=f"{self.version}+{self.hook_shot_planner.version}+{self.target_shot_planner.version}",
+            locked_target_id=locked_target_id,
+            target_lock_status=lock_status,
+            target_shot_status=target_shot_status,
         )
 
     def _extract_balls(self, tracks: Sequence[TrackObservation]) -> List[_Ball]:
@@ -275,7 +327,6 @@ class GeometryPhysicsPlanner:
                 frame_id=state.frame_id,
                 ts_cam_ns=state.ts_cam_ns,
                 shot_mode="target",
-                free_status=self.free_planner.last_status,
                 planner_version=f"{self.version}+manual_target",
                 locked_target_id=target_lock.locked_target_id,
                 target_lock_status="manual_missing",
@@ -300,7 +351,6 @@ class GeometryPhysicsPlanner:
             candidates=candidates,
             best=candidates[0] if candidates else None,
             shot_mode="target",
-            free_status=self.free_planner.last_status,
             planner_version=f"{self.version}+manual_target",
             locked_target_id=target_lock.locked_target_id,
             target_lock_status="manual",
@@ -349,7 +399,6 @@ class GeometryPhysicsPlanner:
             candidates=candidates,
             best=best,
             shot_mode="target",
-            free_status=self.free_planner.last_status,
             planner_version=f"{self.version}+{self.target_shot_planner.version}",
             locked_target_id=target_shot.active_target_id,
             target_lock_status=f"target_shot:{target_shot.status}",

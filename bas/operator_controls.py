@@ -8,7 +8,7 @@ from .schemas import Event
 
 def normalize_shot_mode(value: str | None) -> str:
     mode = str(value or "rule").strip().lower()
-    return "free" if mode in {"free", "free_shot"} else "rule"
+    return "hook" if mode in {"hook", "hook_shot", "free", "free_shot"} else "rule"
 
 
 def normalize_target_group(value: str | None) -> Optional[str]:
@@ -27,15 +27,15 @@ def toggled_object_group(value: str | None) -> Optional[str]:
 
 @dataclass
 class RuntimeControlState:
-    free_shot_active: bool = False
+    hook_shot_active: bool = False
     black_shot_active: bool = False
 
     def clear_turn_overrides(self) -> None:
-        self.free_shot_active = False
+        self.hook_shot_active = False
         self.black_shot_active = False
 
-    def arm_free_shot(self) -> None:
-        self.free_shot_active = True
+    def arm_hook_shot(self) -> None:
+        self.hook_shot_active = True
         self.black_shot_active = False
 
     def arm_black_shot(self) -> None:
@@ -46,8 +46,8 @@ class RuntimeControlState:
             self.clear_turn_overrides()
 
     def effective_shot_mode(self, base_mode: str | None) -> str:
-        if self.free_shot_active:
-            return "free"
+        if self.hook_shot_active:
+            return "hook"
         return normalize_shot_mode(base_mode)
 
     def effective_turn_target_group(

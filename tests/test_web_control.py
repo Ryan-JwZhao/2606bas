@@ -67,10 +67,12 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             assert response.headers.get_content_type() == "text/javascript"
             client_js = response.read()
             assert b"/api/shot_mode/set" in client_js
-            assert b"/api/shot_once/free/clear" in client_js
+            assert b"/api/shot_once/hook/clear" in client_js
             assert b"/api/shot_once/black/clear" in client_js
             assert "临时覆盖长期规则" not in client_js.decode("utf-8")
             assert "下一杆规则" in client_js.decode("utf-8")
+            assert "下一杆勾球" in client_js.decode("utf-8")
+            assert "自由模式" not in client_js.decode("utf-8")
             assert "切换花色 ·" not in client_js.decode("utf-8")
             assert "data.ok === false" in client_js.decode("utf-8")
             assert b"pointsMode.addEventListener" in client_js

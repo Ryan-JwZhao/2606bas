@@ -91,23 +91,30 @@ class WebControlOperatorMixin:
         if action in {"match_stage", "match_undo"}:
             return self._web_result(False, "2606 状态机不支持此旧版阶段命令")
         if action == "shot_mode_toggle":
-            next_mode = "free" if normalize_shot_mode(self.config.planner.shot_mode) == "rule" else "rule"
+            next_mode = "hook" if normalize_shot_mode(self.config.planner.shot_mode) == "rule" else "rule"
             self._set_base_shot_mode(next_mode, source="web")
             return self._web_result(True, "击球模式已切换")
         if action == "shot_mode_set":
             mode = str(payload.get("mode", "")).strip().lower()
-            if mode not in {"rule", "free", "free_shot"}:
+            if mode not in {"rule", "hook", "hook_shot", "free", "free_shot"}:
                 return self._web_result(False, f"未知击球模式: {mode}")
             self._set_base_shot_mode(mode, source="web")
             return self._web_result(True, "击球模式已设置")
-        if action in {"shot_once_free_arm", "shot_once_free_clear", "shot_once_free_toggle"}:
-            enabled = action.endswith("_arm") or (action.endswith("_toggle") and not self.control_state.free_shot_active)
+        if action in {
+            "shot_once_hook_arm",
+            "shot_once_hook_clear",
+            "shot_once_hook_toggle",
+            "shot_once_free_arm",
+            "shot_once_free_clear",
+            "shot_once_free_toggle",
+        }:
+            enabled = action.endswith("_arm") or (action.endswith("_toggle") and not self.control_state.hook_shot_active)
             if enabled:
-                self._arm_free_shot_once(source="web")
+                self._arm_hook_shot_once(source="web")
             else:
-                self.control_state.free_shot_active = False
+                self.control_state.hook_shot_active = False
                 self._refresh_current_plan()
-            return self._web_result(True, "单杆自由击球已开启" if enabled else "单杆自由击球已关闭")
+            return self._web_result(True, "下一杆勾球已开启" if enabled else "下一杆勾球已关闭")
         if action in {"shot_once_black_arm", "shot_once_black_clear", "shot_once_black_toggle"}:
             enabled = action.endswith("_arm") or (action.endswith("_toggle") and not self.control_state.black_shot_active)
             if enabled:
@@ -191,20 +198,19 @@ class WebControlOperatorMixin:
                     }
                 )
         rule_route = None
-        free_route = None
+        hook_route = None
         base_route_type = normalize_shot_mode(self.config.planner.shot_mode)
         route_type = self.control_state.effective_shot_mode(base_route_type)
         if out is not None and out.plan.best is not None:
-            rule_route = to_jsonable(out.plan.best)
-            rule_route["pocket_id"] = rule_route.get("pocket_index")
-            rule_route["shot_type"] = "rule"
-        if out is not None and out.plan.free_route is not None:
-            free_route = to_jsonable(out.plan.free_route)
-            free_route["pocket_id"] = free_route.get("pocket_index")
-            free_route["shot_type"] = "free"
-            free_route["score"] = 0.0
-        manual_target_active = self._manual_web_target_id is not None
-        route = rule_route if manual_target_active or route_type != "free" else free_route
+            serialized_route = to_jsonable(out.plan.best)
+            serialized_route["pocket_id"] = serialized_route.get("pocket_index")
+            if out.plan.shot_mode == "hook":
+                serialized_route["shot_type"] = "hook"
+                hook_route = serialized_route
+            else:
+                serialized_route["shot_type"] = "rule"
+                rule_route = serialized_route
+        route = hook_route if route_type == "hook" else rule_route
         layout = out.state.layout if out is not None else []
         visible_solid = sum(1 for track in layout if track.visibility == "visible" and track.group == "solid")
         visible_stripe = sum(1 for track in layout if track.visibility == "visible" and track.group == "stripe")
@@ -221,20 +227,20 @@ class WebControlOperatorMixin:
             "tracks": tracks,
             "shot_mode": {
                 "code": route_type,
-                "name": "自由模式" if route_type == "free" else "规则模式",
+                "name": "勾球模式" if route_type == "hook" else "规则模式",
                 "effective_route_type": route_type,
                 "base_code": base_route_type,
-                "base_name": "自由模式" if base_route_type == "free" else "规则模式",
+                "base_name": "勾球模式" if base_route_type == "hook" else "规则模式",
             },
             "base_shot_mode": {
                 "code": base_route_type,
-                "name": "自由模式" if base_route_type == "free" else "规则模式",
+                "name": "勾球模式" if base_route_type == "hook" else "规则模式",
             },
             "route_type": route_type,
             "route": route,
             "rule_route": rule_route,
-            "free_route": free_route,
-            "free_status": out.plan.free_status if out is not None else "idle",
+            "hook_route": hook_route,
+            "hook_status": out.plan.hook_status if out is not None else "off",
             "manual_target_id": self._manual_web_target_id,
             "selected_track_id": self._manual_web_target_id,
             "auto_target_id": auto_target_id,
@@ -249,7 +255,7 @@ class WebControlOperatorMixin:
                 "last_event": last_event,
             },
             "shot_overrides": {
-                "free_shot_once": {"active": self.control_state.free_shot_active, "effective": self.control_state.free_shot_active},
+                "hook_shot_once": {"active": self.control_state.hook_shot_active, "effective": self.control_state.hook_shot_active},
                 "black_target_once": {"active": self.control_state.black_shot_active, "effective": self.control_state.black_shot_active},
             },
             "pipeline_ready": self.pipeline is not None,

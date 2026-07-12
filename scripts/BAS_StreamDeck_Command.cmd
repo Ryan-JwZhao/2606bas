@@ -6,7 +6,7 @@ pushd "%ROOT%"
 
 if "%~1"=="" (
     echo Usage: BAS_StreamDeck_Command.cmd action-name
-    echo Example: BAS_StreamDeck_Command.cmd free-shot-once
+    echo Example: BAS_StreamDeck_Command.cmd hook-shot-once
     echo Example: BAS_StreamDeck_Command.cmd save-retro-clip
     popd
     exit /b 1

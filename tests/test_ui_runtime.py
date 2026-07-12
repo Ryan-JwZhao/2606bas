@@ -14,7 +14,7 @@ from PyQt5 import QtWidgets
 from bas.config import AppConfig
 from bas import runtime_env
 from bas.operator_controls import RuntimeControlState
-from bas.schemas import DetectionsFrame, Event, FramePacket, MatchStateFrame, ProjectionOverlay, ShotCandidate, ShotPlan, TracksFrame
+from bas.schemas import DetectionsFrame, Event, FramePacket, MatchStateFrame, ProjectionOverlay, ShotCandidate, ShotPlan, TrackObservation, TracksFrame
 
 runtime_env.preload_torch_for_backend = lambda backend: None
 
@@ -491,11 +491,11 @@ def test_refresh_current_plan_uses_live_state_machine_turn_group() -> None:
     assert window.last_output.state.turn_target_group == "stripe"
 
 
-def test_web_state_keeps_base_rule_separate_from_single_shot_override() -> None:
+def test_web_state_keeps_base_rule_separate_from_single_hook_shot_override() -> None:
     window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
     window.config = AppConfig()
     window.config.planner.shot_mode = "rule"
-    window.control_state = RuntimeControlState(free_shot_active=True)
+    window.control_state = RuntimeControlState(hook_shot_active=True)
     window.last_output = None
     window.pipeline = None
     window.projection_window = None
@@ -506,10 +506,10 @@ def test_web_state_keeps_base_rule_separate_from_single_shot_override() -> None:
     state = main_window.OperatorWindow._build_web_state(window)
 
     assert state["base_shot_mode"] == {"code": "rule", "name": "规则模式"}
-    assert state["shot_mode"]["code"] == "free"
+    assert state["shot_mode"]["code"] == "hook"
     assert state["shot_mode"]["base_code"] == "rule"
     assert state["match"]["turn_group"] == "solid"
-    assert state["shot_overrides"]["free_shot_once"]["active"] is True
+    assert state["shot_overrides"]["hook_shot_once"]["active"] is True
 
 
 def test_web_state_serializes_an_available_route_for_control_responses() -> None:
@@ -554,6 +554,44 @@ def test_web_state_serializes_an_available_route_for_control_responses() -> None
     assert state["ok"] is True
     assert state["route"]["candidate_id"] == "web-route"
     assert state["route"]["shot_type"] == "rule"
+
+
+def test_web_manual_selection_rejects_cue_ball() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    window.config = AppConfig()
+    window.control_state = RuntimeControlState()
+    window.pipeline = SimpleNamespace(
+        planner=SimpleNamespace(set_manual_target=lambda _track_id: None),
+        state_machine=SimpleNamespace(turn_target_group="solid"),
+    )
+    window.projection_window = None
+    window.star_formula = SimpleNamespace(enabled=False)
+    window._pending_turn_target_group = "solid"
+    window._manual_web_target_id = None
+    window._refresh_current_plan = lambda: None
+    window._append_log = lambda _message: None
+    cue_track = TrackObservation(
+        track_id=1,
+        bbox=(85.0, 85.0, 115.0, 115.0),
+        center_px=(100.0, 100.0),
+        radius_px=15.0,
+        cls_name="cue",
+        group="cue",
+        confidence=0.9,
+    )
+    window.last_output = main_window.PipelineOutput(
+        frame=FramePacket(frame_id=1, ts_cam_ns=1, camera_id="test", image=np.zeros((200, 200, 3), dtype=np.uint8)),
+        detections=DetectionsFrame(frame_id=1, ts_cam_ns=1),
+        tracks=TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[cue_track]),
+        state=MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="STABLE_IDLE", layout=[cue_track]),
+        plan=ShotPlan(plan_id="p", frame_id=1, ts_cam_ns=1),
+        overlay=ProjectionOverlay(overlay_id="o", frame_id=1, projector_size=(200, 200)),
+    )
+
+    result = main_window.OperatorWindow._select_web_target(window, {"x": 100, "y": 100})
+
+    assert result["ok"] is False
+    assert window._manual_web_target_id is None
 
 
 def test_toggle_turn_group_flips_known_group_and_does_not_guess_unknown_group() -> None:

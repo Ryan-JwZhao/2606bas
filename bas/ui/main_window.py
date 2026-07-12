@@ -1520,7 +1520,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             display_layout.addWidget(widget)
         self.shot_mode_combo = QtWidgets.QComboBox()
         self.shot_mode_combo.addItem("规则模式", "rule")
-        self.shot_mode_combo.addItem("自由模式", "free")
+        self.shot_mode_combo.addItem("勾球模式", "hook")
         self.shot_mode_combo.currentIndexChanged.connect(self._shot_mode_changed)
         self.state_machine_combo = QtWidgets.QComboBox()
         self.state_machine_combo.addItem("状态机（旧）", "legacy")
@@ -2019,7 +2019,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.resolution_combo.setCurrentText(res)
         self.fps_combo.setCurrentText(str(int(self.config.camera.fps)))
         mode = str(getattr(self.config.planner, "shot_mode", "rule") or "rule").strip().lower()
-        idx = self.shot_mode_combo.findData("free" if mode in {"free", "free_shot"} else "rule")
+        idx = self.shot_mode_combo.findData("hook" if mode in {"hook", "hook_shot", "free", "free_shot"} else "rule")
         self.shot_mode_combo.blockSignals(True)
         self.shot_mode_combo.setCurrentIndex(max(0, idx))
         self.shot_mode_combo.blockSignals(False)
@@ -2105,7 +2105,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if self.pipeline is not None:
             self.pipeline.calibration = calibration
             self.pipeline.planner.calibration = calibration
-            self.pipeline.planner.free_planner.calibration = calibration
+            self.pipeline.planner.target_shot_planner.calibration = calibration
             self.pipeline.overlay_builder.calibration = calibration
             if self.last_output is not None:
                 self.pipeline._update_table_geometry_for_frame(self.last_output.frame)
@@ -2211,9 +2211,9 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.pipeline.config.planner.shot_mode = normalized
             self.pipeline.planner.config.shot_mode = normalized
         self._save_user_settings()
-        label = "自由模式" if normalized == "free" else "规则模式"
+        label = "勾球模式" if normalized == "hook" else "规则模式"
         self._append_log(f"画线模式已切换为 {label} ({source})")
-        self._queue_projection_notice("自由模式" if normalized == "free" else "规则模式")
+        self._queue_projection_notice(label)
         self._refresh_current_plan()
         self._update_module_status(self.last_output)
 
@@ -2311,20 +2311,20 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._append_log(f"当前目标花色已预设为 {next_group}，开始采集后生效 ({source})")
         return True
 
-    def _arm_free_shot_once(self, *, source: str) -> None:
-        self.control_state.arm_free_shot()
+    def _arm_hook_shot_once(self, *, source: str) -> None:
+        self.control_state.arm_hook_shot()
         self._refresh_current_plan()
         self._update_module_status(self.last_output)
-        self._append_log(f"已启用单杆自由击球 ({source})")
+        self._append_log(f"已启用下一杆勾球 ({source})")
 
-        self._queue_projection_notice("下一杆自由")
+        self._queue_projection_notice("下一杆勾球")
 
     def _arm_black_shot_once(self, *, source: str) -> None:
         if normalize_shot_mode(self.config.planner.shot_mode) != "rule":
-            self._append_log(f"当前为自由模式，黑球单杆指令未生效 ({source})")
+            self._append_log(f"当前为勾球模式，黑球单杆指令未生效 ({source})")
             return
-        if self.control_state.free_shot_active:
-            self._append_log(f"当前单杆已被自由击球覆盖，黑球单杆指令未生效 ({source})")
+        if self.control_state.hook_shot_active:
+            self._append_log(f"当前单杆已被勾球覆盖，黑球单杆指令未生效 ({source})")
             return
         self.control_state.arm_black_shot()
         self._refresh_current_plan()
@@ -2371,12 +2371,12 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             elif action == "toggle_projection":
                 self.toggle_projection_window()
             elif action == "toggle_shot_mode":
-                next_mode = "free" if normalize_shot_mode(self.config.planner.shot_mode) == "rule" else "rule"
+                next_mode = "hook" if normalize_shot_mode(self.config.planner.shot_mode) == "rule" else "rule"
                 self._set_base_shot_mode(next_mode, source="remote")
             elif action == "toggle_target_group":
                 self._toggle_turn_target_group(source="remote")
-            elif action == "free_shot_once":
-                self._arm_free_shot_once(source="remote")
+            elif action == "hook_shot_once":
+                self._arm_hook_shot_once(source="remote")
             elif action == "black_shot_once":
                 self._arm_black_shot_once(source="remote")
             elif action == "toggle_star_formula":
@@ -2435,7 +2435,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.config.planner.cue_path_margin_mm,
             self.config.planner.object_path_margin_mm,
             self.config.planner.collision_padding_mm,
-            self.config.planner.free_max_collisions,
             self.config.learning.ranker_enabled,
             self.config.learning.ranker_model_path,
             self.config.learning.score_blend,
@@ -3530,9 +3529,10 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         mode_name = self.control_state.effective_shot_mode(self.config.planner.shot_mode)
         if out is None:
             plan_detail = f"{mode_name} / {self.pipeline.planner.version} / {ranker_version}"
-        elif out.plan.shot_mode == "free":
-            collision_count = len(out.plan.free_route.collision_points) if out.plan.free_route is not None else 0
-            plan_detail = f"free / {collision_count} collisions / {out.plan.free_status}"
+        elif out.plan.shot_mode == "hook":
+            plan_detail = f"hook / {len(out.plan.candidates)} candidates / {out.plan.hook_status}"
+            if out.plan.locked_target_id is not None:
+                plan_detail += f" / lock #{out.plan.locked_target_id}"
         elif out.plan.shot_mode == "target":
             plan_detail = f"target / {len(out.plan.candidates)} candidates / {out.plan.target_shot_status}"
             if out.plan.locked_target_id is not None:
@@ -4005,6 +4005,11 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.phase_metric.value_label.setText(out.state.phase)  # type: ignore[attr-defined]
 
     def _update_plan(self, out: PipelineOutput) -> None:
+        if out.plan.shot_mode == "hook" and out.plan.best is None:
+            lock_id = f" #{out.plan.locked_target_id}" if out.plan.locked_target_id is not None else ""
+            self.best_label.setText(f"勾球模式{lock_id}\n状态 {out.plan.hook_status}\n无理论进球路线")
+            self.candidates.setRowCount(0)
+            return
         if out.plan.shot_mode == "free":
             collision_count = len(out.plan.free_route.collision_points) if out.plan.free_route is not None else 0
             self.best_label.setText(f"自由模式\n状态 {out.plan.free_status}\n碰撞 {collision_count}")

@@ -171,8 +171,9 @@ class ShotPlan:
     candidates: List[ShotCandidate] = field(default_factory=list)
     best: Optional[ShotCandidate] = None
     shot_mode: str = "rule"
+    hook_status: str = "off"
     free_route: Optional[FreeRouteSuggestion] = None
-    free_status: str = "idle"
+    free_status: str = "archived"
     planner_version: str = "geometry_physics_mvp_v1"
     locked_target_id: Optional[int] = None
     target_lock_status: str = "off"

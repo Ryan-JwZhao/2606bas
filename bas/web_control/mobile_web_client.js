@@ -10,8 +10,8 @@ const elements = {
   switchColor: document.getElementById('switchColorButton'),
   starFormula: document.getElementById('starFormulaButton'),
   ruleMode: document.getElementById('ruleModeButton'),
-  freeMode: document.getElementById('freeModeButton'),
-  nextFree: document.getElementById('nextFreeButton'),
+  hookMode: document.getElementById('hookModeButton'),
+  nextHook: document.getElementById('nextHookButton'),
   nextBlack: document.getElementById('nextBlackButton'),
   nextShotChoices: document.getElementById('nextShotChoices'),
   shotOverrideBanner: document.getElementById('shotOverrideBanner'),
@@ -66,16 +66,16 @@ function renderState(state) {
 
   const baseShotMode = state.base_shot_mode?.code || state.shot_mode?.base_code || state.shot_mode?.code || 'rule';
   setPressed(elements.ruleMode, baseShotMode === 'rule');
-  setPressed(elements.freeMode, baseShotMode === 'free');
+  setPressed(elements.hookMode, baseShotMode === 'hook');
   setPressed(elements.starFormula, Boolean(state.star_formula_enabled));
 
-  const nextFreeActive = Boolean(state.shot_overrides?.free_shot_once?.active);
+  const nextHookActive = Boolean(state.shot_overrides?.hook_shot_once?.active);
   const nextBlackActive = Boolean(state.shot_overrides?.black_target_once?.active);
-  const hasShotOverride = nextFreeActive || nextBlackActive;
+  const hasShotOverride = nextHookActive || nextBlackActive;
   elements.nextShotChoices.hidden = hasShotOverride;
   elements.shotOverrideBanner.hidden = !hasShotOverride;
-  if (nextFreeActive) {
-    elements.shotOverrideTitle.textContent = '下一杆自由';
+  if (nextHookActive) {
+    elements.shotOverrideTitle.textContent = '下一杆勾球';
     elements.shotOverrideTarget.hidden = true;
   } else if (nextBlackActive) {
     elements.shotOverrideTitle.textContent = '下一杆规则';
@@ -304,14 +304,14 @@ elements.pointsMode.addEventListener('click', () => selectGameMode('points'));
 elements.switchColor.addEventListener('click', () => runAction('/api/match/switch_turn'));
 elements.starFormula.addEventListener('click', () => runAction('/api/star_formula/toggle'));
 elements.ruleMode.addEventListener('click', () => runAction('/api/shot_mode/set', { mode: 'rule' }));
-elements.freeMode.addEventListener('click', () => runAction('/api/shot_mode/set', { mode: 'free' }));
-elements.nextFree.addEventListener('click', () => runAction('/api/shot_once/free/toggle'));
+elements.hookMode.addEventListener('click', () => runAction('/api/shot_mode/set', { mode: 'hook' }));
+elements.nextHook.addEventListener('click', () => runAction('/api/shot_once/hook/toggle'));
 elements.nextBlack.addEventListener('click', () => runAction('/api/shot_once/black/toggle'));
 elements.cancelShotOverride.addEventListener('click', () => {
-  const freeActive = Boolean(lastState?.shot_overrides?.free_shot_once?.active);
+  const hookActive = Boolean(lastState?.shot_overrides?.hook_shot_once?.active);
   const blackActive = Boolean(lastState?.shot_overrides?.black_target_once?.active);
-  if (freeActive) {
-    runAction('/api/shot_once/free/clear');
+  if (hookActive) {
+    runAction('/api/shot_once/hook/clear');
   } else if (blackActive) {
     runAction('/api/shot_once/black/clear');
   }
