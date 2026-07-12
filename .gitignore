@@ -18,6 +18,11 @@ env/
 
 # Local runtime output
 logs/
+deploy/nginx/logs/
+deploy/nginx/temp/
+deploy/nginx/certs/*.key
+deploy/nginx/certs/*.crt
+deploy/nginx/certs/*.pem
 outputs/
 replays/
 local_settings/
