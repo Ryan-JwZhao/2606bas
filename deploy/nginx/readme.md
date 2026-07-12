@@ -29,7 +29,7 @@ BAS 原有的 `http://10.1.5.175:17070` 不会被修改，普通用户仍然可�
 
    如果服务端已有证书，直接放入上述路径即可。证书的 SAN 必须包含 `IP:10.1.5.175`。
 
-   也可以在服务端使用 OpenSSL 生成临时自签名证书：
+   如果服务端有 OpenSSL，可以生成临时自签名证书：
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\deploy\nginx\scripts\generate-self-signed-cert.ps1
@@ -39,6 +39,12 @@ BAS 原有的 `http://10.1.5.175:17070` 不会被修改，普通用户仍然可�
 
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\deploy\nginx\scripts\generate-self-signed-cert.ps1 -OpenSslPath C:\tools\openssl\bin\openssl.exe
+   ```
+
+   Windows 服务端没有 OpenSSL 时，可直接使用 Windows 自带证书 API 生成 PEM 文件：
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\deploy\nginx\scripts\generate-windows-self-signed-cert.ps1 -OutputDirectory C:\nginx\certs
    ```
 
 4. 确认 Nginx 可执行文件在 PATH 中，或设置当前命令行的 `NGINX_EXE`：
@@ -71,6 +77,20 @@ BAS 原有的 `http://10.1.5.175:17070` 不会被修改，普通用户仍然可�
    https://10.1.5.175/
    ```
 
+## 已安装到 `C:\nginx` 时
+
+如果 Nginx 不在仓库目录，而是安装在 `C:\nginx`，可将本目录的配置复制到 Nginx 根目录。配置中的证书路径相对于配置文件所在目录，因此不要直接复制到 `C:\nginx\conf` 后再使用原路径：
+
+```powershell
+Copy-Item .\deploy\nginx\nginx.conf C:\nginx\bas-nginx.conf -Force
+powershell -ExecutionPolicy Bypass -File .\deploy\nginx\scripts\generate-windows-self-signed-cert.ps1 -OutputDirectory C:\nginx\certs
+C:\nginx\nginx.exe -t -p C:\nginx -c bas-nginx.conf
+C:\nginx\nginx.exe -s quit -p C:\nginx -c conf\nginx.conf
+C:\nginx\nginx.exe -p C:\nginx -c bas-nginx.conf
+```
+
+上述停止命令只停止当前 Nginx 实例；BAS、Clash 和其它应用不会被停止。
+
 ## 重要限制
 
 本配置只负责在服务端终止 TLS，不要求用户安装客户端证书，也不启用双向 TLS。
@@ -78,6 +98,8 @@ BAS 原有的 `http://10.1.5.175:17070` 不会被修改，普通用户仍然可�
 如果使用自签名或仅局域网 CA 证书，手机浏览器可能显示“证书不受信任”，并可能拒绝 Service Worker 或 PWA 安装。完全不让用户安装证书、同时不使用公网受信任证书时，无法保证浏览器把该内网 IP 识别为可安装 PWA 的安全来源；这是浏览器信任链限制，不是 Nginx 配置可以绕过的问题。
 
 因此当前配置可以先用于验证 HTTPS 转发和视频流；若必须让 PWA 在用户侧无证书安装并稳定通过安全检查，需要后续提供浏览器默认信任的证书和匹配域名，或使用受设备管理策略信任的内部 CA。该方案不要求现在开放公网。
+
+页面现在会监听 Chromium 的 `beforeinstallprompt` 事件。只有浏览器确认页面满足安装条件时，顶部才会显示“安装应用”按钮；普通浏览器不会额外显示该按钮。iOS Safari 不支持这个事件，需要使用浏览器自己的“添加到主屏幕”菜单。更新前端代码后必须重启 BAS 主程序，再刷新手机页面，才能让服务端重新载入页面资源。
 
 ## 防火墙与验证
 

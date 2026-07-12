@@ -4,6 +4,7 @@ const elements = {
   videoStage: document.getElementById('videoStage'),
   stream: document.getElementById('stream'),
   fullscreen: document.getElementById('fullscreenButton'),
+  install: document.getElementById('installButton'),
   eightBallMode: document.getElementById('eightBallMode'),
   pointsMode: document.getElementById('pointsMode'),
   switchColor: document.getElementById('switchColorButton'),
@@ -27,6 +28,7 @@ let toastTimer = 0;
 let fallbackFullscreen = false;
 let pwaAutoFullscreen = false;
 let pwaOrientationTimer = 0;
+let installPrompt = null;
 
 function showToast(message) {
   if (!message) return;
@@ -174,6 +176,39 @@ function schedulePwaAutoFullscreenSync() {
   pwaOrientationTimer = window.setTimeout(syncPwaAutoFullscreen, 140);
 }
 
+function setInstallButtonVisible(visible) {
+  if (!elements.install) return;
+  elements.install.hidden = !visible || isInstalledPwa();
+}
+
+function handleBeforeInstallPrompt(event) {
+  event.preventDefault();
+  installPrompt = event;
+  setInstallButtonVisible(true);
+}
+
+async function promptPwaInstall() {
+  if (!installPrompt) {
+    showToast('请从浏览器菜单选择“安装应用”');
+    return;
+  }
+  const prompt = installPrompt;
+  installPrompt = null;
+  setInstallButtonVisible(false);
+  try {
+    const result = await prompt.prompt();
+    showToast(result?.outcome === 'accepted' ? '已确认安装应用' : '已取消安装应用');
+  } catch (_error) {
+    showToast('当前浏览器未能打开安装提示');
+  }
+}
+
+function handleAppInstalled() {
+  installPrompt = null;
+  setInstallButtonVisible(false);
+  showToast('应用已安装');
+}
+
 function registerPwaServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   navigator.serviceWorker.register('/service-worker.js', { scope: '/' }).catch(() => {
@@ -282,6 +317,9 @@ elements.cancelShotOverride.addEventListener('click', () => {
   }
 });
 elements.replay.addEventListener('click', () => runAction('/api/instant_replay/export'));
+elements.install?.addEventListener('click', promptPwaInstall);
+window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+window.addEventListener('appinstalled', handleAppInstalled);
 
 document.addEventListener('fullscreenchange', unlockOrientationAfterFullscreen);
 document.addEventListener('webkitfullscreenchange', unlockOrientationAfterFullscreen);

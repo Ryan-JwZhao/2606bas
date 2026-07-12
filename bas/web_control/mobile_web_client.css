@@ -83,6 +83,28 @@ button:focus-visible {
   white-space: nowrap;
 }
 
+.system-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.install-button {
+  padding: 0.3rem 0.58rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--line));
+  border-radius: 0.45rem;
+  background: color-mix(in srgb, var(--accent-strong) 32%, var(--surface));
+  color: var(--text);
+  font-size: 0.75rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.install-button:active {
+  background: var(--surface-active);
+}
+
 .state-dot {
   width: 0.56rem;
   aspect-ratio: 1;

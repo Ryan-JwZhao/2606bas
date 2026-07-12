@@ -15,13 +15,16 @@
 </head>
 <body>
   <main class="app" id="app">
-    <header class="system-bar">
-      <span class="system-name">BAS台球系统</span>
+  <header class="system-bar">
+    <span class="system-name">BAS台球系统</span>
+    <div class="system-actions">
+      <button class="install-button" id="installButton" type="button" hidden>安装应用</button>
       <span class="system-state" id="systemState" role="status" aria-live="polite">
         <span class="state-dot state-dot--offline" id="stateDot" aria-hidden="true"></span>
         <span id="stateText">未连接</span>
       </span>
-    </header>
+    </div>
+  </header>
 
     <section class="video-stage" id="videoStage" aria-label="实时台球画面">
       <img id="stream" src="/api/mjpeg" alt="实时台球画面，点击目标球可进行选择" draggable="false" />

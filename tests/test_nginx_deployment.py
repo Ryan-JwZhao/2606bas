@@ -31,6 +31,7 @@ def test_nginx_proxy_preserves_streaming_and_pwa_routes() -> None:
 def test_nginx_deployment_has_chinese_usage_readme_and_runtime_scripts() -> None:
     assert (NGINX_DIR / "readme.md").exists()
     assert (NGINX_DIR / "scripts" / "generate-self-signed-cert.ps1").exists()
+    assert (NGINX_DIR / "scripts" / "generate-windows-self-signed-cert.ps1").exists()
     assert (NGINX_DIR / "start-nginx.cmd").exists()
     assert (NGINX_DIR / "reload-nginx.cmd").exists()
     assert (NGINX_DIR / "stop-nginx.cmd").exists()

@@ -42,6 +42,7 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             assert "/mobile_web_client.js" in html
             assert "/manifest.webmanifest" in html
             assert "/pwa/icon-192.svg" in html
+            assert 'id="installButton"' in html
             assert "功能开发中" not in html
             assert "临时覆盖长期规则" not in html
         with urlopen(f"{base}/manifest.webmanifest", timeout=2.0) as response:
@@ -78,6 +79,9 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             assert b"function isInstalledPwa()" in client_js
             assert b"has-pwa-auto-fullscreen" in client_js
             assert b"register('/service-worker.js'" in client_js
+            assert b"beforeinstallprompt" in client_js
+            assert b"appinstalled" in client_js
+            assert b"prompt.prompt()" in client_js
 
         request = Request(
             f"{base}/api/compute",
