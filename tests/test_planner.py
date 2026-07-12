@@ -14,7 +14,7 @@ from bas.projection.star_formula import StarFormulaConfig
 from bas.planning import GeometryPhysicsPlanner
 from bas.projection.overlay import OverlayBuilder, projection_route_stroke_style
 from bas.config import ProjectionConfig
-from bas.schemas import MatchStateFrame, ShotCandidate, ShotPlan, TableModel, TrackObservation
+from bas.schemas import Event, MatchStateFrame, ShotCandidate, ShotPlan, TableModel, TrackObservation
 
 
 def _service() -> CalibrationService:
@@ -108,6 +108,81 @@ def test_planner_manual_web_target_limits_candidates_until_cleared() -> None:
 
     planner.clear_manual_target()
     assert planner.manual_target_id is None
+
+
+def test_planner_manual_web_target_overrides_free_mode() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(shot_mode="free", top_k=20), _service())
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="STABLE_IDLE",
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _obs(2, "solid", 620, 250),
+            _obs(3, "stripe", 620, 350),
+        ],
+    )
+
+    planner.set_manual_target(3)
+    plan = planner.plan(state)
+
+    assert plan.shot_mode == "target"
+    assert plan.best is not None
+    assert plan.best.target_track_id == 3
+    assert plan.locked_target_id == 3
+    assert plan.target_lock_status == "manual"
+
+
+def test_planner_manual_web_target_is_released_on_shot_started() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20), _service())
+    layout = [
+        _obs(1, "cue", 120, 250),
+        _obs(2, "solid", 620, 250),
+        _obs(3, "stripe", 620, 350),
+    ]
+    before_shot = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        layout=layout,
+    )
+    shot_started = MatchStateFrame(
+        frame_id=2,
+        ts_cam_ns=2,
+        phase="SHOT_ACTIVE",
+        events=[Event(name="SHOT_STARTED", frame_id=2, ts_cam_ns=2)],
+        layout=layout,
+    )
+
+    planner.set_manual_target(3)
+    held = planner.plan(before_shot)
+    released = planner.plan(shot_started)
+
+    assert held.best is not None
+    assert held.best.target_track_id == 3
+    assert planner.manual_target_id is None
+    assert released.target_lock_status != "manual"
+    assert all(candidate.target_track_id != 3 for candidate in released.candidates) or released.locked_target_id is None
+
+
+def test_planner_manual_web_target_does_not_fallback_when_temporarily_missing() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20), _service())
+    selected_layout = [
+        _obs(1, "cue", 120, 250),
+        _obs(2, "solid", 620, 250),
+        _obs(3, "stripe", 620, 350),
+    ]
+    missing_layout = [selected_layout[0], selected_layout[1]]
+
+    planner.set_manual_target(3)
+    selected = planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="PRE_SHOT_ARMED", layout=selected_layout))
+    missing = planner.plan(MatchStateFrame(frame_id=2, ts_cam_ns=2, phase="PRE_SHOT_ARMED", layout=missing_layout))
+
+    assert selected.best is not None
+    assert selected.best.target_track_id == 3
+    assert missing.best is None
+    assert missing.locked_target_id == 3
+    assert missing.target_lock_status == "manual_missing"
 
 
 def test_planner_excludes_black_on_open_table() -> None:

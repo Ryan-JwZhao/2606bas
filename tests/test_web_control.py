@@ -40,6 +40,7 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             assert "BAS台球系统" in html
             assert "/mobile_web_client.css" in html
             assert "/mobile_web_client.js" in html
+            assert "功能开发中" not in html
             assert "临时覆盖长期规则" not in html
         with urlopen(f"{base}/mobile_web_client.css", timeout=2.0) as response:
             assert response.headers.get_content_type() == "text/css"
@@ -54,6 +55,9 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             assert "下一杆规则" in client_js.decode("utf-8")
             assert "切换花色 ·" not in client_js.decode("utf-8")
             assert "data.ok === false" in client_js.decode("utf-8")
+            assert b"pointsMode.addEventListener" in client_js
+            assert b"/api/select" in client_js
+            assert "功能开发中" not in client_js.decode("utf-8")
 
         request = Request(
             f"{base}/api/compute",

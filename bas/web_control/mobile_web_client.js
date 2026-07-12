@@ -131,9 +131,6 @@ async function fetchState() {
 function selectGameMode(mode) {
   selectedGameMode = mode;
   renderGameMode();
-  if (mode === 'points') {
-    showToast('追分模式控制功能正在开发中');
-  }
 }
 
 async function enterVideoFullscreen() {

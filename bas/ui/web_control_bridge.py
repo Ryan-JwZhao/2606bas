@@ -163,6 +163,16 @@ class WebControlOperatorMixin:
             self._refresh_current_plan()
         self._append_log("Web 手动选球已清除")
 
+    def _release_web_target_after_shot(self, events: object) -> None:
+        if self._manual_web_target_id is None:
+            return
+        try:
+            event_list = list(events or [])
+        except TypeError:
+            return
+        if any(str(getattr(event, "name", "")).strip().upper() == "SHOT_STARTED" for event in event_list):
+            self._manual_web_target_id = None
+
     def _build_web_state(self) -> dict[str, object]:
         out = self.last_output
         frame_w = 0
@@ -193,7 +203,8 @@ class WebControlOperatorMixin:
             free_route["pocket_id"] = free_route.get("pocket_index")
             free_route["shot_type"] = "free"
             free_route["score"] = 0.0
-        route = free_route if route_type == "free" else rule_route
+        manual_target_active = self._manual_web_target_id is not None
+        route = rule_route if manual_target_active or route_type != "free" else free_route
         layout = out.state.layout if out is not None else []
         visible_solid = sum(1 for track in layout if track.visibility == "visible" and track.group == "solid")
         visible_stripe = sum(1 for track in layout if track.visibility == "visible" and track.group == "stripe")

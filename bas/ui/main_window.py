@@ -3906,6 +3906,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             if raw_out is None:
                 self.stop_pipeline()
                 return
+            self._release_web_target_after_shot(raw_out.state.events)
             out = self._apply_route_display_filters(raw_out)
             self.last_output = out
             self._pending_turn_target_group = self.pipeline.state_machine.turn_target_group

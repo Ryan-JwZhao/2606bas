@@ -67,9 +67,14 @@ class GeometryPhysicsPlanner:
         forced_shot_mode: Optional[str] = None,
         forced_turn_target_group: Optional[str] = None,
     ) -> ShotPlan:
+        self._release_manual_target_on_shot_start(state)
         shot_mode = self._shot_mode(forced_shot_mode=forced_shot_mode)
         if not self.config.enabled:
             return self._empty_plan(state, shot_mode=shot_mode, free_status="disabled")
+        balls = self._extract_balls(state.layout)
+        cue = next((b for b in balls if b.group == "cue"), None)
+        if self.manual_target_id is not None:
+            return self._manual_target_plan(state, cue, balls)
         if shot_mode == "free":
             free_route = self.free_planner.plan(state, frame_bgr=frame_bgr)
             self.target_lock.reset()
@@ -87,8 +92,6 @@ class GeometryPhysicsPlanner:
                 target_lock_status=target_lock.status,
                 target_shot_status="free_mode",
             )
-        balls = self._extract_balls(state.layout)
-        cue = next((b for b in balls if b.group == "cue"), None)
         if cue is None:
             return self._empty_plan(state, shot_mode=shot_mode, free_status=self.free_planner.last_status)
         frame_context = self._build_aim_frame_context(
@@ -103,8 +106,7 @@ class GeometryPhysicsPlanner:
             frame_bgr=frame_bgr,
             frame_context=frame_context,
         )
-        manual_target = self._manual_target(balls)
-        if target_shot.active and manual_target is None:
+        if target_shot.active:
             return self._target_shot_plan(state, cue, balls, target_shot)
         turn_target_group = forced_turn_target_group if forced_turn_target_group is not None else getattr(state, "turn_target_group", None)
         cue_sector_aim = self.cue_sector.detect_aim(
@@ -113,15 +115,9 @@ class GeometryPhysicsPlanner:
             frame_bgr=frame_bgr,
             frame_context=frame_context,
         )
-        if manual_target is not None:
-            target_lock = TargetLockDecision(manual_target.track_id, manual_target.group, "manual")
-            locked_target = manual_target
-        else:
-            target_lock = self.target_lock.update(state=state, cue_ball=cue, balls=balls, aim=cue_sector_aim)
-            locked_target = self._locked_target(balls, target_lock)
-        if manual_target is not None:
-            targets = [manual_target]
-        elif locked_target is not None:
+        target_lock = self.target_lock.update(state=state, cue_ball=cue, balls=balls, aim=cue_sector_aim)
+        locked_target = self._locked_target(balls, target_lock)
+        if locked_target is not None:
             targets = [locked_target]
         elif cue_sector_aim is not None:
             targets = self.cue_sector.all_object_targets(balls)
@@ -260,6 +256,57 @@ class GeometryPhysicsPlanner:
             return np.asarray([(0.0, 0.0), (float(w), 0.0), (float(w), float(h)), (0.0, float(h))], dtype=np.float32)
         return None
 
+    def _release_manual_target_on_shot_start(self, state: MatchStateFrame) -> None:
+        if any(str(event.name).strip().upper() == "SHOT_STARTED" for event in getattr(state, "events", ())):
+            self.clear_manual_target()
+
+    def _manual_target_plan(
+        self,
+        state: MatchStateFrame,
+        cue: Optional[_Ball],
+        balls: Sequence[_Ball],
+    ) -> ShotPlan:
+        target_id = self.manual_target_id
+        target = self._manual_target(balls)
+        target_lock = TargetLockDecision(target_id, target.group if target is not None else None, "manual")
+        if cue is None or target is None:
+            return ShotPlan(
+                plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
+                frame_id=state.frame_id,
+                ts_cam_ns=state.ts_cam_ns,
+                shot_mode="target",
+                free_status=self.free_planner.last_status,
+                planner_version=f"{self.version}+manual_target",
+                locked_target_id=target_lock.locked_target_id,
+                target_lock_status="manual_missing",
+                target_shot_status="manual_target_missing",
+            )
+
+        pockets = [np.asarray(p, dtype=np.float32) for p in self.calibration.table.pockets_mm]
+        center_polygon = self.calibration.table.center_playable_polygon_mm or self.calibration.table.inner_polygon_mm
+        inner = np.asarray(center_polygon, dtype=np.float32)
+        candidates = [
+            candidate
+            for pocket_index, pocket in enumerate(pockets)
+            if (candidate := self._candidate(cue, target, pocket, pocket_index, list(balls), inner)) is not None
+        ]
+        candidates = self.learning_ranker.rerank(candidates, state)
+        candidates = [self._annotate_target_lock(candidate, target_lock) for candidate in candidates]
+        candidates = candidates[: max(1, int(self.config.top_k))]
+        return ShotPlan(
+            plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
+            frame_id=state.frame_id,
+            ts_cam_ns=state.ts_cam_ns,
+            candidates=candidates,
+            best=candidates[0] if candidates else None,
+            shot_mode="target",
+            free_status=self.free_planner.last_status,
+            planner_version=f"{self.version}+manual_target",
+            locked_target_id=target_lock.locked_target_id,
+            target_lock_status="manual",
+            target_shot_status="manual_target",
+        )
+
     def _locked_target(self, balls: Sequence[_Ball], target_lock: TargetLockDecision) -> Optional[_Ball]:
         if target_lock.locked_target_id is None:
             return None
@@ -272,7 +319,7 @@ class GeometryPhysicsPlanner:
         if self.manual_target_id is None:
             return None
         for ball in balls:
-            if int(ball.track_id) == int(self.manual_target_id) and ball.group in {"solid", "stripe", "black"}:
+            if int(ball.track_id) == int(self.manual_target_id) and ball.group in {"solid", "stripe", "black"} and ball.quality > 0.25:
                 return ball
         return None
 

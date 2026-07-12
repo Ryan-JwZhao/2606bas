@@ -14,7 +14,7 @@ from PyQt5 import QtWidgets
 from bas.config import AppConfig
 from bas import runtime_env
 from bas.operator_controls import RuntimeControlState
-from bas.schemas import DetectionsFrame, FramePacket, MatchStateFrame, ProjectionOverlay, ShotCandidate, ShotPlan, TracksFrame
+from bas.schemas import DetectionsFrame, Event, FramePacket, MatchStateFrame, ProjectionOverlay, ShotCandidate, ShotPlan, TracksFrame
 
 runtime_env.preload_torch_for_backend = lambda backend: None
 
@@ -606,3 +606,15 @@ def test_refresh_projection_uses_composed_interaction_frame() -> None:
     assert len(captured) == 1
     assert captured[0].shape == (4, 6, 3)
     assert int(captured[0][0, 0, 0]) == 77
+
+
+def test_web_target_state_is_cleared_after_shot_started() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    window._manual_web_target_id = 7
+
+    window._release_web_target_after_shot([Event(name="SHOT_STARTED", frame_id=2, ts_cam_ns=2)])
+
+    assert window._manual_web_target_id is None
+    window.close()
+    app.processEvents()
