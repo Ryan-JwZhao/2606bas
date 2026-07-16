@@ -257,7 +257,9 @@ function activateFallbackFullscreen() {
   fallbackFullscreen = true;
   document.body.classList.add('has-fallback-fullscreen');
   elements.videoStage.classList.add('is-fallback-fullscreen');
-  showToast('已进入横屏画面，点击画面退出');
+  elements.fullscreen.setAttribute('aria-label', '退出全屏');
+  elements.fullscreen.setAttribute('title', '退出全屏');
+  showToast('已进入横屏画面，点击球可选球，点击右下角按钮退出');
   lockLandscapeBestEffort();
 }
 
@@ -265,6 +267,8 @@ function exitFallbackFullscreen() {
   fallbackFullscreen = false;
   document.body.classList.remove('has-fallback-fullscreen');
   elements.videoStage.classList.remove('is-fallback-fullscreen');
+  elements.fullscreen.setAttribute('aria-label', '横屏全屏播放');
+  elements.fullscreen.setAttribute('title', '横屏全屏播放');
   unlockOrientationBestEffort();
   schedulePwaAutoFullscreenSync();
 }
@@ -277,27 +281,40 @@ function unlockOrientationAfterFullscreen() {
 }
 
 elements.stream.addEventListener('click', async (event) => {
-  if (fallbackFullscreen) {
-    exitFallbackFullscreen();
-    return;
-  }
   const frame = lastState?.frame_size;
   if (!frame?.w || !frame?.h) {
     showToast('等待视频画面后再选球');
     return;
   }
 
-  const rect = elements.stream.getBoundingClientRect();
-  const scaleX = (event.clientX - rect.left) / rect.width;
-  const scaleY = (event.clientY - rect.top) / rect.height;
-  const x = Math.max(0, Math.min(frame.w - 1, Math.round(scaleX * frame.w)));
-  const y = Math.max(0, Math.min(frame.h - 1, Math.round(scaleY * frame.h)));
-  await runAction('/api/select', { x, y });
+  const screenRect = elements.stream.getBoundingClientRect();
+  const hasLocalPoint = Number.isFinite(event.offsetX) && Number.isFinite(event.offsetY);
+  const rect = hasLocalPoint
+    ? { left: 0, top: 0, width: elements.stream.clientWidth, height: elements.stream.clientHeight }
+    : screenRect;
+  const style = window.getComputedStyle(elements.stream);
+  const point = window.BASStreamCoordinates?.mapRenderedPointToFrame({
+    clientX: hasLocalPoint ? event.offsetX : event.clientX,
+    clientY: hasLocalPoint ? event.offsetY : event.clientY,
+    rect,
+    frameWidth: frame.w,
+    frameHeight: frame.h,
+    objectFit: style.objectFit,
+  });
+  if (!point) {
+    showToast('请点击实际视频画面内的目标球');
+    return;
+  }
+  await runAction('/api/select', point);
 });
 
 elements.fullscreen.addEventListener('click', (event) => {
   event.stopPropagation();
-  enterVideoFullscreen();
+  if (fallbackFullscreen) {
+    exitFallbackFullscreen();
+  } else {
+    enterVideoFullscreen();
+  }
 });
 elements.eightBallMode.addEventListener('click', () => selectGameMode('eight-ball'));
 elements.pointsMode.addEventListener('click', () => selectGameMode('points'));

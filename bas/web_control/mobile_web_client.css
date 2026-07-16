@@ -403,7 +403,6 @@ button:focus-visible {
 
 .video-stage:fullscreen .fullscreen-button,
 .video-stage:-webkit-full-screen .fullscreen-button,
-.video-stage.is-fallback-fullscreen .fullscreen-button,
 .video-stage.is-pwa-auto-fullscreen .fullscreen-button {
   display: none;
 }

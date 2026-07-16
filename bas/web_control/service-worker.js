@@ -1,7 +1,8 @@
-const CACHE_NAME = 'bas-pwa-shell-v1';
+const CACHE_NAME = 'bas-pwa-shell-v2';
 const APP_SHELL = [
   '/',
   '/mobile_web_client.css',
+  '/stream_coordinates.js',
   '/mobile_web_client.js',
   '/manifest.webmanifest',
   '/pwa/icon-192.svg',

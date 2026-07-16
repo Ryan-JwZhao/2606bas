@@ -39,6 +39,7 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             html = response.read().decode("utf-8")
             assert "BAS台球系统" in html
             assert "/mobile_web_client.css" in html
+            assert "/stream_coordinates.js" in html
             assert "/mobile_web_client.js" in html
             assert "/manifest.webmanifest" in html
             assert "/pwa/icon-192.svg" in html
@@ -55,7 +56,8 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
         with urlopen(f"{base}/service-worker.js", timeout=2.0) as response:
             assert response.headers.get_content_type() == "text/javascript"
             service_worker = response.read()
-            assert b"bas-pwa-shell-v1" in service_worker
+            assert b"bas-pwa-shell-v2" in service_worker
+            assert b"/stream_coordinates.js" in service_worker
             assert b"/api/" not in service_worker
         with urlopen(f"{base}/pwa/icon-192.svg", timeout=2.0) as response:
             assert response.headers.get_content_type() == "image/svg+xml"
@@ -63,21 +65,28 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
         with urlopen(f"{base}/mobile_web_client.css", timeout=2.0) as response:
             assert response.headers.get_content_type() == "text/css"
             assert b"aspect-ratio: 16 / 9" in response.read()
+        with urlopen(f"{base}/stream_coordinates.js", timeout=2.0) as response:
+            assert response.headers.get_content_type() == "text/javascript"
+            assert b"mapRenderedPointToFrame" in response.read()
         with urlopen(f"{base}/mobile_web_client.js", timeout=2.0) as response:
             assert response.headers.get_content_type() == "text/javascript"
             client_js = response.read()
+            client_text = client_js.decode("utf-8").replace("\r\n", "\n")
             assert b"/api/shot_mode/set" in client_js
             assert b"/api/shot_once/hook/clear" in client_js
             assert b"/api/shot_once/black/clear" in client_js
-            assert "临时覆盖长期规则" not in client_js.decode("utf-8")
-            assert "下一杆规则" in client_js.decode("utf-8")
-            assert "下一杆勾球" in client_js.decode("utf-8")
-            assert "自由模式" not in client_js.decode("utf-8")
-            assert "切换花色 ·" not in client_js.decode("utf-8")
-            assert "data.ok === false" in client_js.decode("utf-8")
+            assert "临时覆盖长期规则" not in client_text
+            assert "下一杆规则" in client_text
+            assert "下一杆勾球" in client_text
+            assert "自由模式" not in client_text
+            assert "切换花色 ·" not in client_text
+            assert "data.ok === false" in client_text
             assert b"pointsMode.addEventListener" in client_js
             assert b"/api/select" in client_js
-            assert "功能开发中" not in client_js.decode("utf-8")
+            assert b"BASStreamCoordinates" in client_js
+            assert b"if (!point)" in client_js
+            assert "fallbackFullscreen) {\n    exitFallbackFullscreen();\n    return;" not in client_text
+            assert "功能开发中" not in client_text
             assert b"function isInstalledPwa()" in client_js
             assert b"has-pwa-auto-fullscreen" in client_js
             assert b"register('/service-worker.js'" in client_js

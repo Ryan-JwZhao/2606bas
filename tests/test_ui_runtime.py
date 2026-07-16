@@ -556,20 +556,34 @@ def test_web_state_serializes_an_available_route_for_control_responses() -> None
     assert state["route"]["shot_type"] == "rule"
 
 
-def test_web_manual_selection_rejects_cue_ball() -> None:
+def _web_selection_window(track: TrackObservation) -> tuple[main_window.OperatorWindow, list[int], list[bool]]:
+    selected_ids: list[int] = []
+    refreshes: list[bool] = []
     window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
     window.config = AppConfig()
     window.control_state = RuntimeControlState()
     window.pipeline = SimpleNamespace(
-        planner=SimpleNamespace(set_manual_target=lambda _track_id: None),
+        planner=SimpleNamespace(set_manual_target=selected_ids.append),
         state_machine=SimpleNamespace(turn_target_group="solid"),
     )
     window.projection_window = None
     window.star_formula = SimpleNamespace(enabled=False)
     window._pending_turn_target_group = "solid"
     window._manual_web_target_id = None
-    window._refresh_current_plan = lambda: None
+    window._refresh_current_plan = lambda: refreshes.append(True)
     window._append_log = lambda _message: None
+    window.last_output = main_window.PipelineOutput(
+        frame=FramePacket(frame_id=1, ts_cam_ns=1, camera_id="test", image=np.zeros((200, 200, 3), dtype=np.uint8)),
+        detections=DetectionsFrame(frame_id=1, ts_cam_ns=1),
+        tracks=TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[track]),
+        state=MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="STABLE_IDLE", layout=[track]),
+        plan=ShotPlan(plan_id="p", frame_id=1, ts_cam_ns=1),
+        overlay=ProjectionOverlay(overlay_id="o", frame_id=1, projector_size=(200, 200)),
+    )
+    return window, selected_ids, refreshes
+
+
+def test_web_manual_selection_rejects_cue_ball() -> None:
     cue_track = TrackObservation(
         track_id=1,
         bbox=(85.0, 85.0, 115.0, 115.0),
@@ -579,19 +593,35 @@ def test_web_manual_selection_rejects_cue_ball() -> None:
         group="cue",
         confidence=0.9,
     )
-    window.last_output = main_window.PipelineOutput(
-        frame=FramePacket(frame_id=1, ts_cam_ns=1, camera_id="test", image=np.zeros((200, 200, 3), dtype=np.uint8)),
-        detections=DetectionsFrame(frame_id=1, ts_cam_ns=1),
-        tracks=TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[cue_track]),
-        state=MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="STABLE_IDLE", layout=[cue_track]),
-        plan=ShotPlan(plan_id="p", frame_id=1, ts_cam_ns=1),
-        overlay=ProjectionOverlay(overlay_id="o", frame_id=1, projector_size=(200, 200)),
-    )
+    window, selected_ids, refreshes = _web_selection_window(cue_track)
 
     result = main_window.OperatorWindow._select_web_target(window, {"x": 100, "y": 100})
 
     assert result["ok"] is False
     assert window._manual_web_target_id is None
+    assert selected_ids == []
+    assert refreshes == []
+
+
+def test_web_manual_selection_accepts_visible_object_ball() -> None:
+    object_track = TrackObservation(
+        track_id=7,
+        bbox=(85.0, 85.0, 115.0, 115.0),
+        center_px=(100.0, 100.0),
+        radius_px=15.0,
+        cls_name="solid",
+        group="solid",
+        confidence=0.9,
+    )
+    window, selected_ids, refreshes = _web_selection_window(object_track)
+
+    result = main_window.OperatorWindow._select_web_target(window, {"x": 100, "y": 100})
+
+    assert result["ok"] is True
+    assert result["target_id"] == 7
+    assert window._manual_web_target_id == 7
+    assert selected_ids == [7]
+    assert refreshes == [True]
 
 
 def test_toggle_turn_group_flips_known_group_and_does_not_guess_unknown_group() -> None:
