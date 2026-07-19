@@ -5,6 +5,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from ..operator_controls import normalize_shot_mode
 from ..schemas import to_jsonable
+from ..training import RULES_MODE, TRAINING_MODE, list_training_scenarios, normalize_operating_mode
 
 
 class WebControlOperatorMixin:
@@ -90,6 +91,35 @@ class WebControlOperatorMixin:
             return self._web_result(switched, "已切换到另一花色" if switched else "当前花色尚未确定，无法切换")
         if action in {"match_stage", "match_undo"}:
             return self._web_result(False, "2606 状态机不支持此旧版阶段命令")
+        if action == "runtime_mode_set":
+            mode = normalize_operating_mode(str(payload.get("mode", "")))
+            changed = self._set_operating_mode(mode, source="web")
+            label = "编号球训练" if mode == TRAINING_MODE else "规则比赛"
+            return self._web_result(changed, f"已切换到{label}" if changed else "运行模式切换失败")
+        if action == "training_scenario_set":
+            scenario_id = str(payload.get("scenario_id", "")).strip()
+            valid_ids = {scenario.scenario_id for scenario in list_training_scenarios()}
+            if scenario_id not in valid_ids:
+                return self._web_result(False, f"未知训练项目: {scenario_id}")
+            self._set_training_scenario(scenario_id, source="web")
+            return self._web_result(True, "训练项目已切换")
+        if action == "training_start":
+            if not self._set_operating_mode(TRAINING_MODE, source="web"):
+                return self._web_result(False, "无法切换到训练模式")
+            if self.pipeline is None:
+                self.start_pipeline()
+            if self.pipeline is None:
+                return self._web_result(False, "采集启动失败")
+            ok, training_state = self.pipeline.start_training()
+            self._refresh_training_controls(training_state)
+            self._append_log(training_state.message)
+            return self._web_result(ok, training_state.message)
+        if action == "training_reset":
+            if self.pipeline is None:
+                return self._web_result(False, "请先开始采集")
+            training_state = self.pipeline.reset_training()
+            self._refresh_training_controls(training_state)
+            return self._web_result(True, "本次训练已重置")
         if action == "shot_mode_toggle":
             next_mode = "hook" if normalize_shot_mode(self.config.planner.shot_mode) == "rule" else "rule"
             self._set_base_shot_mode(next_mode, source="web")
@@ -138,6 +168,8 @@ class WebControlOperatorMixin:
         return self._web_result(False, f"未知动作: {action}")
 
     def _select_web_target(self, payload: dict[str, object]) -> dict[str, object]:
+        if normalize_operating_mode(self.config.training.operating_mode) == TRAINING_MODE:
+            return self._web_result(False, "训练模式由项目规则自动判定目标球")
         if self.last_output is None or self.pipeline is None:
             return self._web_result(False, "当前没有可选轨迹")
         try:
@@ -193,6 +225,8 @@ class WebControlOperatorMixin:
                     {
                         "track_id": int(track.track_id),
                         "group": str(track.group),
+                        "class_name": str(track.cls_name),
+                        "ball_number": int(track.cls_name) if str(track.cls_name).isdigit() else None,
                         "bbox": [float(value) for value in track.bbox],
                         "center": [float(value) for value in track.center_px],
                     }
@@ -220,11 +254,34 @@ class WebControlOperatorMixin:
         auto_target_id = out.plan.locked_target_id if out is not None else None
         if auto_target_id is None and out is not None and out.plan.best is not None:
             auto_target_id = out.plan.best.target_track_id
+        operating_mode = normalize_operating_mode(self.config.training.operating_mode)
+        training_state = None
+        if out is not None and out.training is not None:
+            training_state = to_jsonable(out.training)
+            training_state["progress_ratio"] = out.training.progress_ratio
+        elif self.pipeline is not None and getattr(self.pipeline, "training_session", None) is not None:
+            training_state = to_jsonable(self.pipeline.training_session.state)
+            training_state["progress_ratio"] = self.pipeline.training_session.state.progress_ratio
+        scenarios = [
+            {
+                "scenario_id": scenario.scenario_id,
+                "title": scenario.title,
+                "description": scenario.description,
+                "setup_instructions": scenario.setup_instructions,
+            }
+            for scenario in list_training_scenarios()
+        ]
         return {
             "ok": True,
             "frame_idx": int(out.frame.frame_id) if out is not None else 0,
             "frame_size": {"w": int(frame_w), "h": int(frame_h)},
             "tracks": tracks,
+            "operating_mode": {
+                "code": operating_mode,
+                "name": "编号球训练" if operating_mode == TRAINING_MODE else "规则比赛",
+            },
+            "training": training_state,
+            "training_scenarios": scenarios,
             "shot_mode": {
                 "code": route_type,
                 "name": "勾球模式" if route_type == "hook" else "规则模式",

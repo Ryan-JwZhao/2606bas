@@ -1,4 +1,4 @@
-const CACHE_NAME = 'bas-pwa-shell-v2';
+const CACHE_NAME = 'bas-pwa-shell-v3';
 const APP_SHELL = [
   '/',
   '/mobile_web_client.css',

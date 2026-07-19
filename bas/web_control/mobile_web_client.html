@@ -35,18 +35,18 @@
       </button>
     </section>
 
-    <section class="mode-switch" aria-label="游戏模式">
+    <section class="mode-switch" aria-label="运行模式">
       <button class="mode-button is-active" id="eightBallMode" type="button" aria-pressed="true">
-        <span class="mode-button__title">中式八球</span>
-        <span class="mode-button__hint">当前可用</span>
+        <span class="mode-button__title">规则比赛</span>
+        <span class="mode-button__hint">YOLO11m 四分类</span>
       </button>
       <button class="mode-button" id="pointsMode" type="button" aria-pressed="false">
-        <span class="mode-button__title">追分</span>
-        <span class="mode-button__hint">选球可用</span>
+        <span class="mode-button__title">编号球训练</span>
+        <span class="mode-button__hint">YOLO11s 0–15</span>
       </button>
     </section>
 
-    <div class="controls">
+    <div class="controls" id="ruleControls">
       <section class="control-group" aria-labelledby="coreControlLabel">
         <h2 class="control-label" id="coreControlLabel">核心控制</h2>
         <div class="control-row">
@@ -85,6 +85,24 @@
         <span>精彩瞬间录制</span>
       </button>
     </div>
+
+    <section class="training-panel" id="trainingPanel" hidden aria-labelledby="trainingPanelTitle">
+      <h2 class="training-panel__title" id="trainingPanelTitle">编号球训练</h2>
+      <label class="training-field" for="trainingScenario">
+        <span>训练项目</span>
+        <select id="trainingScenario"></select>
+      </label>
+      <p class="training-description" id="trainingDescription">请选择训练项目</p>
+      <div class="training-status" id="trainingStatus" role="status" aria-live="polite">等待摆球</div>
+      <div class="training-progress-row">
+        <progress id="trainingProgress" max="1" value="0"></progress>
+        <span id="trainingProgressText">0/0</span>
+      </div>
+      <div class="control-row">
+        <button class="control-button is-active" id="trainingStartButton" type="button">开始验证</button>
+        <button class="control-button" id="trainingResetButton" type="button">重置本次</button>
+      </div>
+    </section>
   </main>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

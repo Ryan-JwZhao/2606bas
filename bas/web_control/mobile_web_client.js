@@ -7,6 +7,15 @@ const elements = {
   install: document.getElementById('installButton'),
   eightBallMode: document.getElementById('eightBallMode'),
   pointsMode: document.getElementById('pointsMode'),
+  ruleControls: document.getElementById('ruleControls'),
+  trainingPanel: document.getElementById('trainingPanel'),
+  trainingScenario: document.getElementById('trainingScenario'),
+  trainingDescription: document.getElementById('trainingDescription'),
+  trainingStatus: document.getElementById('trainingStatus'),
+  trainingProgress: document.getElementById('trainingProgress'),
+  trainingProgressText: document.getElementById('trainingProgressText'),
+  trainingStart: document.getElementById('trainingStartButton'),
+  trainingReset: document.getElementById('trainingResetButton'),
   switchColor: document.getElementById('switchColorButton'),
   starFormula: document.getElementById('starFormulaButton'),
   ruleMode: document.getElementById('ruleModeButton'),
@@ -23,7 +32,6 @@ const elements = {
 };
 
 let lastState = null;
-let selectedGameMode = 'eight-ball';
 let toastTimer = 0;
 let fallbackFullscreen = false;
 let pwaAutoFullscreen = false;
@@ -55,14 +63,44 @@ function setPressed(button, active) {
   button.setAttribute('aria-pressed', String(value));
 }
 
-function renderGameMode() {
-  setPressed(elements.eightBallMode, selectedGameMode === 'eight-ball');
-  setPressed(elements.pointsMode, selectedGameMode === 'points');
+function renderOperatingMode(mode) {
+  const training = mode === 'training';
+  setPressed(elements.eightBallMode, !training);
+  setPressed(elements.pointsMode, training);
+  elements.ruleControls.hidden = training;
+  elements.trainingPanel.hidden = !training;
+}
+
+function renderTraining(state) {
+  const scenarios = Array.isArray(state.training_scenarios) ? state.training_scenarios : [];
+  const currentScenarioId = state.training?.scenario_id || '';
+  const knownOptions = new Set(Array.from(elements.trainingScenario.options).map((option) => option.value));
+  if (knownOptions.size !== scenarios.length || scenarios.some((scenario) => !knownOptions.has(scenario.scenario_id))) {
+    elements.trainingScenario.replaceChildren(...scenarios.map((scenario) => {
+      const option = document.createElement('option');
+      option.value = scenario.scenario_id;
+      option.textContent = scenario.title;
+      return option;
+    }));
+  }
+  if (currentScenarioId) elements.trainingScenario.value = currentScenarioId;
+  const selected = scenarios.find((scenario) => scenario.scenario_id === elements.trainingScenario.value);
+  elements.trainingDescription.textContent = selected?.setup_instructions || selected?.description || '请选择训练项目';
+  const training = state.training;
+  elements.trainingStatus.textContent = training?.message || '请开始采集并按说明摆球';
+  const current = Number(training?.progress_current || 0);
+  const total = Number(training?.progress_total || 0);
+  elements.trainingProgress.max = Math.max(1, total);
+  elements.trainingProgress.value = Math.min(current, Math.max(1, total));
+  elements.trainingProgressText.textContent = `${current}/${total}${training?.elapsed_s ? ` · ${Number(training.elapsed_s).toFixed(1)}s` : ''}`;
+  elements.trainingStart.textContent = ['passed', 'failed'].includes(training?.phase) ? '重新开始' : '开始验证';
 }
 
 function renderState(state) {
   if (!state || state.ok === false) return;
   setConnectionState(state.pipeline_ready ? 'running' : 'waiting');
+  renderOperatingMode(state.operating_mode?.code || 'rules');
+  renderTraining(state);
 
   const baseShotMode = state.base_shot_mode?.code || state.shot_mode?.base_code || state.shot_mode?.code || 'rule';
   setPressed(elements.ruleMode, baseShotMode === 'rule');
@@ -130,11 +168,6 @@ async function fetchState() {
   } catch (_error) {
     if (!lastState) setConnectionState('offline');
   }
-}
-
-function selectGameMode(mode) {
-  selectedGameMode = mode;
-  renderGameMode();
 }
 
 function isInstalledPwa() {
@@ -316,8 +349,11 @@ elements.fullscreen.addEventListener('click', (event) => {
     enterVideoFullscreen();
   }
 });
-elements.eightBallMode.addEventListener('click', () => selectGameMode('eight-ball'));
-elements.pointsMode.addEventListener('click', () => selectGameMode('points'));
+elements.eightBallMode.addEventListener('click', () => runAction('/api/runtime_mode/set', { mode: 'rules' }));
+elements.pointsMode.addEventListener('click', () => runAction('/api/runtime_mode/set', { mode: 'training' }));
+elements.trainingScenario.addEventListener('change', () => runAction('/api/training/scenario/set', { scenario_id: elements.trainingScenario.value }));
+elements.trainingStart.addEventListener('click', () => runAction('/api/training/start'));
+elements.trainingReset.addEventListener('click', () => runAction('/api/training/reset'));
 elements.switchColor.addEventListener('click', () => runAction('/api/match/switch_turn'));
 elements.starFormula.addEventListener('click', () => runAction('/api/star_formula/toggle'));
 elements.ruleMode.addEventListener('click', () => runAction('/api/shot_mode/set', { mode: 'rule' }));
@@ -346,7 +382,7 @@ screen.orientation?.addEventListener?.('change', schedulePwaAutoFullscreenSync);
 const standaloneMediaQuery = window.matchMedia?.('(display-mode: standalone)');
 standaloneMediaQuery?.addEventListener?.('change', schedulePwaAutoFullscreenSync);
 
-renderGameMode();
+renderOperatingMode('rules');
 setConnectionState('offline');
 fetchState();
 registerPwaServiceWorker();

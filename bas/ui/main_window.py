@@ -16,7 +16,12 @@ from ..user_settings import UserSettings
 try:
     _active_config = UserSettings.load().apply_to_config(AppConfig.load()).resolve_paths()
     prepare_runtime_environment()
-    preload_torch_for_backend(_active_config.detector.backend)
+    active_detector_backend = (
+        _active_config.training_detector.backend
+        if _active_config.training.operating_mode == "training"
+        else _active_config.detector.backend
+    )
+    preload_torch_for_backend(active_detector_backend)
 except Exception:
     prepare_runtime_environment()
 
@@ -55,6 +60,7 @@ from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_s
 from ..schemas import MatchPhase, OverlayCircle, OverlayLine, ProjectionOverlay, to_jsonable
 from ..state import normalize_state_machine_engine
 from ..state_debug import StateDebugSession, StateDebugSessionResult
+from ..training import RULES_MODE, TRAINING_MODE, get_training_scenario, list_training_scenarios, normalize_operating_mode
 from ..utils import unit
 from ..web_control import WebControlServer
 from .cue_sector_preview import draw_cue_sector_candidate_box
@@ -121,6 +127,10 @@ class SettingsDialog(QtWidgets.QDialog):
         layout.addWidget(tabs, 1)
         self.model_path = self._path_row(config.detector.model_path, "模型文件 (*.pt *.onnx *.engine);;所有文件 (*.*)")
         self.class_file_path = self._path_row(config.detector.class_file_path, "类别文件 (*.txt *.json);;所有文件 (*.*)")
+        self.training_model_path = self._path_row(
+            config.training_detector.model_path,
+            "编号球模型文件 (*.pt *.onnx *.engine);;所有文件 (*.*)",
+        )
         self.learning_ranker_enabled = QtWidgets.QCheckBox("启用学习排序")
         self.learning_ranker_enabled.setChecked(bool(config.learning.ranker_enabled))
         self.learning_ranker_model_path = self._path_row(config.learning.ranker_model_path, "学习排序模型 (*.json);;所有文件 (*.*)")
@@ -214,6 +224,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self.detector_backend = QtWidgets.QComboBox()
         self.detector_backend.addItems(["disabled", "ultralytics", "debug_color"])
         self.detector_backend.setCurrentText(config.detector.backend)
+        self.training_detector_backend = QtWidgets.QComboBox()
+        self.training_detector_backend.addItems(["disabled", "ultralytics"])
+        self.training_detector_backend.setCurrentText(config.training_detector.backend)
         self.state_machine_engine = QtWidgets.QComboBox()
         self.state_machine_engine.addItem("状态机（旧）", "legacy")
         self.state_machine_engine.addItem("状态机（新）", "modern")
@@ -437,6 +450,8 @@ class SettingsDialog(QtWidgets.QDialog):
                 ("检测后端", self.detector_backend),
                 ("台球模型路径", self.model_path),
                 ("类别文件路径", self.class_file_path),
+                ("训练检测后端", self.training_detector_backend),
+                ("0–15 编号球模型", self.training_model_path),
                 ("检测间隔(帧)", self.detect_interval),
                 ("检测频率上限(Hz)", self.detect_fps_limit),
                 ("台球状态机", self.state_machine_engine),
@@ -649,6 +664,7 @@ class SettingsDialog(QtWidgets.QDialog):
         config.web_control.port = int(self.web_control_port.value())
         config.detector.model_path = self.model_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.detector.class_file_path = self.class_file_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        config.training_detector.model_path = self.training_model_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.learning.ranker_enabled = self.learning_ranker_enabled.isChecked()
         config.learning.ranker_model_path = self.learning_ranker_model_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.learning.score_blend = float(self.learning_score_blend.value())
@@ -663,6 +679,7 @@ class SettingsDialog(QtWidgets.QDialog):
         config.camera.white_balance_auto = self.white_balance_auto.isChecked()
         config.camera.white_balance_value = int(self.white_balance_value.value())
         config.detector.backend = self.detector_backend.currentText()
+        config.training_detector.backend = self.training_detector_backend.currentText()
         config.state.engine = normalize_state_machine_engine(self.state_machine_engine.currentData())
         config.detector.detect_interval_frames = int(self.detect_interval.value())
         config.detector.detect_fps_limit_hz = float(self.detect_fps_limit.value())
@@ -1518,6 +1535,10 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.cue_sector_preview_check.toggled.connect(self._cue_sector_preview_toggled)
         for widget in [self.replay_check, self.geometry_reference_check, self.projection_debug_check, self.cue_sector_preview_check]:
             display_layout.addWidget(widget)
+        self.runtime_mode_combo = QtWidgets.QComboBox()
+        self.runtime_mode_combo.addItem("规则比赛", RULES_MODE)
+        self.runtime_mode_combo.addItem("编号球训练", TRAINING_MODE)
+        self.runtime_mode_combo.currentIndexChanged.connect(self._operating_mode_changed)
         self.shot_mode_combo = QtWidgets.QComboBox()
         self.shot_mode_combo.addItem("规则模式", "rule")
         self.shot_mode_combo.addItem("勾球模式", "hook")
@@ -1527,10 +1548,38 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.state_machine_combo.addItem("状态机（新）", "modern")
         self.state_machine_combo.currentIndexChanged.connect(self._state_machine_changed)
         display_form_box, display_form = self._form_panel()
+        self._add_form_row(display_form, "运行模式", self.runtime_mode_combo)
         self._add_form_row(display_form, "画线模式", self.shot_mode_combo)
         self._add_form_row(display_form, "状态机", self.state_machine_combo)
         display_layout.addWidget(display_form_box)
         self.side_layout.addWidget(display_section)
+
+        self.training_section = self._section("编号球训练")
+        training_layout = self.training_section.contentLayout()
+        self.training_scenario_combo = QtWidgets.QComboBox()
+        for scenario in list_training_scenarios():
+            self.training_scenario_combo.addItem(scenario.title, scenario.scenario_id)
+        self.training_scenario_combo.currentIndexChanged.connect(self._training_scenario_changed)
+        self.training_instruction_label = QtWidgets.QLabel()
+        self.training_instruction_label.setObjectName("muted")
+        self.training_instruction_label.setWordWrap(True)
+        self.training_status_label = QtWidgets.QLabel("切换到编号球训练模式后开始")
+        self.training_status_label.setWordWrap(True)
+        self.training_start_btn = self._button("开始验证", variant="primary")
+        self.training_reset_btn = self._button("重置本次", variant="compact")
+        self.training_start_btn.clicked.connect(self.start_training_validation)
+        self.training_reset_btn.clicked.connect(self.reset_training_validation)
+        training_form_box, training_form = self._form_panel()
+        self._add_form_row(training_form, "训练项目", self.training_scenario_combo)
+        training_layout.addWidget(training_form_box)
+        training_layout.addWidget(self.training_instruction_label)
+        training_layout.addWidget(self.training_status_label)
+        training_buttons = CompactButtonGrid(columns=2)
+        self._compact_grids.append(training_buttons)
+        training_buttons.addButton(self.training_start_btn)
+        training_buttons.addButton(self.training_reset_btn)
+        training_layout.addWidget(training_buttons)
+        self.side_layout.addWidget(self.training_section)
 
         capture_actions_section = self._section("现场抓取")
         capture_actions_layout = capture_actions_section.contentLayout()
@@ -2018,6 +2067,18 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.resolution_combo.addItem(res)
         self.resolution_combo.setCurrentText(res)
         self.fps_combo.setCurrentText(str(int(self.config.camera.fps)))
+        operating_mode = normalize_operating_mode(self.config.training.operating_mode)
+        operating_index = self.runtime_mode_combo.findData(operating_mode)
+        self.runtime_mode_combo.blockSignals(True)
+        self.runtime_mode_combo.setCurrentIndex(max(0, operating_index))
+        self.runtime_mode_combo.blockSignals(False)
+        scenario_index = self.training_scenario_combo.findData(self.config.training.scenario_id)
+        if scenario_index < 0:
+            scenario_index = 0
+            self.config.training.scenario_id = str(self.training_scenario_combo.itemData(0))
+        self.training_scenario_combo.blockSignals(True)
+        self.training_scenario_combo.setCurrentIndex(scenario_index)
+        self.training_scenario_combo.blockSignals(False)
         mode = str(getattr(self.config.planner, "shot_mode", "rule") or "rule").strip().lower()
         idx = self.shot_mode_combo.findData("hook" if mode in {"hook", "hook_shot", "free", "free_shot"} else "rule")
         self.shot_mode_combo.blockSignals(True)
@@ -2038,6 +2099,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.projection_debug_check.setChecked(bool(self._projection_debug_enabled))
         self.projection_debug_check.blockSignals(False)
         self._sync_projection_interaction_settings()
+        self._sync_mode_dependent_controls()
+        self._refresh_training_controls()
 
     def _sync_config_from_controls(self) -> None:
         self.config.camera.backend = self.backend_combo.currentText()
@@ -2056,12 +2119,25 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             pass
         self.config.replay.enabled = self.replay_check.isChecked()
         self.config.projection.geometry_reference_enabled = self.geometry_reference_check.isChecked()
+        self.config.training.operating_mode = str(self.runtime_mode_combo.currentData() or RULES_MODE)
+        self.config.training.scenario_id = str(self.training_scenario_combo.currentData() or "ordered_line_1_7")
         self.config.planner.shot_mode = str(self.shot_mode_combo.currentData() or "rule")
         self.config.state.engine = normalize_state_machine_engine(self.state_machine_combo.currentData())
 
     @QtCore.pyqtSlot(int)
     def _shot_mode_changed(self, _index: int = 0) -> None:
         self._set_base_shot_mode(str(self.shot_mode_combo.currentData() or "rule"), source="ui")
+
+    @QtCore.pyqtSlot(int)
+    def _operating_mode_changed(self, _index: int = 0) -> None:
+        self._set_operating_mode(str(self.runtime_mode_combo.currentData() or RULES_MODE), source="ui")
+
+    @QtCore.pyqtSlot(int)
+    def _training_scenario_changed(self, _index: int = 0) -> None:
+        self._set_training_scenario(
+            str(self.training_scenario_combo.currentData() or "ordered_line_1_7"),
+            source="ui",
+        )
 
     @QtCore.pyqtSlot(int)
     def _state_machine_changed(self, _index: int = 0) -> None:
@@ -2107,10 +2183,15 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.pipeline.planner.calibration = calibration
             self.pipeline.planner.target_shot_planner.calibration = calibration
             self.pipeline.overlay_builder.calibration = calibration
+            self.pipeline.training_overlay_builder.calibration = calibration
             if self.last_output is not None:
                 self.pipeline._update_table_geometry_for_frame(self.last_output.frame)
-                plan = self.pipeline.planner.plan(self.last_output.state, frame_bgr=self.last_output.frame.image)
-                overlay = self.pipeline.overlay_builder.from_plan(plan)
+                if self.last_output.training is not None:
+                    plan = self.last_output.plan
+                    overlay = self.pipeline.training_overlay_builder.build(self.last_output.tracks, self.last_output.training)
+                else:
+                    plan = self.pipeline.planner.plan(self.last_output.state, frame_bgr=self.last_output.frame.image)
+                    overlay = self.pipeline.overlay_builder.from_plan(plan)
                 self.last_output = self._apply_route_display_filters(
                     replace(self.last_output, plan=plan, overlay=overlay),
                     force_raw=True,
@@ -2217,6 +2298,100 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._refresh_current_plan()
         self._update_module_status(self.last_output)
 
+    def _set_operating_mode(self, mode: str, *, source: str) -> bool:
+        normalized = normalize_operating_mode(mode)
+        previous = normalize_operating_mode(self.config.training.operating_mode)
+        if self.pipeline is not None:
+            try:
+                self.pipeline.set_operating_mode(normalized)
+            except Exception as exc:
+                self.runtime_mode_combo.blockSignals(True)
+                self.runtime_mode_combo.setCurrentIndex(max(0, self.runtime_mode_combo.findData(previous)))
+                self.runtime_mode_combo.blockSignals(False)
+                self._append_log(f"运行模式切换失败: {exc}")
+                if source == "ui":
+                    QtWidgets.QMessageBox.critical(self, "运行模式切换失败", str(exc))
+                return False
+        self.config.training.operating_mode = normalized
+        self.runtime_mode_combo.blockSignals(True)
+        self.runtime_mode_combo.setCurrentIndex(max(0, self.runtime_mode_combo.findData(normalized)))
+        self.runtime_mode_combo.blockSignals(False)
+        self.control_state.clear_turn_overrides()
+        self._route_freeze.reset()
+        self.last_output = None
+        self._sync_mode_dependent_controls()
+        self._refresh_training_controls()
+        self._save_user_settings()
+        label = "编号球训练" if normalized == TRAINING_MODE else "规则比赛"
+        self._append_log(f"运行模式已切换为 {label} ({source})")
+        self._queue_projection_notice(label)
+        self._update_module_status()
+        return True
+
+    def _set_training_scenario(self, scenario_id: str, *, source: str) -> bool:
+        scenario = get_training_scenario(scenario_id)
+        self.config.training.scenario_id = scenario.scenario_id
+        index = self.training_scenario_combo.findData(scenario.scenario_id)
+        self.training_scenario_combo.blockSignals(True)
+        self.training_scenario_combo.setCurrentIndex(max(0, index))
+        self.training_scenario_combo.blockSignals(False)
+        if self.pipeline is not None:
+            self.pipeline.select_training_scenario(scenario.scenario_id)
+        self._save_user_settings()
+        self._refresh_training_controls()
+        self._append_log(f"训练项目已切换为 {scenario.title} ({source})")
+        return True
+
+    @QtCore.pyqtSlot()
+    def start_training_validation(self) -> bool:
+        if not self._set_operating_mode(TRAINING_MODE, source="ui"):
+            return False
+        if self.pipeline is None:
+            self.start_pipeline()
+        if self.pipeline is None:
+            self._append_log("训练启动失败：采集尚未启动")
+            return False
+        ok, state = self.pipeline.start_training()
+        self._refresh_training_controls(state)
+        self._append_log(state.message)
+        if ok:
+            self._queue_projection_notice("训练开始")
+        return bool(ok)
+
+    @QtCore.pyqtSlot()
+    def reset_training_validation(self) -> bool:
+        if self.pipeline is None:
+            self._refresh_training_controls()
+            return False
+        state = self.pipeline.reset_training()
+        self._refresh_training_controls(state)
+        self._append_log("本次训练已重置，请重新确认摆球")
+        self._queue_projection_notice("训练重置")
+        return True
+
+    def _sync_mode_dependent_controls(self) -> None:
+        training_active = normalize_operating_mode(self.config.training.operating_mode) == TRAINING_MODE
+        self.shot_mode_combo.setEnabled(not training_active)
+        self.state_machine_combo.setEnabled(not training_active)
+        self.training_scenario_combo.setEnabled(True)
+        self.training_start_btn.setEnabled(training_active)
+        self.training_reset_btn.setEnabled(training_active)
+
+    def _refresh_training_controls(self, state=None) -> None:
+        scenario = get_training_scenario(self.config.training.scenario_id)
+        self.training_instruction_label.setText(scenario.setup_instructions)
+        training_session = getattr(self.pipeline, "training_session", None) if self.pipeline is not None else None
+        if state is None and training_session is not None:
+            state = training_session.state
+        if state is None:
+            self.training_status_label.setText("切换到编号球训练模式，开始采集并按说明摆球")
+            self.training_start_btn.setText("开始验证")
+            return
+        self.training_status_label.setText(
+            f"{state.message}\n进度 {state.progress_current}/{state.progress_total} · 用时 {state.elapsed_s:.1f}s"
+        )
+        self.training_start_btn.setText("重新开始" if state.phase in {"passed", "failed"} else "开始验证")
+
     def _set_state_machine_engine(self, engine: str, *, source: str) -> None:
         normalized = normalize_state_machine_engine(engine)
         current = normalize_state_machine_engine(getattr(self.config.state, "engine", "legacy"))
@@ -2250,6 +2425,9 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if self.pipeline is None or self.last_output is None:
             self._refresh_projection()
             return
+        if getattr(self.pipeline, "operating_mode", RULES_MODE) == TRAINING_MODE:
+            self._refresh_projection()
+            return
         state_for_plan = self.last_output.state
         live_turn_group = getattr(self.pipeline.state_machine, "turn_target_group", state_for_plan.turn_target_group)
         if live_turn_group != state_for_plan.turn_target_group:
@@ -2281,6 +2459,9 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._refresh_projection()
 
     def _apply_route_display_filters(self, out: PipelineOutput, *, force_raw: bool = False) -> PipelineOutput:
+        if out.training is not None:
+            self._route_freeze.reset()
+            return out
         if force_raw:
             decision = self._route_freeze.force(out.state, out.plan, out.overlay)
         else:
@@ -2417,6 +2598,21 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.config.detector.batch_size,
             self.config.detector.detect_interval_frames,
             self.config.detector.detect_fps_limit_hz,
+            self.config.training_detector.backend,
+            self.config.training_detector.model_path,
+            self.config.training_detector.class_file_path,
+            tuple(self.config.training_detector.class_names),
+            self.config.training_detector.conf,
+            self.config.training_detector.iou,
+            self.config.training_detector.device,
+            self.config.training_detector.tile_size,
+            self.config.training_detector.tile_overlap,
+            self.config.training_detector.max_det_per_tile,
+            self.config.training_detector.batch_size,
+            self.config.training_detector.detect_interval_frames,
+            self.config.training_detector.detect_fps_limit_hz,
+            self.config.training.disappearance_confirm_frames,
+            self.config.training.pocket_proximity_mm,
             self.config.calibration.camera_file,
             self.config.calibration.normalized_projection_mode(),
             self.config.calibration.active_projection_file(),
@@ -3129,7 +3325,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         )
 
     def _draw_cue_sector_preview(self, image: np.ndarray) -> None:
-        if self.pipeline is None or not self._cue_sector_preview_enabled:
+        if self.pipeline is None or getattr(self.pipeline, "operating_mode", RULES_MODE) == TRAINING_MODE or not self._cue_sector_preview_enabled:
             return
         draw_cue_sector_candidate_box(
             image,
@@ -3485,7 +3681,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._set_module_status("抓取", capture_state, self._media_capture_status_detail())
         if self.pipeline is None:
             self._set_module_status("采集", "离线", self.config.camera.backend)
-            self._set_module_status("检测", "待机", self.config.detector.backend)
+            idle_detector = self.config.training_detector.backend if self.config.training.operating_mode == TRAINING_MODE else self.config.detector.backend
+            self._set_module_status("检测", "待机", idle_detector)
             self._set_module_status("跟踪", "待机", "TemporalTracker")
             idle_state_detail = "自动"
             if self._deep_debug_last_result is not None:
@@ -3518,6 +3715,17 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._set_module_status("检测", "运行中", det_detail)
         track_detail = self.pipeline.tracker.version if out is None else f"{out.tracks.latency_ms:.1f}ms / {len(out.tracks.tracks)}"
         self._set_module_status("跟踪", "运行中", track_detail)
+        if out is not None and out.training is not None:
+            training = out.training
+            self._set_module_status("状态机", training.phase, training.message)
+            self._set_module_status(
+                "规划",
+                "训练验证",
+                f"{training.scenario_title} / {training.progress_current}/{training.progress_total}",
+            )
+            self.hold_state_btn.setText("训练模式无需规则状态机")
+            self._refresh_review_controls()
+            return
         state_hold = "冻结" if self.pipeline.state_machine.operator_hold else "自动"
         state_detail = state_hold if out is None else f"{out.state.phase} / conf {out.state.confidence:.2f}"
         if self._deep_debug_session is not None:
@@ -3579,7 +3787,12 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
                 self.config.geometry.inline_path,
                 self.config.geometry.pocket_path,
             )
-            detector = create_detector(self.config.detector)
+            detector_config = (
+                self.config.training_detector
+                if normalize_operating_mode(self.config.training.operating_mode) == TRAINING_MODE
+                else self.config.detector
+            )
+            detector = create_detector(detector_config)
             geometry_state = "几何已加载" if not geometry.is_empty else "几何为空"
             camera_state = "相机标定有效" if calibration.camera.is_valid else "相机标定无效"
             projection_state = "投影校正有效" if calibration.projection.is_valid else "投影校正无效"
@@ -3700,6 +3913,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._last_heavy_ui_update_ts = 0.0
         self._last_perf_log_ts = 0.0
         self._set_running(True)
+        self._sync_mode_dependent_controls()
+        self._refresh_training_controls()
         self._update_module_status()
         self._append_log("采集已启动")
         self.timer.start(self._capture_timer_interval_ms())
@@ -3930,6 +4145,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             if now - self._last_heavy_ui_update_ts >= 1.0 / max(1.0, self._heavy_ui_fps_limit):
                 self._update_plan(out)
                 self._update_module_status(out)
+                self._refresh_training_controls(out.training)
                 self._last_heavy_ui_update_ts = now
             self._log_performance_periodically(now)
             self._refresh_projection()
@@ -3969,6 +4185,28 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             cx, cy = [int(round(v)) for v in tr.center_px]
             cv2.circle(img, (cx, cy), max(4, int(round(tr.radius_px))), (250, 250, 250), 2, cv2.LINE_AA)
             cv2.putText(img, f"#{tr.track_id} {tr.group}", (cx + 8, cy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55 * self._ui_scale, (230, 230, 230), 1, cv2.LINE_AA)
+        if out.training is not None:
+            expected = set(out.training.expected_numbers)
+            for tr in out.tracks.tracks:
+                try:
+                    number = int(tr.cls_name)
+                except (TypeError, ValueError):
+                    continue
+                if tr.visibility != "visible" or number not in expected:
+                    continue
+                center = tuple(int(round(value)) for value in tr.center_px)
+                cv2.circle(img, center, max(8, int(round(tr.radius_px * 1.45))), (0, 220, 255), 3, cv2.LINE_AA)
+            cv2.putText(
+                img,
+                f"TRAINING {out.training.phase.upper()} {out.training.progress_current}/{out.training.progress_total} "
+                f"TARGET {'/'.join(str(number) for number in out.training.expected_numbers) or '-'}",
+                (24, 36),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.72 * self._ui_scale,
+                (0, 220, 255) if out.training.phase not in {"failed", "passed"} else ((0, 220, 80) if out.training.phase == "passed" else (0, 80, 255)),
+                2,
+                cv2.LINE_AA,
+            )
         self._draw_geometry_reference_preview(img)
         self._draw_cue_sector_preview(img)
         self._draw_plan_preview(img, out)
@@ -4002,9 +4240,18 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.fps_metric.value_label.setText(f"{self.frame_count / elapsed:.1f}")  # type: ignore[attr-defined]
         self.det_metric.value_label.setText(str(len(out.detections.detections)))  # type: ignore[attr-defined]
         self.track_metric.value_label.setText(str(len(out.tracks.tracks)))  # type: ignore[attr-defined]
-        self.phase_metric.value_label.setText(out.state.phase)  # type: ignore[attr-defined]
+        phase = out.training.phase if out.training is not None else out.state.phase
+        self.phase_metric.value_label.setText(phase)  # type: ignore[attr-defined]
 
     def _update_plan(self, out: PipelineOutput) -> None:
+        if out.training is not None:
+            training = out.training
+            self.best_label.setText(
+                f"{training.scenario_title}\n{training.message}\n"
+                f"进度 {training.progress_current}/{training.progress_total}  用时 {training.elapsed_s:.1f}s"
+            )
+            self.candidates.setRowCount(0)
+            return
         if out.plan.shot_mode == "hook" and out.plan.best is None:
             lock_id = f" #{out.plan.locked_target_id}" if out.plan.locked_target_id is not None else ""
             self.best_label.setText(f"勾球模式{lock_id}\n状态 {out.plan.hook_status}\n无理论进球路线")

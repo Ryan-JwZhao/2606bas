@@ -1,0 +1,293 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import Sequence
+
+import numpy as np
+
+from ..config import TrainingConfig
+from ..schemas import Event, TrackObservation, TracksFrame
+from .models import TrainingScenario, TrainingStateFrame
+from .numbered_tracker import ball_number_from_track
+from .scenarios import get_training_scenario, validate_scenario_setup
+
+
+class TrainingSession:
+    version = "numbered_training_session_v1"
+
+    def __init__(self, config: TrainingConfig, *, ball_diameter_mm: float = 57.15):
+        self.config = config
+        self.ball_diameter_mm = float(ball_diameter_mm)
+        self.scenario: TrainingScenario = get_training_scenario(config.scenario_id)
+        self._latest_tracks: list[TrackObservation] = []
+        self._missing_frames: dict[int, int] = {}
+        self._potted: list[int] = []
+        self._attempt = 0
+        self._started_ts_ns = 0
+        self._pockets_mm: list[tuple[float, float]] = []
+        self._last_visible_centers_mm: dict[int, tuple[float, float]] = {}
+        self._state = self._new_state(0, 0)
+
+    @property
+    def state(self) -> TrainingStateFrame:
+        return self._state
+
+    def select_scenario(self, scenario_id: str) -> TrainingStateFrame:
+        self.scenario = get_training_scenario(scenario_id)
+        self.config.scenario_id = self.scenario.scenario_id
+        return self.reset()
+
+    def reset(self) -> TrainingStateFrame:
+        frame_id = self._state.frame_id
+        ts_cam_ns = self._state.ts_cam_ns
+        self._missing_frames.clear()
+        self._potted.clear()
+        self._started_ts_ns = 0
+        self._state = self._new_state(frame_id, ts_cam_ns)
+        if self._latest_tracks:
+            self._state = self._setup_state(frame_id, ts_cam_ns, self._latest_tracks)
+        return self._state
+
+    def start(self) -> tuple[bool, TrainingStateFrame]:
+        ready, message = validate_scenario_setup(
+            self.scenario,
+            self._latest_tracks,
+            ball_diameter_mm=self.ball_diameter_mm,
+        )
+        if not ready:
+            self._state = replace(self._state, phase="setup", setup_ready=False, message=message, failure_reason=None)
+            return False, self._state
+        self._attempt += 1
+        self._potted.clear()
+        self._missing_frames.clear()
+        self._started_ts_ns = int(self._state.ts_cam_ns)
+        self._state = replace(
+            self._state,
+            phase="running",
+            setup_ready=True,
+            message=self._running_message(),
+            expected_numbers=list(self._expected_numbers()),
+            potted_numbers=[],
+            progress_current=0,
+            attempt=self._attempt,
+            elapsed_s=0.0,
+            failure_reason=None,
+            events=[],
+        )
+        return True, self._state
+
+    def set_table_context(self, *, pockets_mm: Sequence[tuple[float, float]]) -> None:
+        self._pockets_mm = [(float(x), float(y)) for x, y in pockets_mm]
+
+    def update(self, tracks_frame: TracksFrame) -> TrainingStateFrame:
+        self._latest_tracks = list(tracks_frame.tracks)
+        for track in self._latest_tracks:
+            number = ball_number_from_track(track)
+            if number is not None and track.visibility == "visible" and track.center_mm is not None:
+                self._last_visible_centers_mm[number] = (float(track.center_mm[0]), float(track.center_mm[1]))
+        frame_id = int(tracks_frame.frame_id)
+        ts_cam_ns = int(tracks_frame.ts_cam_ns)
+        if self._state.phase not in {"running", "passed", "failed"}:
+            self._state = self._setup_state(frame_id, ts_cam_ns, self._latest_tracks)
+            return self._state
+        if self._state.phase in {"passed", "failed"}:
+            self._state = replace(
+                self._state,
+                frame_id=frame_id,
+                ts_cam_ns=ts_cam_ns,
+                visible_numbers=self._visible_numbers(self._latest_tracks),
+                elapsed_s=self._elapsed_s(ts_cam_ns),
+                events=[],
+            )
+            return self._state
+
+        visible = set(self._visible_numbers(self._latest_tracks))
+        pending_numbers = set(self.scenario.required_balls) - set(self._potted)
+        watched = pending_numbers | ({0} if self.scenario.require_cue_ball else set())
+        confirmed: list[int] = []
+        confirm_frames = max(1, int(self.config.disappearance_confirm_frames))
+        for number in watched:
+            if number in visible:
+                self._missing_frames[number] = 0
+                continue
+            self._missing_frames[number] = self._missing_frames.get(number, 0) + 1
+            if self._missing_frames[number] == confirm_frames:
+                confirmed.append(number)
+
+        events: list[Event] = []
+        away_from_pocket = [number for number in confirmed if not self._last_seen_near_pocket(number)]
+        if away_from_pocket:
+            events.append(
+                self._event(
+                    "TRAINING_FAILED",
+                    frame_id,
+                    ts_cam_ns,
+                    reason="ball_lost_away_from_pocket",
+                    balls=away_from_pocket,
+                )
+            )
+            self._state = self._failed(
+                frame_id,
+                ts_cam_ns,
+                "球在非袋口区域持续丢失，无法确认进球",
+                "ball_lost_away_from_pocket",
+                visible,
+                events,
+            )
+            return self._state
+        if 0 in confirmed:
+            events.append(self._event("TRAINING_FAILED", frame_id, ts_cam_ns, reason="cue_ball_pocketed"))
+            self._state = self._failed(frame_id, ts_cam_ns, "白球落袋，本次训练失败", "cue_ball_pocketed", visible, events)
+            return self._state
+
+        object_confirmed = [number for number in confirmed if number != 0]
+        if len(object_confirmed) > 1:
+            events.append(self._event("TRAINING_FAILED", frame_id, ts_cam_ns, reason="ambiguous_multiple_pots", balls=object_confirmed))
+            self._state = self._failed(frame_id, ts_cam_ns, "多颗球同时消失，无法确认进球顺序", "ambiguous_multiple_pots", visible, events)
+            return self._state
+        if object_confirmed:
+            number = object_confirmed[0]
+            expected = set(self._expected_numbers())
+            if number not in expected:
+                events.append(self._event("TRAINING_FAILED", frame_id, ts_cam_ns, reason="wrong_ball", ball=number, expected=sorted(expected)))
+                message = f"误进 {number} 号球；当前应进 " + " / ".join(str(value) for value in sorted(expected))
+                self._state = self._failed(frame_id, ts_cam_ns, message, "wrong_ball", visible, events)
+                return self._state
+            self._potted.append(number)
+            events.append(self._event("TRAINING_BALL_POTTED", frame_id, ts_cam_ns, ball=number))
+            if len(self._potted) == len(self.scenario.required_balls):
+                events.append(self._event("TRAINING_PASSED", frame_id, ts_cam_ns, scenario=self.scenario.scenario_id))
+                self._state = replace(
+                    self._state,
+                    frame_id=frame_id,
+                    ts_cam_ns=ts_cam_ns,
+                    phase="passed",
+                    message="训练完成，全部目标球顺序正确",
+                    expected_numbers=[],
+                    visible_numbers=sorted(visible),
+                    potted_numbers=list(self._potted),
+                    progress_current=len(self._potted),
+                    elapsed_s=self._elapsed_s(ts_cam_ns),
+                    events=events,
+                )
+                return self._state
+
+        reappeared = sorted(number for number in self._potted if number in visible)
+        if reappeared:
+            events.append(self._event("TRAINING_FAILED", frame_id, ts_cam_ns, reason="potted_ball_reappeared", balls=reappeared))
+            self._state = self._failed(frame_id, ts_cam_ns, "已记进球重新出现，请重置后再试", "potted_ball_reappeared", visible, events)
+            return self._state
+
+        self._state = replace(
+            self._state,
+            frame_id=frame_id,
+            ts_cam_ns=ts_cam_ns,
+            message=self._running_message(),
+            expected_numbers=list(self._expected_numbers()),
+            visible_numbers=sorted(visible),
+            potted_numbers=list(self._potted),
+            progress_current=len(self._potted),
+            elapsed_s=self._elapsed_s(ts_cam_ns),
+            events=events,
+        )
+        return self._state
+
+    def _new_state(self, frame_id: int, ts_cam_ns: int) -> TrainingStateFrame:
+        return TrainingStateFrame(
+            frame_id=frame_id,
+            ts_cam_ns=ts_cam_ns,
+            scenario_id=self.scenario.scenario_id,
+            scenario_title=self.scenario.title,
+            required_numbers=list(self.scenario.required_balls),
+            progress_total=len(self.scenario.required_balls),
+            attempt=self._attempt,
+        )
+
+    def _setup_state(self, frame_id: int, ts_cam_ns: int, tracks: Sequence[TrackObservation]) -> TrainingStateFrame:
+        ready, message = validate_scenario_setup(
+            self.scenario,
+            tracks,
+            ball_diameter_mm=self.ball_diameter_mm,
+        )
+        return TrainingStateFrame(
+            frame_id=frame_id,
+            ts_cam_ns=ts_cam_ns,
+            scenario_id=self.scenario.scenario_id,
+            scenario_title=self.scenario.title,
+            phase="ready" if ready else "setup",
+            message=message,
+            setup_ready=ready,
+            required_numbers=list(self.scenario.required_balls),
+            expected_numbers=list(self.scenario.stages[0]),
+            visible_numbers=self._visible_numbers(tracks),
+            potted_numbers=[],
+            progress_total=len(self.scenario.required_balls),
+            attempt=self._attempt,
+        )
+
+    def _expected_numbers(self) -> tuple[int, ...]:
+        potted = set(self._potted)
+        for stage in self.scenario.stages:
+            remaining = tuple(number for number in stage if number not in potted)
+            if remaining:
+                return remaining
+        return ()
+
+    def _running_message(self) -> str:
+        expected = self._expected_numbers()
+        if not expected:
+            return "正在确认训练结果"
+        if len(expected) == 1:
+            return f"当前目标：{expected[0]} 号球"
+        return "当前可进：" + "、".join(str(number) for number in expected)
+
+    def _failed(
+        self,
+        frame_id: int,
+        ts_cam_ns: int,
+        message: str,
+        reason: str,
+        visible: set[int],
+        events: list[Event],
+    ) -> TrainingStateFrame:
+        return replace(
+            self._state,
+            frame_id=frame_id,
+            ts_cam_ns=ts_cam_ns,
+            phase="failed",
+            message=message,
+            visible_numbers=sorted(visible),
+            potted_numbers=list(self._potted),
+            progress_current=len(self._potted),
+            elapsed_s=self._elapsed_s(ts_cam_ns),
+            failure_reason=reason,
+            events=events,
+        )
+
+    def _elapsed_s(self, ts_cam_ns: int) -> float:
+        if self._started_ts_ns <= 0:
+            return 0.0
+        return max(0.0, (int(ts_cam_ns) - self._started_ts_ns) / 1e9)
+
+    def _last_seen_near_pocket(self, number: int) -> bool:
+        if not self._pockets_mm:
+            return True
+        center = self._last_visible_centers_mm.get(number)
+        if center is None:
+            return True
+        point = np.asarray(center, dtype=np.float32)
+        distance = min(float(np.linalg.norm(point - np.asarray(pocket, dtype=np.float32))) for pocket in self._pockets_mm)
+        return distance <= float(self.config.pocket_proximity_mm)
+
+    @staticmethod
+    def _visible_numbers(tracks: Sequence[TrackObservation]) -> list[int]:
+        numbers = {
+            number
+            for track in tracks
+            if track.visibility == "visible" and (number := ball_number_from_track(track)) is not None
+        }
+        return sorted(numbers)
+
+    @staticmethod
+    def _event(name: str, frame_id: int, ts_cam_ns: int, **payload: object) -> Event:
+        return Event(name=name, frame_id=frame_id, ts_cam_ns=ts_cam_ns, payload=dict(payload))

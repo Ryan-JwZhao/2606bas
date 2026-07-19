@@ -56,7 +56,7 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
         with urlopen(f"{base}/service-worker.js", timeout=2.0) as response:
             assert response.headers.get_content_type() == "text/javascript"
             service_worker = response.read()
-            assert b"bas-pwa-shell-v2" in service_worker
+            assert b"bas-pwa-shell-v3" in service_worker
             assert b"/stream_coordinates.js" in service_worker
             assert b"/api/" not in service_worker
         with urlopen(f"{base}/pwa/icon-192.svg", timeout=2.0) as response:
@@ -73,6 +73,9 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             client_js = response.read()
             client_text = client_js.decode("utf-8").replace("\r\n", "\n")
             assert b"/api/shot_mode/set" in client_js
+            assert b"/api/runtime_mode/set" in client_js
+            assert b"/api/training/scenario/set" in client_js
+            assert b"/api/training/start" in client_js
             assert b"/api/shot_once/hook/clear" in client_js
             assert b"/api/shot_once/black/clear" in client_js
             assert "临时覆盖长期规则" not in client_text
@@ -112,6 +115,24 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
         with urlopen(replay_request, timeout=2.0) as response:
             assert json.load(response)["message"] == "instant_replay_export"
 
+        training_request = Request(
+            f"{base}/api/runtime_mode/set",
+            data=json.dumps({"mode": "training"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(training_request, timeout=2.0) as response:
+            assert json.load(response)["message"] == "runtime_mode_set"
+
+        scenario_request = Request(
+            f"{base}/api/training/scenario/set",
+            data=json.dumps({"scenario_id": "rotation_1_9"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(scenario_request, timeout=2.0) as response:
+            assert json.load(response)["message"] == "training_scenario_set"
+
         assert bridge.update_frame(np.zeros((9, 16, 3), dtype=np.uint8)) is True
         with urlopen(f"{base}/api/frame.jpg", timeout=2.0) as response:
             assert response.headers.get_content_type() == "image/jpeg"
@@ -119,6 +140,8 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
         assert ("state", {}) in seen
         assert ("compute", {}) in seen
         assert ("instant_replay_export", {}) in seen
+        assert ("runtime_mode_set", {"mode": "training"}) in seen
+        assert ("training_scenario_set", {"scenario_id": "rotation_1_9"}) in seen
     finally:
         stopped.set()
         bridge.stop()

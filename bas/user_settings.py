@@ -33,6 +33,10 @@ class UserSettings:
     class_file_path: Optional[str] = None
     detect_interval_frames: Optional[int] = None
     detect_fps_limit_hz: Optional[float] = None
+    training_detector_backend: Optional[str] = None
+    training_model_path: Optional[str] = None
+    operating_mode: Optional[str] = None
+    training_scenario_id: Optional[str] = None
     outline_path: Optional[str] = None
     inline_path: Optional[str] = None
     pocket_path: Optional[str] = None
@@ -177,6 +181,15 @@ class UserSettings:
             config.detector.detect_interval_frames = max(1, int(self.detect_interval_frames))
         if self.detect_fps_limit_hz is not None:
             config.detector.detect_fps_limit_hz = max(0.0, float(self.detect_fps_limit_hz))
+        if self._has("training_detector_backend") and self.training_detector_backend:
+            config.training_detector.backend = str(self.training_detector_backend)
+        if self._has("training_model_path"):
+            config.training_detector.model_path = _clean_optional_text(self.training_model_path)
+        if self._has("operating_mode") and self.operating_mode:
+            mode = str(self.operating_mode).strip().lower()
+            config.training.operating_mode = "training" if mode in {"training", "train", "practice", "drill"} else "rules"
+        if self._has("training_scenario_id") and self.training_scenario_id:
+            config.training.scenario_id = str(self.training_scenario_id).strip()
         if self._has("outline_path"):
             config.geometry.outline_path = _clean_optional_text(self.outline_path)
         if self._has("inline_path"):
@@ -369,6 +382,10 @@ class UserSettings:
             class_file_path=config.detector.class_file_path,
             detect_interval_frames=config.detector.detect_interval_frames,
             detect_fps_limit_hz=config.detector.detect_fps_limit_hz,
+            training_detector_backend=config.training_detector.backend,
+            training_model_path=config.training_detector.model_path,
+            operating_mode=config.training.operating_mode,
+            training_scenario_id=config.training.scenario_id,
             outline_path=config.geometry.outline_path,
             inline_path=config.geometry.inline_path,
             pocket_path=config.geometry.pocket_path,

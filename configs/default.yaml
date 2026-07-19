@@ -16,7 +16,7 @@ camera:
   distortion_correction_file: C:/CodeProject/2606BAS/calib/intrinsics_opencv.yaml
 
 detector:
-  backend: disabled  # disabled | debug_color | ultralytics
+  backend: ultralytics  # disabled | debug_color | ultralytics
   model_path: C:/CodeProject/2606BAS/example/parameters/0323_225p_yolo11m_best.pt
   class_file_path: C:/CodeProject/2606BAS/example/parameters/seg.txt
   class_names: [cue, solid, stripe, black, cue_stick]
@@ -29,6 +29,28 @@ detector:
   batch_size: 4
   detect_interval_frames: 1
   detect_fps_limit_hz: 6.0
+
+# 规则模式继续使用上面的 YOLO11m 四分类模型；训练模式只使用下面的编号球模型。
+training_detector:
+  backend: ultralytics
+  model_path: C:/CodeProject/2606BAS/example/yolo11s_0719_16seg_best_v1.pt
+  class_file_path:
+  class_names: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"]
+  conf: 0.35
+  iou: 0.45
+  device: "0"
+  tile_size: 1280
+  tile_overlap: 0.25
+  max_det_per_tile: 200
+  batch_size: 4
+  detect_interval_frames: 1
+  detect_fps_limit_hz: 6.0
+
+training:
+  operating_mode: rules  # rules | training
+  scenario_id: ordered_line_1_7
+  disappearance_confirm_frames: 8
+  pocket_proximity_mm: 190.0
 
 tracker:
   high_conf: 0.45

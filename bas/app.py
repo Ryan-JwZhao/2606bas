@@ -15,7 +15,7 @@ from .geometry_runtime import RuntimeGeometryReloader
 from .learning import LearningSampleRecorder
 from .logging_config import configure_logging
 from .operator_controls import RuntimeControlState
-from .perception import DetectService, DetectionRegionPolicy, build_detection_region_policy, create_detector
+from .perception import DetectionRegionPolicy, ModeAwareDetectService, build_detection_region_policy, create_detector
 from .planning import GeometryPhysicsPlanner
 from .projection import OverlayBuilder
 from .projection.star_formula import StarFormulaConfig
@@ -25,6 +25,15 @@ from .secondary_correction import SecondaryCorrectionController
 from .state import create_match_state_machine
 from .table_boundaries import EdgeInsets, derive_table_boundaries
 from .tracking import TemporalTracker
+from .training import (
+    RULES_MODE,
+    TRAINING_MODE,
+    NumberedBallTracker,
+    TrainingOverlayBuilder,
+    TrainingSession,
+    TrainingStateFrame,
+    normalize_operating_mode,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +46,7 @@ class PipelineOutput:
     state: MatchStateFrame
     plan: ShotPlan
     overlay: ProjectionOverlay
+    training: Optional[TrainingStateFrame] = None
 
 
 class RuntimePipeline:
@@ -59,16 +69,25 @@ class RuntimePipeline:
             config.geometry.inline_path,
             config.geometry.pocket_path,
         )
-        self.detector = DetectService(
-            create_detector(config.detector),
-            detect_interval_frames=config.detector.detect_interval_frames,
-            detect_fps_limit_hz=config.detector.detect_fps_limit_hz,
+        self.operating_mode = normalize_operating_mode(config.training.operating_mode)
+        self.detector = ModeAwareDetectService(
+            config.detector,
+            config.training_detector,
+            initial_mode=self.operating_mode,
+            detector_factory=create_detector,
         )
-        self.tracker = TemporalTracker(config.tracker)
+        self.rule_tracker = TemporalTracker(config.tracker)
+        self.training_tracker = NumberedBallTracker(config.tracker)
+        self.tracker = self.training_tracker if self.operating_mode == TRAINING_MODE else self.rule_tracker
         self.state_machine = create_match_state_machine(config.state)
         self.planner = GeometryPhysicsPlanner(config.planner, self.calibration, learning_config=config.learning)
         self.secondary_correction = SecondaryCorrectionController(config.planner)
         self.overlay_builder = OverlayBuilder(config.projection, self.calibration, star_formula=star_formula)
+        self.training_session = TrainingSession(
+            config.training,
+            ball_diameter_mm=float(config.calibration.ball_diameter_mm),
+        )
+        self.training_overlay_builder = TrainingOverlayBuilder(config.projection, self.calibration)
         self.recorder: Optional[ReplayRecorder] = ReplayRecorder(config.replay) if config.replay.enabled else None
         self.learning_recorder: Optional[LearningSampleRecorder] = LearningSampleRecorder(config.learning) if config.learning.collect_enabled else None
         self._last_tracks: Optional[TracksFrame] = None
@@ -81,6 +100,7 @@ class RuntimePipeline:
         self._cached_detection_frames = 0
         LOGGER.info("Capture opened: %s", self.capture.info())
         LOGGER.info("Calibration version: %s", self.calibration.calib_version)
+        LOGGER.info("Operating mode: %s", self.operating_mode)
 
     def step(self) -> Optional[PipelineOutput]:
         total_start = time.perf_counter()
@@ -112,40 +132,70 @@ class RuntimePipeline:
             self._last_tracks = tracks
         track_ms = (time.perf_counter() - stage_start) * 1000.0
         stage_start = time.perf_counter()
-        # Cached detections still need fresh state transitions so sample collection
-        # and turn resolution are not throttled down to detector refresh cadence.
-        self.state_machine.set_table_context(
-            inner_polygon_mm=self.calibration.table.inner_polygon_mm,
-            pockets_mm=self.calibration.table.pockets_mm,
-            ball_diameter_mm=self.calibration.table.ball_diameter_mm,
-            pocket_curves_mm=getattr(self, "_last_pocket_curves_mm", []),
-        )
-        state = self.state_machine.update(tracks)
-        secondary_correction = getattr(self, "secondary_correction", None)
-        updated_turn_group = (
-            secondary_correction.advance_from_state(state, self.state_machine)
-            if secondary_correction is not None
-            else None
-        )
-        if updated_turn_group is not None:
-            state = replace(state, turn_target_group=updated_turn_group)
-        self.control_state.advance_from_events(state.events)
-        effective_shot_mode = self.control_state.effective_shot_mode(self.config.planner.shot_mode)
-        effective_turn_target_group = self.control_state.effective_turn_target_group(state.turn_target_group, effective_shot_mode)
-        plan = self.planner.plan(
-            state,
-            frame_bgr=frame.image,
-            forced_shot_mode=effective_shot_mode,
-            forced_turn_target_group=effective_turn_target_group,
-        )
-        if secondary_correction is not None:
-            secondary_correction.arm_from_plan(state, plan)
-        overlay = self.overlay_builder.from_plan(plan)
+        training_state: Optional[TrainingStateFrame] = None
+        if getattr(self, "operating_mode", RULES_MODE) == TRAINING_MODE:
+            self.training_session.set_table_context(pockets_mm=self.calibration.table.pockets_mm)
+            training_state = self.training_session.update(tracks)
+            state = MatchStateFrame(
+                frame_id=frame.frame_id,
+                ts_cam_ns=frame.ts_cam_ns,
+                phase=f"TRAINING_{training_state.phase.upper()}",
+                events=list(training_state.events),
+                layout=list(tracks.tracks),
+                confidence=1.0 if training_state.setup_ready or training_state.phase in {"running", "passed", "failed"} else 0.5,
+                state_version=self.training_session.version,
+            )
+            plan = ShotPlan(
+                plan_id=f"training_{frame.frame_id}",
+                frame_id=frame.frame_id,
+                ts_cam_ns=frame.ts_cam_ns,
+                shot_mode="training",
+                planner_version=self.training_session.version,
+            )
+            overlay = self.training_overlay_builder.build(tracks, training_state)
+        else:
+            # Cached detections still need fresh state transitions so sample collection
+            # and turn resolution are not throttled down to detector refresh cadence.
+            self.state_machine.set_table_context(
+                inner_polygon_mm=self.calibration.table.inner_polygon_mm,
+                pockets_mm=self.calibration.table.pockets_mm,
+                ball_diameter_mm=self.calibration.table.ball_diameter_mm,
+                pocket_curves_mm=getattr(self, "_last_pocket_curves_mm", []),
+            )
+            state = self.state_machine.update(tracks)
+            secondary_correction = getattr(self, "secondary_correction", None)
+            updated_turn_group = (
+                secondary_correction.advance_from_state(state, self.state_machine)
+                if secondary_correction is not None
+                else None
+            )
+            if updated_turn_group is not None:
+                state = replace(state, turn_target_group=updated_turn_group)
+            self.control_state.advance_from_events(state.events)
+            effective_shot_mode = self.control_state.effective_shot_mode(self.config.planner.shot_mode)
+            effective_turn_target_group = self.control_state.effective_turn_target_group(state.turn_target_group, effective_shot_mode)
+            plan = self.planner.plan(
+                state,
+                frame_bgr=frame.image,
+                forced_shot_mode=effective_shot_mode,
+                forced_turn_target_group=effective_turn_target_group,
+            )
+            if secondary_correction is not None:
+                secondary_correction.arm_from_plan(state, plan)
+            overlay = self.overlay_builder.from_plan(plan)
         self._last_state = state
         self._last_plan = plan
         self._last_overlay = overlay
         state_plan_overlay_ms = (time.perf_counter() - stage_start) * 1000.0
-        out = PipelineOutput(frame=frame, detections=detections, tracks=tracks, state=state, plan=plan, overlay=overlay)
+        out = PipelineOutput(
+            frame=frame,
+            detections=detections,
+            tracks=tracks,
+            state=state,
+            plan=plan,
+            overlay=overlay,
+            training=training_state,
+        )
         stage_start = time.perf_counter()
         self._record(out)
         record_ms = (time.perf_counter() - stage_start) * 1000.0
@@ -165,6 +215,37 @@ class RuntimePipeline:
             "detect_cached_ratio": float(self._cached_detection_frames / max(1, self._processed_frames)),
         }
         return out
+
+    def set_operating_mode(self, mode: str) -> str:
+        normalized = normalize_operating_mode(mode)
+        if normalized == self.operating_mode:
+            return normalized
+        self.detector.activate(normalized)
+        self.operating_mode = normalized
+        self.config.training.operating_mode = normalized
+        self.tracker = self.training_tracker if normalized == TRAINING_MODE else self.rule_tracker
+        self.tracker.reset()
+        self._last_tracks = None
+        self._last_state = None
+        self._last_plan = None
+        self._last_overlay = None
+        if normalized == TRAINING_MODE:
+            self.training_session.reset()
+        else:
+            reset_state = getattr(self.state_machine, "reset", None)
+            if callable(reset_state):
+                reset_state()
+        LOGGER.info("Operating mode switched to: %s", normalized)
+        return normalized
+
+    def select_training_scenario(self, scenario_id: str) -> TrainingStateFrame:
+        return self.training_session.select_scenario(scenario_id)
+
+    def start_training(self) -> tuple[bool, TrainingStateFrame]:
+        return self.training_session.start()
+
+    def reset_training(self) -> TrainingStateFrame:
+        return self.training_session.reset()
 
     def close(self) -> None:
         self.capture.release()
@@ -296,7 +377,7 @@ class RuntimePipeline:
 
     def _record(self, out: PipelineOutput) -> None:
         if self.recorder is None:
-            if self.learning_recorder is not None:
+            if self.learning_recorder is not None and out.training is None:
                 self.learning_recorder.observe(out.state, out.plan)
             return
         self.recorder.write_frame_packet(out.frame)
@@ -305,7 +386,7 @@ class RuntimePipeline:
         self.recorder.write_state(out.state)
         self.recorder.write_plan(out.plan)
         self.recorder.write_overlay(out.overlay)
-        if self.learning_recorder is not None:
+        if self.learning_recorder is not None and out.training is None:
             self.learning_recorder.observe(out.state, out.plan)
 
 

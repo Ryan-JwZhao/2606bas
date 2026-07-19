@@ -71,6 +71,16 @@ def percentile(values: Iterable[float], q: float) -> float:
 
 def group_from_class(name: str) -> str:
     n = str(name).strip().lower()
+    if n.isdigit():
+        number = int(n)
+        if number == 0:
+            return "cue"
+        if 1 <= number <= 7:
+            return "solid"
+        if number == 8:
+            return "black"
+        if 9 <= number <= 15:
+            return "stripe"
     if n in {"wb", "white", "cue", "cue_ball", "white_ball"}:
         return "cue"
     if n in {"bb", "black", "eight", "8", "black_ball"}:

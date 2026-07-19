@@ -55,6 +55,8 @@ rl/models/*
 !rl/models/.gitkeep
 rl/runs/
 rl/exports/
+training_runs/
+training_reports/
 
 # Models and generated inference engines
 models/
@@ -66,6 +68,7 @@ weights/
 *.plan
 *.trt
 *.torchscript
+# 本地训练权重（包括 example/yolo11s_0719_16seg_best_v1.pt）由现场单独部署
 !rl/models/
 !rl/models/.gitkeep
 

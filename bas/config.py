@@ -87,6 +87,14 @@ class DetectorConfig:
 
 
 @dataclass
+class TrainingConfig:
+    operating_mode: str = "rules"  # rules | training
+    scenario_id: str = "ordered_line_1_7"
+    disappearance_confirm_frames: int = 8
+    pocket_proximity_mm: float = 190.0
+
+
+@dataclass
 class TrackerConfig:
     high_conf: float = 0.45
     low_conf: float = 0.12
@@ -298,6 +306,24 @@ class LoggingConfig:
 class AppConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
+    training_detector: DetectorConfig = field(
+        default_factory=lambda: DetectorConfig(
+            backend="ultralytics",
+            model_path="example/yolo11s_0719_16seg_best_v1.pt",
+            class_file_path=None,
+            class_names=[str(number) for number in range(16)],
+            conf=0.35,
+            iou=0.45,
+            device="0",
+            tile_size=1280,
+            tile_overlap=0.25,
+            max_det_per_tile=200,
+            batch_size=4,
+            detect_interval_frames=1,
+            detect_fps_limit_hz=6.0,
+        )
+    )
+    training: TrainingConfig = field(default_factory=TrainingConfig)
     tracker: TrackerConfig = field(default_factory=TrackerConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     geometry: GeometryConfig = field(default_factory=GeometryConfig)
@@ -330,9 +356,16 @@ class AppConfig:
                 data = {}
             return typ(**{k: v for k, v in dict(data).items() if k in typ.__dataclass_fields__})
 
+        training_detector = (
+            section("training_detector", DetectorConfig)
+            if "training_detector" in raw
+            else cls.__dataclass_fields__["training_detector"].default_factory()
+        )
         config = cls(
             camera=section("camera", CameraConfig),
             detector=section("detector", DetectorConfig),
+            training_detector=training_detector,
+            training=section("training", TrainingConfig),
             tracker=section("tracker", TrackerConfig),
             calibration=section("calibration", CalibrationConfig),
             geometry=section("geometry", GeometryConfig),
@@ -369,6 +402,11 @@ class AppConfig:
             DEFAULT_TARGET_SHOT_RELEASE_CONFIRM_MS,
         )
         planner.target_shot_trigger_frames = None
+        mode = str(self.training.operating_mode or "rules").strip().lower()
+        self.training.operating_mode = "training" if mode in {"training", "train", "practice", "drill"} else "rules"
+        self.training.scenario_id = str(self.training.scenario_id or "ordered_line_1_7").strip() or "ordered_line_1_7"
+        self.training.disappearance_confirm_frames = max(1, int(self.training.disappearance_confirm_frames or 8))
+        self.training.pocket_proximity_mm = max(50.0, float(self.training.pocket_proximity_mm or 190.0))
         self.web_control.host = str(self.web_control.host or "0.0.0.0").strip() or "0.0.0.0"
         self.web_control.port = max(1, min(65535, int(self.web_control.port or 17070)))
         return self
@@ -390,6 +428,12 @@ class AppConfig:
         if self.detector.class_file_path:
             p = resolve_path(self.detector.class_file_path, base=base)
             self.detector.class_file_path = str(p) if p else None
+        if self.training_detector.model_path:
+            p = resolve_path(self.training_detector.model_path, base=base)
+            self.training_detector.model_path = str(p) if p else None
+        if self.training_detector.class_file_path:
+            p = resolve_path(self.training_detector.class_file_path, base=base)
+            self.training_detector.class_file_path = str(p) if p else None
         if self.calibration.camera_file:
             p = resolve_path(self.calibration.camera_file, base=base)
             self.calibration.camera_file = str(p) if p else None
