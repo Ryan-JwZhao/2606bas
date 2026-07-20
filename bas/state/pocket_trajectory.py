@@ -78,7 +78,6 @@ def assess_track_handoff(
         or not source.geometry_valid
         or elapsed_ms <= 0.0
         or elapsed_ms > limits.handoff_ms
-        or not _current_position_is_eligible(current, limits)
         or source.depth_mm < -limits.history_depth_mm
     ):
         return None
@@ -97,6 +96,9 @@ def assess_track_handoff(
         or pocketward_speed < limits.min_speed_mm_s
         or path_speed > limits.max_speed_mm_s
     ):
+        return None
+
+    if not _current_position_is_eligible(current, limits, pocketward_speed=pocketward_speed):
         return None
 
     tangential_speed = lateral_advance / elapsed_s
@@ -136,17 +138,28 @@ def projected_entry_has_reversed(
     if float(probe.pocketward_speed_mm_s) <= -max(limits.min_speed_mm_s, 2.0 * reversal_distance):
         return True
     hysteresis = max(12.0, limits.ball_diameter_mm * 0.25)
-    if float(probe.depth_mm) < -limits.candidate_depth_mm - hysteresis:
+    predictive_lead = min(
+        limits.ball_diameter_mm * 3.0,
+        max(0.0, float(probe.pocketward_speed_mm_s)) * 0.18,
+    )
+    if float(probe.depth_mm) < -limits.candidate_depth_mm - predictive_lead - hysteresis:
         return True
     if abs(float(probe.signed_lateral_mm)) > _capture_half_width(probe, limits) + hysteresis:
         return True
     return False
 
 
-def _current_position_is_eligible(probe: PocketApproachProbe, limits: PocketTrajectoryLimits) -> bool:
+def _current_position_is_eligible(
+    probe: PocketApproachProbe,
+    limits: PocketTrajectoryLimits,
+    *,
+    pocketward_speed: float | None = None,
+) -> bool:
     if not probe.geometry_valid or probe.pocket_index is None:
         return False
-    if float(probe.depth_mm) < -limits.candidate_depth_mm:
+    speed = max(0.0, float(probe.pocketward_speed_mm_s if pocketward_speed is None else pocketward_speed))
+    predictive_lead = min(limits.ball_diameter_mm * 3.0, speed * 0.18)
+    if float(probe.depth_mm) < -limits.candidate_depth_mm - predictive_lead:
         return False
     lateral_allowance = _capture_half_width(probe, limits) + max(0.0, -float(probe.depth_mm)) * 0.18
     return abs(float(probe.signed_lateral_mm)) <= lateral_allowance

@@ -13,6 +13,7 @@ pytest_cache_local/
 htmlcov/
 *.prof
 *.trace
+*.jsonl
 
 # Virtual environments
 .venv/
@@ -41,6 +42,7 @@ recordings/
 debug_frames/
 state_debug/
 state_debug_*/
+diagnostics/
 tmp/
 temp/
 *.tmp

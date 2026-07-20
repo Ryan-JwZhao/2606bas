@@ -52,3 +52,26 @@ def test_filter_detections_by_region_keeps_balls_inside_inner_and_cue_sticks_ins
     filtered = filter_detections_by_region(detections, policy)
 
     assert [det.cls_name for det in filtered] == ["solid", "cue_stick"]
+
+
+def test_pocket_guard_band_keeps_ball_on_pocket_lip_but_not_unrelated_outer_area() -> None:
+    geometry = TableGeometry(
+        outer_norm=_square(0.0, 0.0, 1.0, 1.0),
+        inner_norm=_square(0.2, 0.2, 0.8, 0.8),
+        pockets_norm=[np.array([[0.44, 0.20], [0.50, 0.12], [0.56, 0.20]], dtype=np.float32)],
+    )
+
+    policy = build_detection_region_policy(
+        (100, 200, 3),
+        geometry,
+        ball_diameter_px_by_pocket=[12.0],
+    )
+    detections = [
+        _detection("solid", 100.0, 15.0),
+        _detection("cue", 10.0, 10.0),
+    ]
+
+    filtered = filter_detections_by_region(detections, policy)
+
+    assert len(policy.ball_guard_regions) == 1
+    assert [det.cls_name for det in filtered] == ["solid"]

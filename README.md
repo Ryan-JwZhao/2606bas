@@ -110,7 +110,12 @@ PWA 安装需要 HTTPS 安全上下文（或在本机 `localhost` 调试）；�
 
 ## Modern 进球识别
 
-Modern 状态机的袋口识别由三层组成：`bas/state/pocket_geometry.py` 提供严格袋区和袋口局部坐标，`bas/state/pocket_trajectory.py` 只判断袋前可见轨迹是否会穿过袋口，`bas/state/pocket.py` 负责累积证据、处理消失/重现和在回合结算时确认。轨迹层与 FSM 分离，便于独立复现和排查高速球、检测缓存及 track ID 切换问题。
+Modern 进球识别由四个独立模块协作：
+
+- `bas/perception/regions.py`：球检测区域为“台面内框 + 六个袋口保护带”，保护带由各袋标定后的球直径生成，不使用固定像素值。
+- `bas/perception/pocket_observer.py`：只处理六个小 ROI，通过球尺度帧差、颜色前景和最近轨迹识别 `inward_crossing`、`outward_crossing`、`lip_occupied`、`clear`；不持续运行第二次 YOLO。
+- `bas/state/pocket_trajectory.py`：判断可见轨迹、预击球历史和跨 ID 轨迹是否会穿过袋口。
+- `bas/state/pocket.py`：把轨迹、袋口视觉和跨 ID 证据合并为一个逻辑球决定，负责确认、撤销、去重和诊断原因。
 
 袋口局部坐标以真实 pocket curve 的质心为原点。`tangent_unit` 沿袋口曲线两端点方向，`outward_normal` 明确定义为“从桌内指向袋外”，`inward_normal = -outward_normal`。原始 inline 拼接出的 table edge polygon 只用于确定法向方向；physical rail inset 后的 `inner_polygon_mm` 不参与这一步；ball-center reachable polygon 只用于判断球心是否已回到正常台面。
 
@@ -139,19 +144,19 @@ MOUTH:    depth >= -ball_radius * 0.6
 
 Modern 不再使用径向 distance 产生 zone；`pocket_funnel_radius_mm` 和 `pocket_mouth_settle_ms` 只为 legacy engine 保留。真实曲线不存在时，才使用袋口中心相对台面质心的方向作为兼容法向，但仍执行相同的二维 zone 和几何自检。
 
-高速球常在球心进入严格 MOUTH 前就被袋口遮挡，因此另设“不改变 zone 的袋前轨迹走廊”：当前球心需位于袋前约 `95 mm` 内，速度需指向同一袋口且投影到袋口平面后仍在可捕获宽度内。若检测器在袋前切换 track ID，则只在旧 ID 已不可见、球组相同、袋口相同、最近有效位置不超过约 `230 mm`、时间间隔不超过 `220 ms` 且位移速度合理时继承轨迹。运行时重复的缓存检测不会刷新轨迹计时锚点，避免把真实约 `109 ms` 的运动误算成最后一个重复帧后的 `31 ms` 跳变。
+高速球常在球心进入严格 MOUTH 前就被袋口遮挡，因此另设“不改变 zone 的袋前轨迹走廊”：候选深度约 `125 mm`，跨 ID 接力窗口约 `450 ms`，预击球历史保留 `1.5 s`。只有球组、袋号、位移速度和捕获宽度均相容时才继承轨迹。对于只出现一两帧、检测框沿袋口方向明显拉长、低置信且随后完全消失的高速球，状态机使用受限的 `blurred_single_frame_disappearance` 证据；正常圆形静止球不满足该分支。
 
 自动进球时序为：
 
-1. 球可见且进入 THROAT/INTERIOR、带有向袋外速度进入 MOUTH，或满足袋前投影/跨 ID 连续性，产生 `POCKET_CANDIDATE`。
-2. 球首次不可见只记录消失起点；持续 `300 ms` 后产生一次 `POCKET_TENTATIVE`。
-3. 持续 `700 ms`、具备 THROAT/INTERIOR 或有效投影轨迹强证据，且 absent 或 `lost_frames >= 4`，产生一次 `POCKET_COMMIT_READY`。该状态尚未最终确认，计数仍可撤销。
-4. 完整 `800 ms` 重现窗口结束后产生一次高置信 `POCKET_DETECTED`，用于服务端桌面/Web 进球提示；它不直接修改账本，也不触发投影。
-5. 进入无冲突的 TURN_RESOLVE 后产生 `POCKET_CONFIRMED`；如果台面观察与账本冲突则保留人工复核，不会为了显示提示而绕过裁判安全机制。
+1. 球进入严格袋区、满足袋前投影/跨 ID 连续性，或袋口观察器给出已关联球组的向内穿越，产生一个逻辑 `POCKET_CANDIDATE`。
+2. 候选进入袋口后等待 `1.3 s`。期间若出现向外穿越、桌面侧重现、轨迹反向或持续袋唇占用，则自动产生 `POCKET_REJECTED`。
+3. 只有持续消失且没有反证的强候选才产生一次 `POCKET_DETECTED`；单纯跟踪器 `occluded` 外推不能确认。视觉证据不足会自动拒绝并记录原因，不进入人工进球审核。
+4. 同袋多候选分别维护，真实进球与无效候选互不阻塞；过期视觉候选自动拒绝，避免跨杆残留和重复播报。
+5. 账本观测数量不一致只记录裁判异常，不阻止已经确认的 `POCKET_DETECTED` 和服务端提示。
 
-candidate、tentative、commit_ready 都允许同 track 重现；同袋附近刚创建的新 track 会按 ID 抖动处理：相同球组产生 `POCKET_REJECTED` 并按 `decision_id` 回滚已暂记的进球，跨组则进入 `POCKET_REVIEW_REQUIRED`。本回合早已存在的另一颗同组球不会被误当作重现，因此两颗同组球可以先后进入同一袋。白球不再例外，因此 scratch 也能在重现后撤销。每份强证据绑定 `decision_id + pocket_index`，同一球在结算前改到另一袋时会拒绝旧决定，下一帧才能为新袋创建新决定。投影轨迹候选若重新可见并向台内回退至少约四分之一球径、速度反向或横向离开捕获走廊，会以 `projected_entry_reversed` 立即撤销；静止球仅在袋前消失不会建立候选。
+每份强证据绑定 `decision_id + pocket_index`。同 track 或兼容的新 ID 在桌面侧重现时会撤销旧决定；本回合早已存在的另一颗同组球不会被误当作重现，因此两颗同组球可以先后进入同一袋。投影轨迹重新向台内回退、向外穿越或横向离开捕获走廊时会立即撤销。袋唇球如果在候选后长时间仍可见，即使跟踪器随后外推到袋内，也会保持否决直到自动超时拒绝。
 
-三个高优先级边界已固化为回归：可见球从袋口沿库边离开并退出袋口 zone 时立即撤销旧证据；即使候选球仍可见，TURN_RESOLVE 也必须等待候选完成确认或在 grace 超时后转人工复核；两颗此前已跟踪的同组球先后进入同一袋时分别保留独立决定，不能用“同组重现”误杀第二颗球。
+高速球、单帧检测、跨 ID、击球相位滞后、撞袋回弹、袋唇静止、同袋多候选以及真进球与假候选并存均有独立回归测试。
 
 几何只在上下文变化时重建，并自动检查六袋坐标轴、桌面中心 `zone == NONE`，以及固定随机种子的 500 个 ball-center reachable 内点；INTERIOR 比例必须小于 `2%`。单袋无效时排除该袋，全局检查失败时 fail-closed，Modern 自动进球停用且不会回退到径向判定。可通过 `ModernMatchStateMachine.debug_snapshot()["pocket_geometry"]` 查看六袋中心、切线、法向、宽深、探针距离、随机抽样比例和失败原因。
 
@@ -159,25 +164,37 @@ candidate、tentative、commit_ready 都允许同 track 重现；同袋附近刚
 
 ```yaml
 state:
+  engine: modern
   pocket_tentative_missing_ms: 300
   pocket_commit_ready_missing_ms: 700
   pocket_reappear_window_ms: 800
-  pocket_entry_candidate_depth_mm: 95.0
-  pocket_entry_history_depth_mm: 230.0
-  pocket_entry_handoff_ms: 220
+  pocket_visual_confirmation_ms: 1300
+  pocket_lip_veto_ms: 1100
+  pocket_entry_candidate_depth_mm: 125.0
+  pocket_entry_history_depth_mm: 450.0
+  pocket_entry_history_ms: 1500
+  pocket_entry_handoff_ms: 450
   pocket_entry_min_speed_mm_s: 100.0
   pocket_entry_max_speed_mm_s: 4000.0
   turn_resolve_grace_ms: 900
 ```
 
-旧 `pocket_confirm_missing_ms` 仍可作为 commit-ready 门槛别名；只在新字段未配置时生效。修改代码或配置不会替换正在运行进程已加载的 Python 模块，请在合适时间正常重启 BAS 后再验证新逻辑。
+旧 `pocket_confirm_missing_ms` 仍可作为 commit-ready 门槛别名；只在新字段未配置时生效。修改代码或配置后必须正常重启 BAS，再验证新逻辑。
 
-本次使用 `local_settings/captures/no_line_video_20260627_185946_1_1.mp4` 对应的 `replays/session_20260720_104412_770199/events.jsonl` 回放前 `1329` 个已处理状态帧验证：第 `371` 帧的袋口反弹只建立候选，并在第 `373` 帧以 `projected_entry_reversed` 撤销；第 `1124` 帧的同 ID 高速入袋在第 `1141` 帧产生 `POCKET_DETECTED`；第 `1275` 帧的 `597 → 599` ID 切换入袋在第 `1293` 帧产生 `POCKET_DETECTED`。结果为两次真实进球提示、一次反弹撤销、零次反弹误提示。第 9 杆后续因台面可见数与账本不一致进入裁判复核，但不再阻塞服务端进球提示。
+长视频标签位于 `tests/fixtures/long_video_goal_labels.json`。本地放好被 `.gitignore` 排除的视频和回放后执行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\evaluate_pocket_video.py --replay replays\session_20260720_135725_516792 --video local_settings\captures\no_line_video_20260627_185946_1_1.mp4
+```
+
+验收结果必须为 `PASS: matched=11/11 detected=11`，第 2 杆为 `sob`、第 34 杆为 `bb`，第 18/24/30 杆无播报，所有决定延迟不超过 `1.5 s`。当前基准为 11/11、0 误报、0 重复，观察器 p95 `4.02 ms`，估算整体帧率下降 `4.82%`。
+
+桌面预览和 Web 前端会明显显示 `wb进球`、`bb进球`、`sob进球` 或 `stb进球`。提示只消费服务端状态事件；投影交互层明确忽略 `POCKET_DETECTED`/`POT_PROBABLE`，不会显示进球文字。
 
 进球模块定向回归：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_pocket_geometry.py tests\test_state_modern.py tests\test_state_replay.py tests\test_web_pocket_notice.py tests\test_projection_interaction.py tests\test_web_control.py -q
+.\.venv\Scripts\python.exe -m pytest -p no:cacheprovider --basetemp .tmp\pytest-pocket tests\test_pocket_geometry.py tests\test_pocket_observer.py tests\test_pocket_visual_state.py tests\test_state_modern.py tests\test_state_replay.py tests\test_web_pocket_notice.py tests\test_projection_interaction.py tests\test_web_control.py -q
 ```
 
 ## 测试与回归

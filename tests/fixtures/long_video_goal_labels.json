@@ -1,0 +1,25 @@
+{
+  "name": "no_line_video_20260627_long_goal_validation",
+  "video_frame_offset": 0,
+  "max_notice_delay_ms": 1500,
+  "goals": [
+    {"shot": 2, "contact_frame": 224, "pocket_index": 0, "group": "solid", "ball_code": "sob"},
+    {"shot": 8, "contact_frame": 1123, "pocket_index": 3, "group": "solid", "ball_code": "sob"},
+    {"shot": 9, "contact_frame": 1275, "pocket_index": 1, "group": "solid", "ball_code": "sob"},
+    {"shot": 12, "contact_frame": 1822, "pocket_index": 1, "group": "solid", "ball_code": "sob"},
+    {"shot": 13, "contact_frame": 1990, "pocket_index": 2, "group": "solid", "ball_code": "sob"},
+    {"shot": 14, "contact_frame": 2151, "pocket_index": 1, "group": "solid", "ball_code": "sob"},
+    {"shot": 17, "contact_frame": 2600, "pocket_index": 2, "group": "stripe", "ball_code": "stb"},
+    {"shot": 19, "contact_frame": 2993, "pocket_index": 4, "group": "solid", "ball_code": "sob"},
+    {"shot": 23, "contact_frame": 3861, "pocket_index": 3, "group": "stripe", "ball_code": "stb"},
+    {"shot": 31, "contact_frame": 5503, "pocket_index": 1, "group": "solid", "ball_code": "sob"},
+    {"shot": 34, "contact_frame": 6110, "pocket_index": 5, "group": "black", "ball_code": "bb"}
+  ],
+  "no_goals": [
+    {"shot": 15, "reason": "top-right jaw bounce"},
+    {"shot": 18, "reason": "top-left jaw bounce"},
+    {"shot": 24, "reason": "cue ball stopped on top-right lip"},
+    {"shot": 29, "reason": "top-right jaw bounce"},
+    {"shot": 30, "reason": "top-right jaw bounce"}
+  ]
+}

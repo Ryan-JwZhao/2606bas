@@ -91,7 +91,7 @@ geometry:
   pocket_path: C:/CodeProject/data/0618_DrawLine/pocket.json
 
 state:
-  engine: legacy
+  engine: modern
   still_speed_px_s: 25.0
   moving_speed_px_s: 65.0
   still_speed_mm_s: 8.0
@@ -110,13 +110,16 @@ state:
   pocket_commit_ready_missing_ms: 700
   # pocket_confirm_missing_ms is a legacy alias used only when commit-ready is absent.
   pocket_reappear_window_ms: 800
+  pocket_visual_confirmation_ms: 1300
+  pocket_lip_veto_ms: 1100
   pocket_mouth_settle_ms: 3000
   # High-speed balls can disappear before reaching the strict mouth zone.
   # This trajectory corridor creates evidence only; final confirmation still
   # requires disappearance, the reappearance window, and turn resolution.
-  pocket_entry_candidate_depth_mm: 95.0
-  pocket_entry_history_depth_mm: 230.0
-  pocket_entry_handoff_ms: 220
+  pocket_entry_candidate_depth_mm: 125.0
+  pocket_entry_history_depth_mm: 450.0
+  pocket_entry_history_ms: 1500
+  pocket_entry_handoff_ms: 450
   pocket_entry_min_speed_mm_s: 100.0
   pocket_entry_max_speed_mm_s: 4000.0
   turn_resolve_grace_ms: 900

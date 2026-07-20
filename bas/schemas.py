@@ -94,6 +94,34 @@ class TracksFrame:
 
 
 @dataclass
+class PocketVisualObservation:
+    """Compact, tracker-associated visual evidence for one physical pocket."""
+
+    pocket_index: int
+    inward_crossing: bool = False
+    outward_crossing: bool = False
+    lip_occupied: bool = False
+    clear: bool = False
+    group: Optional[str] = None
+    confidence: float = 0.0
+    associated_track_ids: List[int] = field(default_factory=list)
+    evidence_sources: List[str] = field(default_factory=list)
+    motion_score: float = 0.0
+    foreground_score: float = 0.0
+    foreground_center_px: Optional[Point] = None
+    foreground_depth_diameters: Optional[float] = None
+
+
+@dataclass
+class PocketVisualObservationFrame:
+    frame_id: int
+    ts_cam_ns: int
+    observations: List[PocketVisualObservation] = field(default_factory=list)
+    latency_ms: float = 0.0
+    observer_version: str = "pocket_observer_v1"
+
+
+@dataclass
 class TableModel:
     width_mm: float
     height_mm: float

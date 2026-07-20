@@ -7,7 +7,7 @@ from typing import Deque, Dict, List, Optional, Set
 import numpy as np
 
 from ..config import StateConfig
-from ..schemas import Event, MatchPhase, MatchStateFrame, TrackObservation, TracksFrame
+from ..schemas import Event, MatchPhase, MatchStateFrame, PocketVisualObservationFrame, TrackObservation, TracksFrame
 
 
 @dataclass
@@ -161,7 +161,12 @@ class MatchStateMachine:
             payload={"group": self._turn_target_group, "reason": reason},
         )
 
-    def update(self, tracks_frame: TracksFrame) -> MatchStateFrame:
+    def update(
+        self,
+        tracks_frame: TracksFrame,
+        pocket_observations: PocketVisualObservationFrame | None = None,
+    ) -> MatchStateFrame:
+        _ = pocket_observations
         tracks = tracks_frame.tracks
         self._last_layout = list(tracks)
         events: List[Event] = self._drain_operator_events(tracks_frame)

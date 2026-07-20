@@ -189,10 +189,13 @@ class StateConfig:
     pocket_commit_ready_missing_ms: Optional[int] = None
     pocket_confirm_missing_ms: Optional[int] = None  # legacy alias for commit-ready threshold
     pocket_reappear_window_ms: int = 800
+    pocket_visual_confirmation_ms: int = 1300
+    pocket_lip_veto_ms: int = 1100
     pocket_mouth_settle_ms: int = 3000
     pocket_entry_candidate_depth_mm: Optional[float] = None
     pocket_entry_history_depth_mm: Optional[float] = None
-    pocket_entry_handoff_ms: int = 220
+    pocket_entry_history_ms: int = 1500
+    pocket_entry_handoff_ms: int = 450
     pocket_entry_min_speed_mm_s: float = 100.0
     pocket_entry_max_speed_mm_s: float = 4000.0
     turn_resolve_grace_ms: int = 900

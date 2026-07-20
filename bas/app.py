@@ -15,7 +15,13 @@ from .geometry_runtime import RuntimeGeometryReloader
 from .learning import LearningSampleRecorder
 from .logging_config import configure_logging
 from .operator_controls import RuntimeControlState
-from .perception import DetectionRegionPolicy, ModeAwareDetectService, build_detection_region_policy, create_detector
+from .perception import (
+    DetectionRegionPolicy,
+    ModeAwareDetectService,
+    PocketObserver,
+    build_detection_region_policy,
+    create_detector,
+)
 from .planning import GeometryPhysicsPlanner
 from .projection import OverlayBuilder
 from .projection.star_formula import StarFormulaConfig
@@ -80,6 +86,7 @@ class RuntimePipeline:
         self.training_tracker = NumberedBallTracker(config.tracker)
         self.tracker = self.training_tracker if self.operating_mode == TRAINING_MODE else self.rule_tracker
         self.state_machine = create_match_state_machine(config.state)
+        self.pocket_observer = PocketObserver(history_ms=int(config.state.pocket_entry_history_ms))
         self.planner = GeometryPhysicsPlanner(config.planner, self.calibration, learning_config=config.learning)
         self.secondary_correction = SecondaryCorrectionController(config.planner)
         self.overlay_builder = OverlayBuilder(config.projection, self.calibration, star_formula=star_formula)
@@ -135,6 +142,16 @@ class RuntimePipeline:
             self._last_tracks = tracks
         track_ms = (time.perf_counter() - stage_start) * 1000.0
         stage_start = time.perf_counter()
+        pocket_observations = None
+        if (
+            getattr(self, "operating_mode", RULES_MODE) == RULES_MODE
+            and bool(getattr(self.state_machine, "supports_pocket_observations", False))
+            and detection_regions is not None
+            and detection_regions.ball_guard_regions
+        ):
+            pocket_observations = self.pocket_observer.update(frame, tracks, detection_regions)
+        pocket_observer_ms = (time.perf_counter() - stage_start) * 1000.0
+        stage_start = time.perf_counter()
         training_state: Optional[TrainingStateFrame] = None
         if getattr(self, "operating_mode", RULES_MODE) == TRAINING_MODE:
             self.training_session.set_table_context(pockets_mm=self.calibration.table.pockets_mm)
@@ -171,7 +188,10 @@ class RuntimePipeline:
                 ball_diameter_mm=self.calibration.table.ball_diameter_mm,
                 pocket_curves_mm=getattr(self, "_last_pocket_curves_mm", []),
             )
-            state = self.state_machine.update(tracks)
+            if bool(getattr(self.state_machine, "supports_pocket_observations", False)):
+                state = self.state_machine.update(tracks, pocket_observations)
+            else:
+                state = self.state_machine.update(tracks)
             secondary_correction = getattr(self, "secondary_correction", None)
             updated_turn_group = (
                 secondary_correction.advance_from_state(state, self.state_machine)
@@ -217,6 +237,7 @@ class RuntimePipeline:
             "geometry_ms": float(geometry_ms),
             "detect_ms": float(detect_ms),
             "track_ms": float(track_ms),
+            "pocket_observer_ms": float(pocket_observer_ms),
             "state_plan_overlay_ms": float(state_plan_overlay_ms),
             "record_ms": float(record_ms),
             "total_ms": float(total_ms),
@@ -238,6 +259,7 @@ class RuntimePipeline:
         self._last_state = None
         self._last_plan = None
         self._last_overlay = None
+        self.pocket_observer.reset()
         if normalized == TRAINING_MODE:
             self.training_session.reset()
         else:
@@ -278,6 +300,7 @@ class RuntimePipeline:
         reset_cache = getattr(self.detector, "reset_cache", None)
         if callable(reset_cache):
             reset_cache()
+        self.pocket_observer.reset()
         LOGGER.info(
             "Geometry hot-reloaded: outline=%s inline=%s pocket=%s empty=%s",
             self.config.geometry.outline_path,
@@ -297,10 +320,46 @@ class RuntimePipeline:
             frame.image.shape,
             self.geometry,
             fallback_polygon=fallback_polygon,
+            ball_diameter_px_by_pocket=self._camera_ball_diameters_px(frame),
         )
         if policy.global_polygon is None and policy.ball_polygon is None and policy.cue_stick_polygon is None:
             return None
         return policy
+
+    def _camera_ball_diameters_px(self, frame: FramePacket) -> list[float]:
+        if frame.image is None or self.geometry.is_empty:
+            return []
+        height, width = frame.image.shape[:2]
+        _, _, pocket_curves = self.geometry.scaled(width, height)
+        diameter_mm = max(1.0, float(self.calibration.table.ball_diameter_mm))
+        diameters: list[float] = []
+        for curve in pocket_curves:
+            points = np.asarray(curve, dtype=np.float32).reshape((-1, 2))
+            if points.shape[0] < 2:
+                continue
+            center_px = np.mean(points, axis=0)
+            try:
+                center_mm = self.calibration.camera_px_to_table_mm(np.asarray([center_px], dtype=np.float32))[0]
+                half = diameter_mm * 0.5
+                samples_mm = np.asarray(
+                    [
+                        [center_mm[0] - half, center_mm[1]],
+                        [center_mm[0] + half, center_mm[1]],
+                        [center_mm[0], center_mm[1] - half],
+                        [center_mm[0], center_mm[1] + half],
+                    ],
+                    dtype=np.float32,
+                )
+                samples_px = self.calibration.table_mm_to_camera_px(samples_mm)
+                horizontal = float(np.linalg.norm(samples_px[1] - samples_px[0]))
+                vertical = float(np.linalg.norm(samples_px[3] - samples_px[2]))
+                diameter_px = float(np.median([horizontal, vertical]))
+            except Exception:
+                diameter_px = 0.0
+            if not np.isfinite(diameter_px) or diameter_px <= 0.0:
+                return []
+            diameters.append(diameter_px)
+        return diameters
 
     def _camera_table_mask(self, frame: FramePacket) -> Optional[np.ndarray]:
         if frame.image is not None and not self.geometry.is_empty:

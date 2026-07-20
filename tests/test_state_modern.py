@@ -360,7 +360,7 @@ def test_two_previously_tracked_same_group_balls_can_enter_the_same_pocket() -> 
             [_ball(2, "solid", -50, -25, -20, -10), _ball(3, "solid", 250, 100, -50, -20)],
         )
     )
-    sm.update(TracksFrame(2, 1_100_000_000, [_ball(3, "solid", 120, 60, -80, -40)]))
+    middle = sm.update(TracksFrame(2, 1_100_000_000, [_ball(3, "solid", 120, 60, -80, -40)]))
     second = sm.update(TracksFrame(3, 1_200_000_000, [_ball(3, "solid", -45, -22, -20, -10)]))
     sm.update(TracksFrame(4, 1_300_000_000, []))
     sm.update(TracksFrame(5, 1_600_000_000, []))
@@ -369,7 +369,7 @@ def test_two_previously_tracked_same_group_balls_can_enter_the_same_pocket() -> 
     sm.force_phase(MatchPhase.TURN_RESOLVE, frame_id=8, ts_cam_ns=2_100_000_000)
     resolved = sm.update(TracksFrame(8, 2_100_000_000, [_ball(1, "cue", 100, 100)]))
 
-    assert sum(event.name == "POCKET_CANDIDATE" for event in [*first.events, *second.events]) == 2
+    assert sum(event.name == "POCKET_CANDIDATE" for event in [*first.events, *middle.events, *second.events]) == 2
     assert not any(event.name in {"POCKET_REAPPEARED", "POCKET_REJECTED"} for event in second.events)
     assert sum(event.name == "POCKET_CONFIRMED" for event in resolved.events) == 2
     assert sm.ledger.remaining["solid"] == 5

@@ -8,7 +8,7 @@ from typing import Deque, Dict, List, Optional
 import numpy as np
 
 from ..config import StateConfig
-from ..schemas import Event, MatchPhase, MatchStateFrame, TrackObservation, TracksFrame
+from ..schemas import Event, MatchPhase, MatchStateFrame, PocketVisualObservationFrame, TrackObservation, TracksFrame
 from .models import InventoryLedger, MatchRuleState, RefereeIntent, ShotContext, normalize_group, normalize_object_group, other_object_group
 from .phase import PhaseSignals, ShotPhaseMachine
 from .pocket import PerBallPocketFSM
@@ -39,6 +39,7 @@ class _PendingReviewDecision:
 
 class ModernMatchStateMachine:
     version = "billiards_state_new_v2"
+    supports_pocket_observations = True
 
     def __init__(self, config: StateConfig):
         self.config = config
@@ -371,7 +372,11 @@ class ModernMatchStateMachine:
         snapshot["pending_review"] = {} if self._pending_review is None else self._pending_review.to_payload()
         return snapshot
 
-    def update(self, tracks_frame: TracksFrame) -> MatchStateFrame:
+    def update(
+        self,
+        tracks_frame: TracksFrame,
+        pocket_observations: PocketVisualObservationFrame | None = None,
+    ) -> MatchStateFrame:
         tracks = tracks_frame.tracks
         self._last_layout = list(tracks)
         events: List[Event] = self._drain_operator_events(tracks_frame)
@@ -393,7 +398,11 @@ class ModernMatchStateMachine:
             self._operator_lock_frames -= 1
             self._tick_event_cooldowns()
             self.reconciler.update_observation(tracks_frame)
-            pocket_events = self.pocket_fsm.update(tracks_frame, self.phase_machine.phase)
+            pocket_events = self.pocket_fsm.update(
+                tracks_frame,
+                self.phase_machine.phase,
+                pocket_observations,
+            )
             events.extend(pocket_events)
             ts_ms = self._ts_ms(tracks_frame.ts_cam_ns)
             self._annotate_shot_ids(pocket_events, ts_ms=ts_ms)
@@ -422,7 +431,7 @@ class ModernMatchStateMachine:
             self._snapshot_layout = list(tracks)
         self.reconciler.update_observation(tracks_frame)
         pocket_phase = MatchPhase.TURN_RESOLVE if self._pending_turn_resolve is not None else phase
-        pocket_events = self.pocket_fsm.update(tracks_frame, pocket_phase)
+        pocket_events = self.pocket_fsm.update(tracks_frame, pocket_phase, pocket_observations)
         events.extend(pocket_events)
         ts_ms = self._ts_ms(tracks_frame.ts_cam_ns)
         self._annotate_shot_ids(events, ts_ms=ts_ms)

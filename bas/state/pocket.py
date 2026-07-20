@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Deque, Dict, List, Optional
 
 import numpy as np
 
 from ..config import StateConfig
-from ..schemas import Event, MatchPhase, TrackObservation, TracksFrame
+from ..schemas import Event, MatchPhase, PocketVisualObservation, PocketVisualObservationFrame, TrackObservation, TracksFrame
 from .models import Group, normalize_group
 from .pocket_geometry import PocketApproachProbe, PocketGeometryContext, PocketGeometryModel, PocketSample
 from .pocket_trajectory import (
@@ -34,6 +35,13 @@ class PocketEvidence:
     best_entry_depth_mm: Optional[float] = None
     entry_lateral_mm: float = 0.0
     projected_lateral_mm: float = 0.0
+    observer_active: bool = False
+    visual_inward: bool = False
+    visual_outward: bool = False
+    visual_status: str = "unobserved"
+    observer_latency_ms: float = 0.0
+    associated_track_ids: list[int] = field(default_factory=list)
+    evidence_sources: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -48,6 +56,11 @@ class _PocketMemory:
     last_visible_frame: int
     last_visible_ts_ns: int
     last_quality: float
+    first_seen_frame: int = 0
+    first_seen_ts_ns: int = 0
+    last_bbox_aspect: float = 1.0
+    last_bbox_horizontal: bool = True
+    visible_observation_count: int = 0
     state: str = "on_table"
     decision: str = "none"
     resolved: bool = False
@@ -74,6 +87,9 @@ class _PocketMemory:
     reappear_veto: bool = False
     reappear_track_id: Optional[int] = None
     reappear_group: Optional[Group] = None
+    trajectory_history: Deque[tuple[int, PocketApproachProbe]] = field(default_factory=deque)
+    visual_lip_since_ns: Optional[int] = None
+    track_lip_veto: bool = False
 
 
 class PerBallPocketFSM:
@@ -126,14 +142,15 @@ class PerBallPocketFSM:
         elif inner_polygon_mm is not None and not self.ball_center_reachable_polygon_mm:
             self.ball_center_reachable_polygon_mm = list(self.inner_polygon_mm)
         if pockets_mm is not None:
-            self.pockets_mm = [(float(x), float(y)) for x, y in pockets_mm]
+            self.pockets_mm = self._canonical_pocket_points([(float(x), float(y)) for x, y in pockets_mm])
         if ball_diameter_mm is not None:
             self.ball_diameter_mm = float(ball_diameter_mm)
         if pocket_curves_mm is not None:
-            self.pocket_curves_mm = [
+            curves = [
                 [(float(point[0]), float(point[1])) for point in list(curve or []) if len(point) >= 2]
                 for curve in pocket_curves_mm
             ]
+            self.pocket_curves_mm = self._canonical_pocket_curves(curves)
         context = PocketGeometryContext(
             table_edge_polygon_mm=self.table_edge_polygon_mm or self.inner_polygon_mm,
             ball_center_reachable_polygon_mm=self.ball_center_reachable_polygon_mm or self.inner_polygon_mm,
@@ -147,7 +164,12 @@ class PerBallPocketFSM:
         self._geometry_context_fingerprint = fingerprint
         self._geometry_model = PocketGeometryModel.build(context, self.config)
 
-    def update(self, frame: TracksFrame, phase: MatchPhase) -> List[Event]:
+    def update(
+        self,
+        frame: TracksFrame,
+        phase: MatchPhase,
+        pocket_observations: PocketVisualObservationFrame | None = None,
+    ) -> List[Event]:
         events: List[Event] = []
         active = phase in {MatchPhase.SHOT_ACTIVE, MatchPhase.SETTLING, MatchPhase.TURN_RESOLVE}
         seen_ids: set[int] = set()
@@ -203,7 +225,16 @@ class PerBallPocketFSM:
                     events,
                 )
             elif active:
-                self._handle_nonvisible(memory, track, frame, events)
+                self._handle_nonvisible(
+                    memory,
+                    track,
+                    frame,
+                    events,
+                    visual_mode=pocket_observations is not None,
+                )
+
+        if active and pocket_observations is not None:
+            self._apply_visual_observations(frame, pocket_observations, events)
 
         if active:
             for memory in list(self._memory.values()):
@@ -211,7 +242,230 @@ class PerBallPocketFSM:
                     continue
                 self._handle_absent(memory, frame, events)
 
+        self._expire_stale_observed_candidates(frame, events)
+
         return events
+
+    def _expire_stale_observed_candidates(self, frame: TracksFrame, events: List[Event]) -> None:
+        timeout_ms = max(1800, int(getattr(self.config, "pocket_visual_confirmation_ms", 1300)) + 400)
+        for memory in self._memory.values():
+            evidence = memory.evidence
+            if (
+                evidence is None
+                or memory.resolved
+                or memory.detected_emitted
+                or not evidence.observer_active
+                or self._elapsed_ms(frame.ts_cam_ns, evidence.candidate_since_ns) < timeout_ms
+            ):
+                continue
+            self._reject(
+                memory,
+                frame,
+                events,
+                reason_codes=["automatic_observation_timeout"],
+                candidate_reason="automatic_observation_timeout",
+            )
+
+    def _apply_visual_observations(
+        self,
+        frame: TracksFrame,
+        observations_frame: PocketVisualObservationFrame,
+        events: List[Event],
+    ) -> None:
+        by_pocket = {int(item.pocket_index): item for item in observations_frame.observations}
+        for memory in self._memory.values():
+            evidence = memory.evidence
+            if evidence is None or memory.resolved:
+                continue
+            evidence.observer_active = True
+            evidence.observer_latency_ms = float(observations_frame.latency_ms)
+            observed = by_pocket.get(int(evidence.pocket_index))
+            if observed is not None:
+                self._merge_visual_metadata(evidence, observed)
+
+        for observed in observations_frame.observations:
+            if observed.inward_crossing:
+                self._start_visual_candidate(frame, observed, observations_frame.latency_ms, events)
+
+            matches = self._visual_candidate_matches(observed)
+            if observed.outward_crossing:
+                for memory in matches:
+                    if memory.evidence is not None:
+                        memory.evidence.visual_outward = True
+                        memory.evidence.visual_status = "outward_crossing"
+                    self._reject(
+                        memory,
+                        frame,
+                        events,
+                        reason_codes=["visual_outward_crossing"],
+                        candidate_reason="visual_outward_crossing",
+                    )
+                continue
+
+            for memory in matches:
+                evidence = memory.evidence
+                if evidence is None or memory.resolved:
+                    continue
+                self._merge_visual_metadata(evidence, observed)
+                if observed.lip_occupied:
+                    evidence.visual_status = "lip_occupied"
+                    if memory.visual_lip_since_ns is None:
+                        memory.visual_lip_since_ns = frame.ts_cam_ns
+                    if self._elapsed_ms(frame.ts_cam_ns, memory.visual_lip_since_ns) >= self._lip_veto_ms():
+                        self._reject(
+                            memory,
+                            frame,
+                            events,
+                            reason_codes=["persistent_lip_occupancy"],
+                            candidate_reason="lip_occupied_veto",
+                        )
+                elif observed.clear:
+                    evidence.visual_status = "clear"
+                    if not memory.track_lip_veto:
+                        memory.visual_lip_since_ns = None
+
+        for memory in self._memory.values():
+            evidence = memory.evidence
+            if (
+                evidence is not None
+                and not memory.resolved
+                and evidence.visual_status == "clear"
+            ):
+                self._emit_detected_if_ready(
+                    memory,
+                    frame,
+                    events,
+                    missing_ms=self._memory_missing_ms(memory, frame.ts_cam_ns),
+                )
+
+    def _start_visual_candidate(
+        self,
+        frame: TracksFrame,
+        observed: PocketVisualObservation,
+        latency_ms: float,
+        events: List[Event],
+    ) -> None:
+        group = normalize_group(observed.group)
+        if group is None or not observed.associated_track_ids:
+            return
+        memory = self._memory_for_visual_candidate(observed, group, frame.ts_cam_ns)
+        if memory is None or memory.resolved:
+            return
+        if memory.evidence is None:
+            has_ball_foreground = bool(
+                {"foreground_motion", "ball_sized_motion"}.intersection(observed.evidence_sources)
+            )
+            credible_approach = memory.last_inward_speed_mm_s >= self._trajectory_limits().min_speed_mm_s
+            if not has_ball_foreground or not credible_approach:
+                return
+        pocket_index = int(observed.pocket_index)
+        if memory.evidence is not None and memory.evidence.pocket_index != pocket_index:
+            return
+        if memory.evidence is None:
+            memory.evidence = PocketEvidence(
+                decision_id=self._new_decision_id(),
+                pocket_index=pocket_index,
+                candidate_since_ns=frame.ts_cam_ns,
+                last_evidence_ts_ns=frame.ts_cam_ns,
+                candidate_reason="pocket_visual_inward",
+            )
+        evidence = memory.evidence
+        evidence.last_evidence_ts_ns = frame.ts_cam_ns
+        evidence.crossed_mouth = True
+        evidence.visual_inward = True
+        evidence.visual_status = "inward_crossing"
+        evidence.observer_active = True
+        evidence.observer_latency_ms = float(latency_ms)
+        if observed.associated_track_ids:
+            evidence.entry_source_track_id = int(observed.associated_track_ids[0])
+        self._merge_visual_metadata(evidence, observed)
+        memory.visual_lip_since_ns = None
+        visible_ids = {
+            int(track.track_id)
+            for track in frame.tracks
+            if track.visibility == "visible" and float(track.quality) > 0.25
+        }
+        if memory.track_id not in visible_ids and memory.nonvisible_since_ns is None:
+            memory.nonvisible_since_ns = frame.ts_cam_ns
+            memory.absent_since_ns = frame.ts_cam_ns
+        if memory.state != "on_table":
+            return
+        memory.state = "candidate"
+        events.append(
+            Event(
+                name="POCKET_CANDIDATE",
+                ts_cam_ns=frame.ts_cam_ns,
+                frame_id=frame.frame_id,
+                payload={
+                    "track_id": memory.track_id,
+                    "logical_id": f"track:{memory.track_id}",
+                    "group": memory.group,
+                    "pocket_index": pocket_index,
+                    "decision_id": evidence.decision_id,
+                    "candidate_reason": evidence.candidate_reason,
+                    "evidence": self._evidence_payload(memory, frame.ts_cam_ns),
+                },
+                confidence=max(0.72, float(observed.confidence)),
+            )
+        )
+
+    def _memory_for_visual_candidate(
+        self,
+        observed: PocketVisualObservation,
+        group: Group,
+        now_ns: int,
+    ) -> Optional[_PocketMemory]:
+        associated = {int(value) for value in observed.associated_track_ids}
+        exact = [
+            memory
+            for track_id, memory in self._memory.items()
+            if track_id in associated and not memory.resolved and memory.group == group
+        ]
+        if exact:
+            return max(exact, key=lambda item: item.last_visible_ts_ns)
+        history_ns = self._entry_history_ms() * 1_000_000
+        recent = [
+            memory
+            for memory in self._memory.values()
+            if not memory.resolved
+            and memory.group == group
+            and int(now_ns) - int(memory.last_visible_ts_ns) <= history_ns
+            and (
+                memory.track_id in associated
+                or (memory.evidence is None and memory.last_visibility != "visible")
+            )
+        ]
+        return max(recent, key=lambda item: item.last_visible_ts_ns) if recent else None
+
+    def _visual_candidate_matches(self, observed: PocketVisualObservation) -> list[_PocketMemory]:
+        associated = {int(value) for value in observed.associated_track_ids}
+        group = normalize_group(observed.group)
+        matches: list[_PocketMemory] = []
+        for memory in self._memory.values():
+            evidence = memory.evidence
+            if memory.resolved or evidence is None or evidence.pocket_index != int(observed.pocket_index):
+                continue
+            evidence_ids = set(evidence.associated_track_ids)
+            if associated and memory.track_id not in associated and not (associated & evidence_ids):
+                continue
+            if group is not None and memory.group != group:
+                continue
+            matches.append(memory)
+        return matches
+
+    @staticmethod
+    def _merge_visual_metadata(evidence: PocketEvidence, observed: PocketVisualObservation) -> None:
+        evidence.associated_track_ids = sorted(
+            set(evidence.associated_track_ids) | {int(value) for value in observed.associated_track_ids}
+        )
+        sources = list(evidence.evidence_sources)
+        if observed.inward_crossing and "pocket_visual_inward" not in sources:
+            sources.append("pocket_visual_inward")
+        for source in observed.evidence_sources:
+            normalized = str(source).strip()
+            if normalized and normalized not in sources:
+                sources.append(normalized)
+        evidence.evidence_sources = sources
 
     def debug_snapshot(self) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
@@ -235,6 +489,19 @@ class PerBallPocketFSM:
                     "last_zone": memory.last_zone,
                     "zone": memory.last_zone,
                     "inward_speed_mm_s": float(memory.last_inward_speed_mm_s),
+                    "last_bbox_aspect": float(memory.last_bbox_aspect),
+                    "visible_observation_count": int(memory.visible_observation_count),
+                    "last_approach": (
+                        {
+                            "pocket_index": memory.last_approach_probe.pocket_index,
+                            "depth_mm": float(memory.last_approach_probe.depth_mm),
+                            "lateral_mm": float(memory.last_approach_probe.signed_lateral_mm),
+                            "mouth_half_width_mm": float(memory.last_approach_probe.mouth_half_width_mm),
+                            "geometry_valid": bool(memory.last_approach_probe.geometry_valid),
+                        }
+                        if memory.last_approach_probe is not None
+                        else None
+                    ),
                     "candidate_reason": evidence.candidate_reason if evidence is not None else None,
                     "missing_ms": self._memory_missing_ms(memory, memory.last_seen_ts_ns),
                     "reappear_veto": bool(memory.reappear_veto),
@@ -260,7 +527,16 @@ class PerBallPocketFSM:
                 continue
             if memory.state not in {"candidate", "tentative", "commit_ready"}:
                 continue
-            self._review(memory, frame, events, reason_codes=reasons)
+            if memory.evidence.observer_active:
+                self._reject(
+                    memory,
+                    frame,
+                    events,
+                    reason_codes=[*reasons, "automatic_insufficient_evidence"],
+                    candidate_reason="automatic_insufficient_evidence",
+                )
+            else:
+                self._review(memory, frame, events, reason_codes=reasons)
         return events
 
     def has_pending_resolution(self, now_ns: int) -> bool:
@@ -275,7 +551,8 @@ class PerBallPocketFSM:
             if memory.state not in {"candidate", "tentative", "commit_ready"}:
                 continue
             missing_ms = self._memory_missing_ms(memory, now_ns)
-            if memory.state == "commit_ready" and missing_ms >= self._final_confirmation_missing_ms():
+            confirmation_ms = self._confirmation_elapsed_ms(memory, now_ns)
+            if memory.state == "commit_ready" and confirmation_ms >= self._final_confirmation_missing_ms(memory):
                 continue
             rows.append(
                 {
@@ -292,7 +569,7 @@ class PerBallPocketFSM:
                     "entry_source_track_id": evidence.entry_source_track_id,
                     "entry_speed_mm_s": float(evidence.entry_speed_mm_s),
                     "candidate_reason": evidence.candidate_reason,
-                    "finalizable_at_missing_ms": self._final_confirmation_missing_ms(),
+                    "finalizable_at_missing_ms": self._final_confirmation_missing_ms(memory),
                 }
             )
         return rows
@@ -342,6 +619,10 @@ class PerBallPocketFSM:
             last_visible_frame=frame.frame_id,
             last_visible_ts_ns=frame.ts_cam_ns,
             last_quality=float(track.quality),
+            first_seen_frame=frame.frame_id,
+            first_seen_ts_ns=frame.ts_cam_ns,
+            last_bbox_aspect=self._bbox_aspect(track),
+            last_bbox_horizontal=self._bbox_horizontal(track),
         )
 
     def _handle_visible(
@@ -379,11 +660,14 @@ class PerBallPocketFSM:
 
         if active and sample.zone is None and memory.evidence is not None and not memory.resolved:
             if memory.evidence.projected_entry and memory.state in {"candidate", "tentative", "commit_ready"}:
-                if projected_entry_has_reversed(
+                if (
+                    self._elapsed_ms(frame.ts_cam_ns, memory.evidence.last_evidence_ts_ns) >= 90
+                    and projected_entry_has_reversed(
                     approach,
                     pocket_index=memory.evidence.pocket_index,
                     best_depth_mm=float(memory.evidence.best_entry_depth_mm or approach.depth_mm),
                     limits=self._trajectory_limits(),
+                    )
                 ):
                     self._reject(
                         memory,
@@ -426,6 +710,9 @@ class PerBallPocketFSM:
         memory.last_visible_frame = frame.frame_id
         memory.last_visible_ts_ns = frame.ts_cam_ns
         memory.last_quality = float(track.quality)
+        memory.last_bbox_aspect = self._bbox_aspect(track)
+        memory.last_bbox_horizontal = self._bbox_horizontal(track)
+        memory.visible_observation_count += 1
         memory.last_zone = sample.zone
         memory.last_visibility = "visible"
         memory.last_lost_frames = 0
@@ -438,10 +725,19 @@ class PerBallPocketFSM:
             sample.pocketward_speed_mm_s if sample.zone is not None else approach.pocketward_speed_mm_s
         )
         memory.last_approach_probe = approach
+        self._append_trajectory_history(memory, frame.ts_cam_ns, approach)
         memory.nonvisible_since_ns = None
         memory.absent_since_ns = None
 
-    def _handle_nonvisible(self, memory: _PocketMemory, track: TrackObservation, frame: TracksFrame, events: List[Event]) -> None:
+    def _handle_nonvisible(
+        self,
+        memory: _PocketMemory,
+        track: TrackObservation,
+        frame: TracksFrame,
+        events: List[Event],
+        *,
+        visual_mode: bool,
+    ) -> None:
         memory.last_seen_frame = frame.frame_id
         memory.last_seen_ts_ns = frame.ts_cam_ns
         memory.last_visibility = str(track.visibility or "occluded")
@@ -450,9 +746,26 @@ class PerBallPocketFSM:
             return
         if memory.nonvisible_since_ns is None:
             memory.nonvisible_since_ns = frame.ts_cam_ns
-        self._advance_missing(memory, frame, events, allow_occluded_commit=self._occluded_commit_allowed(memory))
+        evidence = memory.evidence
+        if (
+            evidence is not None
+            and not memory.detected_emitted
+            and memory.last_zone in {"mouth", "throat", "interior"}
+            and self._elapsed_ms(memory.last_visible_ts_ns, evidence.candidate_since_ns) >= 900
+        ):
+            memory.track_lip_veto = True
+            memory.visual_lip_since_ns = evidence.candidate_since_ns
+            evidence.visual_status = "lip_occupied"
+            if "prolonged_visible_at_lip" not in evidence.evidence_sources:
+                evidence.evidence_sources.append("prolonged_visible_at_lip")
+        allow_occluded = self._occluded_commit_allowed(memory)
+        if visual_mode:
+            allow_occluded = bool(memory.evidence and memory.evidence.visual_inward)
+        self._advance_missing(memory, frame, events, allow_occluded_commit=allow_occluded)
 
     def _handle_absent(self, memory: _PocketMemory, frame: TracksFrame, events: List[Event]) -> None:
+        if memory.evidence is None:
+            self._start_blurred_disappearance_candidate(memory, frame, events)
         if not self._has_pocket_interest(memory):
             return
         if memory.absent_since_ns is None:
@@ -460,6 +773,74 @@ class PerBallPocketFSM:
         if memory.nonvisible_since_ns is None:
             memory.nonvisible_since_ns = memory.absent_since_ns
         self._advance_missing(memory, frame, events, allow_occluded_commit=True)
+
+    def _start_blurred_disappearance_candidate(
+        self,
+        memory: _PocketMemory,
+        frame: TracksFrame,
+        events: List[Event],
+    ) -> None:
+        probe = memory.last_approach_probe
+        limits = self._trajectory_limits()
+        missing_ms = self._elapsed_ms(frame.ts_cam_ns, memory.last_visible_ts_ns)
+        if (
+            probe is None
+            or probe.pocket_index is None
+            or not probe.geometry_valid
+            or memory.visible_observation_count > 3
+            or memory.last_bbox_aspect < 1.45
+            or memory.last_quality > 0.74
+            or missing_ms > self._entry_history_ms() + 250
+            or probe.depth_mm < -limits.history_depth_mm
+        ):
+            return
+        pocket_index = int(probe.pocket_index)
+        pocket_point = self.pockets_mm[pocket_index] if pocket_index < len(self.pockets_mm) else None
+        if pocket_point is None:
+            return
+        direction = np.asarray(pocket_point, dtype=np.float32) - np.asarray(memory.last_center_mm, dtype=np.float32)
+        direction_norm = float(np.linalg.norm(direction))
+        if direction_norm <= 1e-6:
+            return
+        axis_alignment = abs(float(direction[0] if memory.last_bbox_horizontal else direction[1])) / direction_norm
+        if axis_alignment < 0.80:
+            return
+        corridor_slope = 1.20 if pocket_index in {0, 2, 3, 5} else 0.65
+        capture_half_width = float(probe.mouth_half_width_mm) + max(0.0, -float(probe.depth_mm)) * corridor_slope
+        if abs(float(probe.signed_lateral_mm)) > capture_half_width:
+            return
+        memory.evidence = PocketEvidence(
+            decision_id=self._new_decision_id(),
+            pocket_index=pocket_index,
+            candidate_since_ns=frame.ts_cam_ns,
+            last_evidence_ts_ns=frame.ts_cam_ns,
+            candidate_reason="blurred_single_frame_disappearance",
+            projected_entry=True,
+            entry_source_track_id=memory.track_id,
+            entry_speed_mm_s=limits.min_speed_mm_s,
+            best_entry_depth_mm=float(probe.depth_mm),
+            entry_lateral_mm=float(probe.signed_lateral_mm),
+            projected_lateral_mm=float(probe.signed_lateral_mm),
+            evidence_sources=["blurred_single_frame", "full_track_disappearance"],
+        )
+        memory.state = "candidate"
+        events.append(
+            Event(
+                name="POCKET_CANDIDATE",
+                ts_cam_ns=frame.ts_cam_ns,
+                frame_id=frame.frame_id,
+                payload={
+                    "track_id": memory.track_id,
+                    "logical_id": f"track:{memory.track_id}",
+                    "group": memory.group,
+                    "pocket_index": pocket_index,
+                    "decision_id": memory.evidence.decision_id,
+                    "candidate_reason": memory.evidence.candidate_reason,
+                    "evidence": self._evidence_payload(memory, frame.ts_cam_ns),
+                },
+                confidence=0.72,
+            )
+        )
 
     def _update_candidate_evidence(
         self,
@@ -569,7 +950,16 @@ class PerBallPocketFSM:
                 self._commit_ready(memory, frame, events)
                 self._emit_detected_if_ready(memory, frame, events, missing_ms=missing_ms)
             return
-        self._review(memory, frame, events, reason_codes=self._review_reason_codes(memory))
+        if memory.evidence is not None and memory.evidence.observer_active:
+            self._reject(
+                memory,
+                frame,
+                events,
+                reason_codes=[*self._review_reason_codes(memory), "automatic_insufficient_evidence"],
+                candidate_reason="automatic_insufficient_evidence",
+            )
+        else:
+            self._review(memory, frame, events, reason_codes=self._review_reason_codes(memory))
 
     def _tentative(
         self,
@@ -638,9 +1028,11 @@ class PerBallPocketFSM:
         if (
             memory.detected_emitted
             or memory.evidence is None
-            or missing_ms < self._final_confirmation_missing_ms()
+            or self._confirmation_elapsed_ms(memory, frame.ts_cam_ns) < self._final_confirmation_missing_ms(memory)
             or not self._strong_confirmation_evidence(memory)
             or memory.reappear_veto
+            or memory.visual_lip_since_ns is not None
+            or memory.evidence.visual_outward
         ):
             return
         memory.detected_emitted = True
@@ -654,7 +1046,7 @@ class PerBallPocketFSM:
                     frame.ts_cam_ns,
                     decision="detected",
                     review_required=False,
-                    reason_codes=["reappearance_window_elapsed"],
+                    reason_codes=["automatic_confirmation_window_elapsed"],
                 ),
                 confidence=0.94,
             )
@@ -819,7 +1211,11 @@ class PerBallPocketFSM:
             "last_center_mm": list(memory.last_center_mm),
             "last_center_px": list(memory.last_center_px),
             "missing_ms": self._memory_missing_ms(memory, now_ns),
+            "decision_latency_ms": self._elapsed_ms(now_ns, evidence.candidate_since_ns),
             "confirmation": "two_stage_commit",
+            "evidence_sources": list(evidence.evidence_sources),
+            "associated_track_ids": list(evidence.associated_track_ids),
+            "visual_status": evidence.visual_status,
             "evidence": self._evidence_payload(memory, now_ns),
         }
 
@@ -849,6 +1245,13 @@ class PerBallPocketFSM:
             ),
             "entry_lateral_mm": float(evidence.entry_lateral_mm) if evidence is not None else None,
             "projected_lateral_mm": float(evidence.projected_lateral_mm) if evidence is not None else None,
+            "observer_active": bool(evidence and evidence.observer_active),
+            "visual_inward": bool(evidence and evidence.visual_inward),
+            "visual_outward": bool(evidence and evidence.visual_outward),
+            "visual_status": evidence.visual_status if evidence is not None else "unobserved",
+            "observer_latency_ms": float(evidence.observer_latency_ms) if evidence is not None else 0.0,
+            "associated_track_ids": list(evidence.associated_track_ids) if evidence is not None else [],
+            "evidence_sources": list(evidence.evidence_sources) if evidence is not None else [],
             "pocket_index": evidence.pocket_index if evidence is not None else None,
             "distance_mm": memory.last_distance_mm,
             "depth_mm": float(memory.last_depth_mm),
@@ -879,12 +1282,15 @@ class PerBallPocketFSM:
         if not memory_created_this_frame:
             previous = memory.last_approach_probe
             if (
-                previous is None
-                or previous.pocket_index != approach.pocket_index
-                or float(approach.depth_mm) < float(previous.depth_mm) + max(2.0, self.ball_diameter_mm * 0.04)
+                previous is not None
+                and previous.pocket_index == approach.pocket_index
+                and float(approach.depth_mm) >= float(previous.depth_mm) + max(2.0, self.ball_diameter_mm * 0.04)
             ):
-                return None
-            return assess_reported_entry(approach, track_id=memory.track_id, limits=limits)
+                reported = assess_reported_entry(approach, track_id=memory.track_id, limits=limits)
+                if reported is not None:
+                    return reported
+            historical = self._assess_same_track_history(memory, approach, frame.ts_cam_ns, limits)
+            return historical
 
         matches: list[tuple[float, float, _PocketMemory, PocketEntryAssessment]] = []
         for source in self._memory.values():
@@ -923,6 +1329,56 @@ class PerBallPocketFSM:
         assessment = matches[0][3]
         self._adopt_track_handoff(memory, source)
         return assessment
+
+    def _assess_same_track_history(
+        self,
+        memory: _PocketMemory,
+        approach: PocketApproachProbe,
+        now_ns: int,
+        limits: PocketTrajectoryLimits,
+    ) -> Optional[PocketEntryAssessment]:
+        history_limits = PocketTrajectoryLimits(
+            candidate_depth_mm=limits.candidate_depth_mm,
+            history_depth_mm=limits.history_depth_mm,
+            handoff_ms=self._entry_history_ms(),
+            min_speed_mm_s=limits.min_speed_mm_s,
+            max_speed_mm_s=limits.max_speed_mm_s,
+            ball_diameter_mm=limits.ball_diameter_mm,
+        )
+        for ts_ns, previous in reversed(memory.trajectory_history):
+            elapsed_ms = self._elapsed_ms(now_ns, ts_ns)
+            if elapsed_ms <= 0 or elapsed_ms > self._entry_history_ms():
+                continue
+            assessment = assess_track_handoff(
+                previous,
+                approach,
+                source_track_id=memory.track_id,
+                elapsed_ms=float(elapsed_ms),
+                limits=history_limits,
+            )
+            if assessment is None:
+                continue
+            return PocketEntryAssessment(
+                pocket_index=assessment.pocket_index,
+                reason="projected_entry_pre_shot_history",
+                source_track_id=assessment.source_track_id,
+                speed_mm_s=assessment.speed_mm_s,
+                depth_mm=assessment.depth_mm,
+                lateral_mm=assessment.lateral_mm,
+                projected_lateral_mm=assessment.projected_lateral_mm,
+            )
+        return None
+
+    def _append_trajectory_history(
+        self,
+        memory: _PocketMemory,
+        ts_ns: int,
+        approach: PocketApproachProbe,
+    ) -> None:
+        memory.trajectory_history.append((int(ts_ns), approach))
+        cutoff = int(ts_ns) - self._entry_history_ms() * 1_000_000
+        while memory.trajectory_history and memory.trajectory_history[0][0] < cutoff:
+            memory.trajectory_history.popleft()
 
     @staticmethod
     def _adopt_track_handoff(memory: _PocketMemory, source: _PocketMemory) -> None:
@@ -981,7 +1437,11 @@ class PerBallPocketFSM:
     @staticmethod
     def _strong_confirmation_evidence(memory: _PocketMemory) -> bool:
         evidence = memory.evidence
-        return bool(evidence and (evidence.entered_interior or evidence.crossed_throat or evidence.projected_entry))
+        return bool(
+            evidence
+            and not evidence.visual_outward
+            and (evidence.entered_interior or evidence.crossed_throat or evidence.projected_entry or evidence.visual_inward)
+        )
 
     def _occluded_commit_allowed(self, memory: _PocketMemory) -> bool:
         if memory.absent_since_ns is not None:
@@ -997,6 +1457,12 @@ class PerBallPocketFSM:
         if since_ns is None:
             return 0
         return self._elapsed_ms(now_ns, since_ns)
+
+    def _confirmation_elapsed_ms(self, memory: _PocketMemory, now_ns: int) -> int:
+        evidence = memory.evidence
+        if evidence is not None and evidence.observer_active:
+            return self._elapsed_ms(now_ns, evidence.candidate_since_ns)
+        return self._memory_missing_ms(memory, now_ns)
 
     def _new_decision_id(self) -> str:
         decision_id = f"pocket:{self._decision_seq}"
@@ -1030,6 +1496,18 @@ class PerBallPocketFSM:
             return float(track.quality) > 0.25
         return True
 
+    @staticmethod
+    def _bbox_aspect(track: TrackObservation) -> float:
+        x1, y1, x2, y2 = track.bbox
+        width = max(1.0, float(x2) - float(x1))
+        height = max(1.0, float(y2) - float(y1))
+        return max(width, height) / min(width, height)
+
+    @staticmethod
+    def _bbox_horizontal(track: TrackObservation) -> bool:
+        x1, y1, x2, y2 = track.bbox
+        return float(x2) - float(x1) >= float(y2) - float(y1)
+
     def _tentative_missing_ms(self) -> int:
         return max(1, int(getattr(self.config, "pocket_tentative_missing_ms", 300) or 300))
 
@@ -1039,9 +1517,18 @@ class PerBallPocketFSM:
         selected = explicit if explicit is not None else legacy if legacy is not None else 700
         return max(self._tentative_missing_ms(), int(selected))
 
-    def _final_confirmation_missing_ms(self) -> int:
+    def _final_confirmation_missing_ms(self, memory: _PocketMemory | None = None) -> int:
+        if memory is not None and memory.evidence is not None and memory.evidence.observer_active:
+            visual = max(1, int(getattr(self.config, "pocket_visual_confirmation_ms", 1300) or 1300))
+            return max(self._commit_ready_missing_ms(), visual)
         reappear = max(1, int(getattr(self.config, "pocket_reappear_window_ms", 800) or 800))
         return max(self._commit_ready_missing_ms(), reappear)
+
+    def _lip_veto_ms(self) -> int:
+        return max(1, int(getattr(self.config, "pocket_lip_veto_ms", 1100) or 1100))
+
+    def _entry_history_ms(self) -> int:
+        return max(100, int(getattr(self.config, "pocket_entry_history_ms", 1500) or 1500))
 
     def _reappear_match_distance_mm(self) -> float:
         return max(
@@ -1055,12 +1542,12 @@ class PerBallPocketFSM:
         candidate_depth = (
             float(candidate_config)
             if candidate_config is not None
-            else max(self.ball_diameter_mm * 1.65, float(getattr(self.config, "pocket_funnel_radius_mm", 95.0)))
+            else max(125.0, self.ball_diameter_mm * 1.65, float(getattr(self.config, "pocket_funnel_radius_mm", 95.0)))
         )
         history_depth = (
             float(history_config)
             if history_config is not None
-            else max(candidate_depth, self.ball_diameter_mm * 4.0)
+            else max(candidate_depth, self.ball_diameter_mm * 5.25)
         )
         min_speed = max(
             1.0,
@@ -1073,7 +1560,7 @@ class PerBallPocketFSM:
         return PocketTrajectoryLimits(
             candidate_depth_mm=max(self.ball_diameter_mm, candidate_depth),
             history_depth_mm=max(candidate_depth, history_depth),
-            handoff_ms=max(1, int(getattr(self.config, "pocket_entry_handoff_ms", 220) or 220)),
+            handoff_ms=max(1, int(getattr(self.config, "pocket_entry_handoff_ms", 450) or 450)),
             min_speed_mm_s=min_speed,
             max_speed_mm_s=max_speed,
             ball_diameter_mm=max(1.0, float(self.ball_diameter_mm)),
@@ -1086,6 +1573,26 @@ class PerBallPocketFSM:
     @staticmethod
     def _distance(first: tuple[float, float], second: tuple[float, float]) -> float:
         return float(np.linalg.norm(np.asarray(first, dtype=np.float32) - np.asarray(second, dtype=np.float32)))
+
+    @staticmethod
+    def _canonical_pocket_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        if len(points) != 6:
+            return points
+        ranked = sorted(points, key=lambda point: point[1])
+        top = sorted(ranked[:3], key=lambda point: point[0])
+        bottom = sorted(ranked[3:], key=lambda point: point[0], reverse=True)
+        return [*top, *bottom]
+
+    @staticmethod
+    def _canonical_pocket_curves(
+        curves: list[list[tuple[float, float]]],
+    ) -> list[list[tuple[float, float]]]:
+        if len(curves) != 6 or any(not curve for curve in curves):
+            return curves
+        ranked = sorted(curves, key=lambda curve: float(np.mean([point[1] for point in curve])))
+        top = sorted(ranked[:3], key=lambda curve: float(np.mean([point[0] for point in curve])))
+        bottom = sorted(ranked[3:], key=lambda curve: float(np.mean([point[0] for point in curve])), reverse=True)
+        return [*top, *bottom]
 
     @staticmethod
     def _elapsed_ms(now_ns: int, since_ns: int) -> int:
