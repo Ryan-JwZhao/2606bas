@@ -375,6 +375,103 @@ def test_two_previously_tracked_same_group_balls_can_enter_the_same_pocket() -> 
     assert sm.ledger.remaining["solid"] == 5
 
 
+def test_video_high_speed_same_track_entry_confirms_after_detector_loses_ball() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern", pocket_commit_ready_missing_ms=700))
+    sm.set_table_context(
+        inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
+        pockets_mm=[(500, 0)],
+        ball_diameter_mm=56,
+    )
+    sm.phase = MatchPhase.SHOT_ACTIVE
+
+    sm.update(TracksFrame(1, 1_000_000_000, [_ball(215, "solid", 515, 180, 0, -700)]))
+    candidate = sm.update(TracksFrame(2, 1_100_000_000, [_ball(215, "solid", 514, 72, 0, -1_080)]))
+    sm.update(TracksFrame(3, 1_200_000_000, []))
+    sm.update(TracksFrame(4, 1_500_000_000, []))
+    ready = sm.update(TracksFrame(5, 1_900_000_000, []))
+    sm.force_phase(MatchPhase.TURN_RESOLVE, frame_id=6, ts_cam_ns=2_000_000_000)
+    resolved = sm.update(TracksFrame(6, 2_000_000_000, [_ball(1, "cue", 300, 250)]))
+
+    event = next(event for event in candidate.events if event.name == "POCKET_CANDIDATE")
+    assert event.payload["candidate_reason"] == "projected_entry_same_track"
+    assert event.payload["evidence"]["projected_entry"] is True
+    assert any(event.name == "POCKET_COMMIT_READY" for event in ready.events)
+    detected = next(event for event in resolved.events if event.name == "POCKET_DETECTED")
+    assert detected.payload["shot_id"] == event.payload["shot_id"]
+    assert any(event.name == "POCKET_CONFIRMED" for event in resolved.events)
+
+
+def test_video_high_speed_cross_track_entry_inherits_motion_and_confirms() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern", pocket_commit_ready_missing_ms=700))
+    sm.set_table_context(
+        inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
+        pockets_mm=[(500, 0)],
+        ball_diameter_mm=56,
+    )
+    sm.phase = MatchPhase.SHOT_ACTIVE
+
+    sm.update(TracksFrame(1, 1_000_000_000, [_ball(597, "solid", 486, 197)]))
+    # The runtime repeats cached detections between inference frames.  That
+    # duplicate must not shorten the velocity-estimation interval to 31 ms.
+    sm.update(TracksFrame(2, 1_078_000_000, [_ball(597, "solid", 486, 197)]))
+    candidate = sm.update(TracksFrame(3, 1_109_000_000, [_ball(599, "solid", 485, 36)]))
+    sm.update(TracksFrame(4, 1_200_000_000, []))
+    sm.update(TracksFrame(5, 1_500_000_000, []))
+    ready = sm.update(TracksFrame(6, 1_900_000_000, []))
+    sm.force_phase(MatchPhase.TURN_RESOLVE, frame_id=7, ts_cam_ns=2_000_000_000)
+    resolved = sm.update(TracksFrame(7, 2_000_000_000, [_ball(1, "cue", 300, 250)]))
+
+    event = next(event for event in candidate.events if event.name == "POCKET_CANDIDATE")
+    assert event.payload["candidate_reason"] == "projected_entry_track_handoff"
+    assert event.payload["evidence"]["entry_source_track_id"] == 597
+    assert event.payload["evidence"]["entry_speed_mm_s"] > 1_000
+    assert any(event.name == "POCKET_COMMIT_READY" for event in ready.events)
+    assert any(event.name == "POCKET_DETECTED" for event in resolved.events)
+    assert any(event.name == "POCKET_CONFIRMED" for event in resolved.events)
+
+
+def test_video_pocket_jaw_bounce_rejects_projected_entry() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern", pocket_commit_ready_missing_ms=700))
+    sm.set_table_context(
+        inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
+        pockets_mm=[(500, 0)],
+        ball_diameter_mm=56,
+    )
+    sm.phase = MatchPhase.SHOT_ACTIVE
+
+    sm.update(TracksFrame(1, 1_000_000_000, [_ball(66, "solid", 500, 197)]))
+    candidate = sm.update(TracksFrame(2, 1_100_000_000, [_ball(67, "solid", 500, 50)]))
+    bounced = sm.update(TracksFrame(3, 1_200_000_000, [_ball(67, "solid", 505, 115, 50, 650)]))
+    later_events = []
+    for frame in (
+        TracksFrame(4, 1_300_000_000, []),
+        TracksFrame(5, 1_600_000_000, []),
+        TracksFrame(6, 2_000_000_000, []),
+    ):
+        later_events.extend(sm.update(frame).events)
+
+    assert any(event.name == "POCKET_CANDIDATE" for event in candidate.events)
+    rejection = next(event for event in bounced.events if event.name == "POCKET_REJECTED")
+    assert "projected_entry_reversed" in rejection.payload["reason_codes"]
+    assert not any(event.name in {"POCKET_COMMIT_READY", "POCKET_CONFIRMED"} for event in later_events)
+
+
+def test_stationary_ball_disappearing_in_entry_corridor_is_not_a_goal() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern", pocket_commit_ready_missing_ms=700))
+    sm.set_table_context(
+        inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
+        pockets_mm=[(500, 0)],
+        ball_diameter_mm=56,
+    )
+    sm.phase = MatchPhase.SHOT_ACTIVE
+
+    visible = sm.update(TracksFrame(1, 1_000_000_000, [_ball(88, "stripe", 500, 55)]))
+    missing = sm.update(TracksFrame(2, 1_900_000_000, []))
+
+    assert not any(event.name == "POCKET_CANDIDATE" for event in visible.events)
+    assert not any(event.name.startswith("POCKET_") for event in missing.events)
+
+
 def test_legacy_confirm_missing_config_is_commit_ready_alias() -> None:
     sm = ModernMatchStateMachine(
         StateConfig(

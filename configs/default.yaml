@@ -111,6 +111,14 @@ state:
   # pocket_confirm_missing_ms is a legacy alias used only when commit-ready is absent.
   pocket_reappear_window_ms: 800
   pocket_mouth_settle_ms: 3000
+  # High-speed balls can disappear before reaching the strict mouth zone.
+  # This trajectory corridor creates evidence only; final confirmation still
+  # requires disappearance, the reappearance window, and turn resolution.
+  pocket_entry_candidate_depth_mm: 95.0
+  pocket_entry_history_depth_mm: 230.0
+  pocket_entry_handoff_ms: 220
+  pocket_entry_min_speed_mm_s: 100.0
+  pocket_entry_max_speed_mm_s: 4000.0
   turn_resolve_grace_ms: 900
   observation_reconcile_enabled: true
   observation_reconcile_stable_frames: 12

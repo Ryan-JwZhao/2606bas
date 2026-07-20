@@ -42,19 +42,25 @@ def test_pocket_notice_tracker_supports_legacy_pot_event_and_deduplicates_modern
         1,
         payload={"group": "stripe", "track_id": 9, "pocket_index": 0},
     )
-    modern_confirmed = Event(
-        "POCKET_CONFIRMED",
+    modern_detected = Event(
+        "POCKET_DETECTED",
         2,
         2,
         payload={"decision_id": "pocket:solid", "group": "solid", "track_id": 2, "pocket_index": 1},
     )
+    modern_confirmed = Event(
+        "POCKET_CONFIRMED",
+        3,
+        3,
+        payload=dict(modern_detected.payload),
+    )
     modern_alias = Event(
         "POT_PROBABLE",
-        2,
-        2,
+        3,
+        3,
         payload=dict(modern_confirmed.payload),
     )
 
-    created = tracker.observe([legacy, modern_confirmed, modern_alias], now_s=10.0)
+    created = tracker.observe([legacy, modern_detected, modern_confirmed, modern_alias], now_s=10.0)
 
     assert [notice["message"] for notice in created] == ["stb进球", "sob进球"]

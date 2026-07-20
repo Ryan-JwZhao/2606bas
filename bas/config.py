@@ -190,6 +190,11 @@ class StateConfig:
     pocket_confirm_missing_ms: Optional[int] = None  # legacy alias for commit-ready threshold
     pocket_reappear_window_ms: int = 800
     pocket_mouth_settle_ms: int = 3000
+    pocket_entry_candidate_depth_mm: Optional[float] = None
+    pocket_entry_history_depth_mm: Optional[float] = None
+    pocket_entry_handoff_ms: int = 220
+    pocket_entry_min_speed_mm_s: float = 100.0
+    pocket_entry_max_speed_mm_s: float = 4000.0
     turn_resolve_grace_ms: int = 900
     observation_reconcile_enabled: bool = True
     observation_reconcile_stable_frames: int = 12

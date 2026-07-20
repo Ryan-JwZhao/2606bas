@@ -62,6 +62,27 @@ class PocketSample:
     geometry_valid: bool
 
 
+@dataclass(frozen=True)
+class PocketApproachProbe:
+    """Nearest pocket expressed in pocket-local coordinates.
+
+    Unlike :class:`PocketSample`, this probe does not classify a point as being
+    inside a pocket.  It is intentionally kept separate so callers can reason
+    about a visible approach trajectory without enlarging the authoritative
+    mouth/throat/interior zones.
+    """
+
+    pocket_index: Optional[int]
+    distance_mm: Optional[float]
+    depth_mm: float
+    signed_lateral_mm: float
+    pocketward_speed_mm_s: float
+    tangential_speed_mm_s: float
+    mouth_half_width_mm: float
+    inside_playable: bool
+    geometry_valid: bool
+
+
 @dataclass
 class _GeometryValidation:
     valid: bool = True
@@ -129,6 +150,42 @@ class PocketGeometryModel:
             depth_mm=sample.depth_mm,
             lateral_mm=sample.lateral_mm,
             pocketward_speed_mm_s=sample.pocketward_speed_mm_s,
+            inside_playable=inside_playable,
+            geometry_valid=True,
+        )
+
+    def approach_probe(
+        self,
+        center_mm: Point,
+        velocity_mm_s: Point = (0.0, 0.0),
+    ) -> PocketApproachProbe:
+        inside_playable = _inside_polygon(self._reachable_polygon, center_mm)
+        if not self.valid:
+            return PocketApproachProbe(None, None, 0.0, 0.0, 0.0, 0.0, 0.0, inside_playable, False)
+
+        pos = np.asarray(center_mm, dtype=np.float32)
+        velocity = np.asarray(velocity_mm_s, dtype=np.float32)
+        nearest: Optional[tuple[float, PocketGeometry, np.ndarray]] = None
+        for geometry in self.geometries:
+            center = np.asarray(geometry.center_mm, dtype=np.float32)
+            delta = pos - center
+            distance = float(np.linalg.norm(delta))
+            if nearest is None or distance < nearest[0]:
+                nearest = (distance, geometry, delta)
+        if nearest is None:
+            return PocketApproachProbe(None, None, 0.0, 0.0, 0.0, 0.0, 0.0, inside_playable, False)
+
+        distance, geometry, delta = nearest
+        tangent = np.asarray(geometry.tangent_unit, dtype=np.float32)
+        outward = np.asarray(geometry.outward_normal, dtype=np.float32)
+        return PocketApproachProbe(
+            pocket_index=int(geometry.index),
+            distance_mm=float(distance),
+            depth_mm=float(np.dot(delta, outward)),
+            signed_lateral_mm=float(np.dot(delta, tangent)),
+            pocketward_speed_mm_s=float(np.dot(velocity, outward)),
+            tangential_speed_mm_s=float(np.dot(velocity, tangent)),
+            mouth_half_width_mm=float(geometry.mouth_width_mm * 0.5),
             inside_playable=inside_playable,
             geometry_valid=True,
         )
@@ -598,6 +655,7 @@ def _point(value: np.ndarray | Sequence[float]) -> Point:
 
 
 __all__ = [
+    "PocketApproachProbe",
     "PocketGeometry",
     "PocketGeometryContext",
     "PocketGeometryModel",

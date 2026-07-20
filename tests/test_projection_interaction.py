@@ -76,7 +76,7 @@ def test_projection_interaction_deduplicates_pocket_events_and_notices_target_ac
     assert int(np.count_nonzero(image)) > 0
 
 
-def test_projection_interaction_ignores_pot_probable_alias_for_auto_animation(tmp_path: Path) -> None:
+def test_projection_interaction_ignores_nonfinal_pocket_events_for_auto_animation(tmp_path: Path) -> None:
     pocket_dir = tmp_path / "Goal" / "pocket0"
     frame = np.zeros((8, 8, 4), dtype=np.uint8)
     frame[:, :, 1] = 255
@@ -89,7 +89,20 @@ def test_projection_interaction_ignores_pot_probable_alias_for_auto_animation(tm
         frame_id=13,
         ts_cam_ns=13,
         phase="SHOT_ACTIVE",
-        events=[Event(name="POT_PROBABLE", ts_cam_ns=13, frame_id=13, payload={"track_id": 9, "pocket_index": 0, "shot_id": 3, "decision_id": "pocket:legacy"})],
+        events=[
+            Event(
+                name="POCKET_DETECTED",
+                ts_cam_ns=13,
+                frame_id=13,
+                payload={"track_id": 9, "pocket_index": 0, "shot_id": 3, "decision_id": "pocket:detected"},
+            ),
+            Event(
+                name="POT_PROBABLE",
+                ts_cam_ns=13,
+                frame_id=13,
+                payload={"track_id": 10, "pocket_index": 0, "shot_id": 3, "decision_id": "pocket:legacy"},
+            ),
+        ],
     )
     plan = ShotPlan(plan_id="p-pot", frame_id=13, ts_cam_ns=13)
 
