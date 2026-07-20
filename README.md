@@ -145,6 +145,7 @@ MOUTH:    depth >= -ball_radius * 0.6
 Modern 不再使用径向 distance 产生 zone；`pocket_funnel_radius_mm` 和 `pocket_mouth_settle_ms` 只为 legacy engine 保留。真实曲线不存在时，才使用袋口中心相对台面质心的方向作为兼容法向，但仍执行相同的二维 zone 和几何自检。
 
 高速球常在球心进入严格 MOUTH 前就被袋口遮挡，因此另设“不改变 zone 的袋前轨迹走廊”：候选深度约 `125 mm`，跨 ID 接力窗口约 `450 ms`，预击球历史保留 `1.5 s`。只有球组、袋号、位移速度和捕获宽度均相容时才继承轨迹。对于只出现一两帧、检测框沿袋口方向明显拉长、低置信且随后完全消失的高速球，状态机使用受限的 `blurred_single_frame_disappearance` 证据；正常圆形静止球不满足该分支。
+高速模糊兜底还要求检测框宽高比不超过 `pocket_blur_max_aspect_ratio`（默认 `2.8`），避免把球杆、手臂或栏边形成的超长伪框当成球。投影进袋候选使用独立的连续回弹计时：明确向外速度立即拒绝；位置回退但速度估计仍短暂向内时，连续 `90 ms` 后拒绝，证据时间刷新不会重新开始这段计时。
 
 自动进球时序为：
 
@@ -174,6 +175,7 @@ state:
   pocket_entry_history_depth_mm: 450.0
   pocket_entry_history_ms: 1500
   pocket_entry_handoff_ms: 450
+  pocket_blur_max_aspect_ratio: 2.8
   pocket_entry_min_speed_mm_s: 100.0
   pocket_entry_max_speed_mm_s: 4000.0
   turn_resolve_grace_ms: 900

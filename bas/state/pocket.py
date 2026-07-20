@@ -83,6 +83,7 @@ class _PocketMemory:
     last_approach_probe: Optional[PocketApproachProbe] = None
     trajectory_anchor_ts_ns: Optional[int] = None
     trajectory_anchor_probe: Optional[PocketApproachProbe] = None
+    projected_reversal_since_ns: Optional[int] = None
     reason_codes: list[str] = field(default_factory=list)
     reappear_veto: bool = False
     reappear_track_id: Optional[int] = None
@@ -658,16 +659,21 @@ class PerBallPocketFSM:
         if active and not reappeared_now:
             self._update_candidate_evidence(memory, track, sample, approach, trajectory, frame, events)
 
-        if active and sample.zone is None and memory.evidence is not None and not memory.resolved:
+        if active and memory.evidence is not None and not memory.resolved:
             if memory.evidence.projected_entry and memory.state in {"candidate", "tentative", "commit_ready"}:
-                if (
-                    self._elapsed_ms(frame.ts_cam_ns, memory.evidence.last_evidence_ts_ns) >= 90
-                    and projected_entry_has_reversed(
+                limits = self._trajectory_limits()
+                reversed_entry = projected_entry_has_reversed(
                     approach,
                     pocket_index=memory.evidence.pocket_index,
                     best_depth_mm=float(memory.evidence.best_entry_depth_mm or approach.depth_mm),
-                    limits=self._trajectory_limits(),
-                    )
+                    limits=limits,
+                )
+                if reversed_entry and memory.projected_reversal_since_ns is None:
+                    memory.projected_reversal_since_ns = frame.ts_cam_ns
+                immediate_outward = float(approach.pocketward_speed_mm_s) <= -float(limits.min_speed_mm_s)
+                if reversed_entry and (
+                    immediate_outward
+                    or self._elapsed_ms(frame.ts_cam_ns, memory.projected_reversal_since_ns or frame.ts_cam_ns) >= 90
                 ):
                     self._reject(
                         memory,
@@ -676,15 +682,17 @@ class PerBallPocketFSM:
                         reason_codes=["projected_entry_reversed"],
                         candidate_reason="projected_entry_reversed",
                     )
-                else:
+                elif not reversed_entry:
+                    memory.projected_reversal_since_ns = None
                     memory.evidence.best_entry_depth_mm = max(
                         float(memory.evidence.best_entry_depth_mm or approach.depth_mm),
                         float(approach.depth_mm),
                     )
-            elif memory.state in {"candidate", "tentative", "commit_ready"}:
+            elif sample.zone is None and memory.state in {"candidate", "tentative", "commit_ready"}:
                 self._reject(memory, frame, events, reason_codes=["back_to_table"], candidate_reason="back_to_table")
-            elif not memory.tentative_emitted:
+            elif sample.zone is None and not memory.tentative_emitted:
                 memory.evidence = None
+                memory.projected_reversal_since_ns = None
                 memory.resting_mouth_since_ns = None
 
         if active and sample.zone == "mouth" and self._speed(track) <= self._still_speed(track) * 1.25:
@@ -789,6 +797,7 @@ class PerBallPocketFSM:
             or not probe.geometry_valid
             or memory.visible_observation_count > 3
             or memory.last_bbox_aspect < 1.45
+            or memory.last_bbox_aspect > self._blur_max_aspect_ratio()
             or memory.last_quality > 0.74
             or missing_ms > self._entry_history_ms() + 250
             or probe.depth_mm < -limits.history_depth_mm
@@ -1258,6 +1267,11 @@ class PerBallPocketFSM:
             "lateral_mm": float(memory.last_lateral_mm),
             "last_visibility": memory.last_visibility,
             "lost_frames": int(memory.last_lost_frames),
+            "projected_reversal_ms": (
+                self._elapsed_ms(now_ns, memory.projected_reversal_since_ns)
+                if memory.projected_reversal_since_ns is not None
+                else 0
+            ),
             "decision": memory.decision,
             "detected_emitted": bool(memory.detected_emitted),
         }
@@ -1393,6 +1407,7 @@ class PerBallPocketFSM:
             memory.tentative_emitted = source.tentative_emitted
             memory.commit_ready_emitted = source.commit_ready_emitted
             memory.detected_emitted = source.detected_emitted
+            memory.projected_reversal_since_ns = source.projected_reversal_since_ns
             memory.reason_codes = list(source.reason_codes)
         source.evidence = None
         source.state = "handed_off"
@@ -1529,6 +1544,9 @@ class PerBallPocketFSM:
 
     def _entry_history_ms(self) -> int:
         return max(100, int(getattr(self.config, "pocket_entry_history_ms", 1500) or 1500))
+
+    def _blur_max_aspect_ratio(self) -> float:
+        return max(1.45, float(getattr(self.config, "pocket_blur_max_aspect_ratio", 2.8) or 2.8))
 
     def _reappear_match_distance_mm(self) -> float:
         return max(

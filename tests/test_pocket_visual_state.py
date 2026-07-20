@@ -140,3 +140,85 @@ def test_blurred_two_frame_ball_can_confirm_but_round_detection_cannot() -> None
     assert blurred_names.count("POCKET_DETECTED") == 1
     assert "POCKET_CANDIDATE" not in round_names
     assert "POCKET_DETECTED" not in round_names
+
+
+def test_oversized_blurred_fragment_cannot_become_goal() -> None:
+    """Regression: the frame-1502 black false positive was a rail-sized fragment."""
+
+    config = StateConfig(engine="modern", pocket_visual_confirmation_ms=1300)
+    fsm = PerBallPocketFSM(config)
+    fsm.set_table_context(
+        inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
+        pockets_mm=[(500, 0)],
+        ball_diameter_mm=56,
+    )
+    fragment = _ball(864, "black", 500, 180)
+    fragment.quality = 0.70
+    fragment.confidence = 0.70
+    fragment.bbox = (471, 55, 529, 305)
+
+    fsm.update(TracksFrame(1, 1_000_000_000, [fragment]), MatchPhase.STABLE_IDLE)
+    fsm.update(TracksFrame(2, 1_100_000_000, [fragment]), MatchPhase.STABLE_IDLE)
+    fsm.update(TracksFrame(3, 1_700_000_000, []), MatchPhase.STABLE_IDLE)
+
+    events = []
+    for frame in (
+        TracksFrame(4, 1_900_000_000, []),
+        TracksFrame(5, 2_300_000_000, []),
+        TracksFrame(6, 3_300_000_000, []),
+    ):
+        visual = PocketVisualObservationFrame(frame.frame_id, frame.ts_cam_ns, [])
+        events.extend(fsm.update(frame, MatchPhase.SHOT_ACTIVE, visual))
+
+    assert not any(event.name == "POCKET_CANDIDATE" for event in events)
+    assert not any(event.name == "POCKET_DETECTED" for event in events)
+
+
+def test_visual_inward_candidate_rejects_persistent_position_reversal() -> None:
+    """Regression: a jaw rebound must win over a lagging inward velocity estimate."""
+
+    config = StateConfig(engine="modern", pocket_visual_confirmation_ms=1300)
+    fsm = PerBallPocketFSM(config)
+    fsm.set_table_context(
+        inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
+        pockets_mm=[(500, 0)],
+        ball_diameter_mm=56,
+    )
+    far = _ball(55, "solid", 500, 197)
+    near = _ball(55, "solid", 500, 50)
+    rebound = _ball(55, "solid", 505, 115)
+    # Match the real false positive: position has moved back by more than one
+    # ball diameter while the smoothed velocity still points at the pocket.
+    rebound.velocity_mm_s = (0.0, -200.0)
+
+    fsm.update(
+        TracksFrame(1, 1_000_000_000, [far]),
+        MatchPhase.SHOT_ACTIVE,
+        _visual(1, 1_000_000_000, clear=True, track_ids=[55]),
+    )
+    candidate = fsm.update(
+        TracksFrame(2, 1_100_000_000, [near]),
+        MatchPhase.SHOT_ACTIVE,
+        _visual(2, 1_100_000_000, inward=True, track_ids=[55]),
+    )
+    first_reversal = fsm.update(
+        TracksFrame(3, 1_200_000_000, [rebound]),
+        MatchPhase.SHOT_ACTIVE,
+        _visual(3, 1_200_000_000, clear=True, track_ids=[55]),
+    )
+    persistent_reversal = fsm.update(
+        TracksFrame(4, 1_300_000_000, [rebound]),
+        MatchPhase.SHOT_ACTIVE,
+        _visual(4, 1_300_000_000, clear=True, track_ids=[55]),
+    )
+    later = fsm.update(
+        TracksFrame(5, 2_700_000_000, []),
+        MatchPhase.SHOT_ACTIVE,
+        _visual(5, 2_700_000_000, clear=True, track_ids=[55]),
+    )
+
+    assert any(event.name == "POCKET_CANDIDATE" for event in candidate)
+    assert not any(event.name == "POCKET_REJECTED" for event in first_reversal)
+    rejection = next(event for event in persistent_reversal if event.name == "POCKET_REJECTED")
+    assert "projected_entry_reversed" in rejection.payload["reason_codes"]
+    assert not any(event.name == "POCKET_DETECTED" for event in [*first_reversal, *persistent_reversal, *later])
