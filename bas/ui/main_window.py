@@ -62,7 +62,7 @@ from ..state import normalize_state_machine_engine
 from ..state_debug import StateDebugSession, StateDebugSessionResult
 from ..training import RULES_MODE, TRAINING_MODE, get_training_scenario, list_training_scenarios, normalize_operating_mode
 from ..utils import unit
-from ..web_control import WebControlServer
+from ..web_control import PocketNoticeTracker, WebControlServer
 from .cue_sector_preview import draw_cue_sector_candidate_box
 from .engineered_ball_compensation_wizard import EngineeredBallCompensationWizardDialog
 from .geometry_reference import draw_geometry_reference_lines
@@ -1382,6 +1382,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._remote_command_queue = RemoteCommandQueue()
         self.web_control = WebControlServer()
         self._manual_web_target_id: Optional[int] = None
+        self._web_pocket_notice_tracker = PocketNoticeTracker()
 
         self.timer = QtCore.QTimer(self)
         self.timer.setSingleShot(True)
@@ -1644,6 +1645,26 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.preview_frame = AspectRatioPreviewFrame()
         self.preview_label = self.preview_frame.label()
         self.preview_frame.viewportChanged.connect(self._refresh_preview_pixmap)
+        self.preview_frame.viewportChanged.connect(self._position_desktop_pocket_notice)
+        self.pocket_notice_label = QtWidgets.QLabel(self.preview_frame)
+        self.pocket_notice_label.setObjectName("pocketNotice")
+        self.pocket_notice_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.pocket_notice_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.pocket_notice_label.setStyleSheet(
+            "QLabel#pocketNotice {"
+            "background: rgba(8, 18, 14, 235);"
+            "border: 3px solid #5cde97;"
+            "border-radius: 14px;"
+            "color: #f5fff9;"
+            "font-size: 30px;"
+            "font-weight: 800;"
+            "padding: 14px 26px;"
+            "}"
+        )
+        self.pocket_notice_label.hide()
+        self._desktop_pocket_notice_timer = QtCore.QTimer(self)
+        self._desktop_pocket_notice_timer.setSingleShot(True)
+        self._desktop_pocket_notice_timer.timeout.connect(self.pocket_notice_label.hide)
         self.preview_layout.addWidget(self.preview_frame, 1)
         self.center_layout.addWidget(self.preview_panel, 3)
 
@@ -1664,6 +1685,37 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.candidates.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         self.plan_layout.addWidget(self.candidates, 1)
         self.center_layout.addWidget(self.plan_panel, 0)
+
+    def _show_desktop_pocket_notice(self, notices: list[dict[str, object]]) -> None:
+        messages = [str(notice.get("message") or "").strip() for notice in notices]
+        messages = [message for message in messages if message]
+        if not messages:
+            return
+        self.pocket_notice_label.setText(f"进球！\n{' · '.join(messages)}")
+        self.pocket_notice_label.adjustSize()
+        self._position_desktop_pocket_notice()
+        self.pocket_notice_label.show()
+        self.pocket_notice_label.raise_()
+        self._desktop_pocket_notice_timer.start(4500)
+
+    def _position_desktop_pocket_notice(self) -> None:
+        label = getattr(self, "pocket_notice_label", None)
+        frame = getattr(self, "preview_frame", None)
+        if label is None or frame is None:
+            return
+        label.adjustSize()
+        x = max(12, int(round((frame.width() - label.width()) * 0.5)))
+        y = max(12, int(round(frame.height() * 0.08)))
+        label.move(x, y)
+
+    def _clear_pocket_notices(self) -> None:
+        self._pocket_notice_tracker().reset()
+        label = getattr(self, "pocket_notice_label", None)
+        if label is not None:
+            label.hide()
+        timer = getattr(self, "_desktop_pocket_notice_timer", None)
+        if timer is not None:
+            timer.stop()
 
     def _build_right_sidebar(self) -> None:
         self.right_scroll_area = self._scroll_area()
@@ -2775,6 +2827,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if sm is None:
             return
         sm.reset()
+        self._clear_pocket_notices()
         self.hold_state_btn.setText("冻结状态机")
         self.event_list.clear()
         self._append_log("状态机已重置")
@@ -3903,6 +3956,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
         self._instant_replay_start_failed = False
         self._route_freeze.reset()
+        self._clear_pocket_notices()
         self._apply_pending_turn_target_group()
         self.last_output = None
         self.frame_count = 0
@@ -4122,6 +4176,9 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
                 self.stop_pipeline()
                 return
             self._release_web_target_after_shot(raw_out.state.events)
+            new_pocket_notices = self._observe_web_events(raw_out.state.events)
+            if new_pocket_notices:
+                self._show_desktop_pocket_notice(new_pocket_notices)
             out = self._apply_route_display_filters(raw_out)
             self.last_output = out
             self._pending_turn_target_group = self.pipeline.state_machine.turn_target_group

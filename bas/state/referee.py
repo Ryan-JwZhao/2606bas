@@ -11,6 +11,7 @@ from .models import (
     RefereeIntent,
     ShotContext,
     TargetGroup,
+    empty_group_counts,
     normalize_group,
     normalize_object_group,
     other_object_group,
@@ -79,34 +80,26 @@ class ShotContextAggregator:
         payload = dict(event.payload or {})
         if event.name == "POCKET_COMMIT_READY":
             self._clear_pending_pocket(ctx, payload)
-            ctx.committed_pockets.append(_normalized_pocket_payload(payload))
-            group = normalize_group(payload.get("group"))
-            if group is not None:
-                ctx.potted_confirmed[group] = int(ctx.potted_confirmed.get(group, 0)) + 1
-                if group == "cue":
-                    ctx.cue_scratch_candidate = True
+            if not self._has_committed_pocket(ctx, payload):
+                ctx.committed_pockets.append(_normalized_pocket_payload(payload))
+                self._rebuild_potted_counts(ctx)
         elif event.name == "POCKET_CONFIRMED":
             self._clear_pending_pocket(ctx, payload)
-            already_known = any(
-                str(item.get("decision_id") or "") == str(payload.get("decision_id") or "")
-                for item in ctx.committed_pockets
-            )
+            already_known = self._has_committed_pocket(ctx, payload)
             if not already_known:
                 ctx.committed_pockets.append(_normalized_pocket_payload(payload))
-            group = normalize_group(payload.get("group"))
-            if group is not None and not already_known:
-                ctx.potted_confirmed[group] = int(ctx.potted_confirmed.get(group, 0)) + 1
-                if group == "cue":
-                    ctx.cue_scratch_candidate = True
+                self._rebuild_potted_counts(ctx)
         elif event.name == "POCKET_TENTATIVE":
             ctx.tentative_pockets.append(_normalized_pocket_payload(payload))
         elif event.name == "POCKET_REVIEW_REQUIRED":
             self._clear_pending_pocket(ctx, payload)
+            self._remove_committed_pocket(ctx, payload)
             ctx.review_pockets.append(_normalized_pocket_payload(payload))
             ctx.review_required = True
             ctx.reasons.extend(str(reason) for reason in list(payload.get("reason_codes") or []) if str(reason).strip())
         elif event.name == "POCKET_REJECTED":
             self._clear_pending_pocket(ctx, payload)
+            self._remove_committed_pocket(ctx, payload)
             ctx.rejected_pockets.append(_normalized_pocket_payload(payload))
         elif event.name == "BALL_OFF_TABLE_CONFIRMED":
             group = normalize_group(payload.get("group"))
@@ -135,6 +128,39 @@ class ShotContextAggregator:
         if not decision_id:
             return
         ctx.tentative_pockets = [item for item in ctx.tentative_pockets if str(item.get("decision_id") or "") != decision_id]
+
+    @staticmethod
+    def _has_committed_pocket(ctx: ShotContext, payload: dict[str, object]) -> bool:
+        decision_id = str(payload.get("decision_id") or "").strip()
+        return bool(
+            decision_id
+            and any(str(item.get("decision_id") or "").strip() == decision_id for item in ctx.committed_pockets)
+        )
+
+    @classmethod
+    def _remove_committed_pocket(cls, ctx: ShotContext, payload: dict[str, object]) -> None:
+        decision_id = str(payload.get("decision_id") or "").strip()
+        if not decision_id:
+            return
+        retained = [
+            item
+            for item in ctx.committed_pockets
+            if str(item.get("decision_id") or "").strip() != decision_id
+        ]
+        if len(retained) == len(ctx.committed_pockets):
+            return
+        ctx.committed_pockets = retained
+        cls._rebuild_potted_counts(ctx)
+
+    @staticmethod
+    def _rebuild_potted_counts(ctx: ShotContext) -> None:
+        counts = empty_group_counts()
+        for pocket in ctx.committed_pockets:
+            group = normalize_group(pocket.get("group"))
+            if group is not None:
+                counts[group] = int(counts.get(group, 0)) + 1
+        ctx.potted_confirmed = counts
+        ctx.cue_scratch_candidate = bool(counts.get("cue", 0))
 
 
 class RefereeAdapter:

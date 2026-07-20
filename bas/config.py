@@ -185,7 +185,9 @@ class StateConfig:
     pocket_mouth_radius_mm: float = 125.0
     pocket_throat_radius_mm: float = 75.0
     pocket_interior_radius_mm: float = 44.0
-    pocket_confirm_missing_ms: int = 350
+    pocket_tentative_missing_ms: int = 300
+    pocket_commit_ready_missing_ms: Optional[int] = None
+    pocket_confirm_missing_ms: Optional[int] = None  # legacy alias for commit-ready threshold
     pocket_reappear_window_ms: int = 800
     pocket_mouth_settle_ms: int = 3000
     turn_resolve_grace_ms: int = 900

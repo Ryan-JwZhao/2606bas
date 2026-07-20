@@ -63,6 +63,8 @@ class ModernMatchStateMachine:
         self._pending_turn_resolve: Optional[dict[str, int]] = None
         self._pending_review: Optional[_PendingReviewDecision] = None
         self._table_inner_polygon_mm: list[tuple[float, float]] = []
+        self._table_edge_polygon_mm: list[tuple[float, float]] = []
+        self._ball_center_reachable_polygon_mm: list[tuple[float, float]] = []
         self._pockets_mm: list[tuple[float, float]] = []
         self._pocket_curves_mm: list[list[tuple[float, float]]] = []
         self._ball_diameter_mm = 57.15
@@ -109,12 +111,24 @@ class ModernMatchStateMachine:
         self,
         *,
         inner_polygon_mm: Optional[List[tuple[float, float]]] = None,
+        table_edge_polygon_mm: Optional[List[tuple[float, float]]] = None,
+        ball_center_reachable_polygon_mm: Optional[List[tuple[float, float]]] = None,
         pockets_mm: Optional[List[tuple[float, float]]] = None,
         ball_diameter_mm: Optional[float] = None,
         pocket_curves_mm: Optional[List[List[tuple[float, float]]]] = None,
     ) -> None:
         if inner_polygon_mm is not None:
             self._table_inner_polygon_mm = [(float(x), float(y)) for x, y in inner_polygon_mm]
+        if table_edge_polygon_mm is not None:
+            self._table_edge_polygon_mm = [(float(x), float(y)) for x, y in table_edge_polygon_mm]
+        elif inner_polygon_mm is not None and not self._table_edge_polygon_mm:
+            self._table_edge_polygon_mm = list(self._table_inner_polygon_mm)
+        if ball_center_reachable_polygon_mm is not None:
+            self._ball_center_reachable_polygon_mm = [
+                (float(x), float(y)) for x, y in ball_center_reachable_polygon_mm
+            ]
+        elif inner_polygon_mm is not None and not self._ball_center_reachable_polygon_mm:
+            self._ball_center_reachable_polygon_mm = list(self._table_inner_polygon_mm)
         if pockets_mm is not None:
             self._pockets_mm = [(float(x), float(y)) for x, y in pockets_mm]
         if ball_diameter_mm is not None:
@@ -126,6 +140,8 @@ class ModernMatchStateMachine:
             ]
         self.pocket_fsm.set_table_context(
             inner_polygon_mm=self._table_inner_polygon_mm,
+            table_edge_polygon_mm=self._table_edge_polygon_mm,
+            ball_center_reachable_polygon_mm=self._ball_center_reachable_polygon_mm,
             pockets_mm=self._pockets_mm,
             ball_diameter_mm=self._ball_diameter_mm,
             pocket_curves_mm=self._pocket_curves_mm,
@@ -189,6 +205,7 @@ class ModernMatchStateMachine:
         self.rule_state.shot_number += 1
         self._last_shot_payload = shot_context_payload(pending.confirm_shot_ctx)
         self._last_referee_payload = pending.confirm_intent.to_payload()
+        self.pocket_fsm.mark_confirmed(pending.decision_ids)
         self._pending_review = None
         for pocket in pending.confirm_shot_ctx.committed_pockets:
             confirmed_payload = self._confirmed_pocket_payload(pocket, reason_code="operator_confirmed_review")
@@ -231,6 +248,7 @@ class ModernMatchStateMachine:
         self.rule_state.shot_number += 1
         self._last_shot_payload = shot_context_payload(pending.reject_shot_ctx)
         self._last_referee_payload = pending.reject_intent.to_payload()
+        self.pocket_fsm.mark_rejected(pending.decision_ids)
         self._pending_review = None
         self._queue_operator_event(
             "OPERATOR_REJECT_EPISODE",
@@ -285,6 +303,7 @@ class ModernMatchStateMachine:
         self.rule_state.shot_number += 1
         self._last_shot_payload = shot_context_payload(pending.confirm_shot_ctx)
         self._last_referee_payload = resolved_intent.to_payload()
+        self.pocket_fsm.mark_confirmed(pending.decision_ids)
         self._pending_review = None
         for pocket in pending.confirm_shot_ctx.committed_pockets:
             confirmed_payload = self._confirmed_pocket_payload(pocket, reason_code="operator_resolved_open_table_group")
@@ -346,6 +365,7 @@ class ModernMatchStateMachine:
         snapshot["referee_intent"] = dict(self._last_referee_payload)
         snapshot["last_shot_context"] = dict(self._last_shot_payload)
         snapshot["pocket_fsm"] = self.pocket_fsm.debug_snapshot()
+        snapshot["pocket_geometry"] = self.pocket_fsm.geometry_diagnostics()
         snapshot["observation_reconcile"] = self.reconciler.event_payload(self.reconciler.last_result)
         snapshot["pending_turn_resolve"] = dict(self._pending_turn_resolve or {})
         snapshot["pending_review"] = {} if self._pending_review is None else self._pending_review.to_payload()
@@ -373,6 +393,11 @@ class ModernMatchStateMachine:
             self._operator_lock_frames -= 1
             self._tick_event_cooldowns()
             self.reconciler.update_observation(tracks_frame)
+            pocket_events = self.pocket_fsm.update(tracks_frame, self.phase_machine.phase)
+            events.extend(pocket_events)
+            ts_ms = self._ts_ms(tracks_frame.ts_cam_ns)
+            self._annotate_shot_ids(pocket_events, ts_ms=ts_ms)
+            self.aggregator.ingest(pocket_events, ts_ms=ts_ms, rule_state=self.rule_state)
             self._process_turn_resolve_if_needed(tracks_frame, events)
             for event in events:
                 self._recent_events.append(event)
@@ -428,6 +453,14 @@ class ModernMatchStateMachine:
         pending = self._pending_turn_resolve
         self._pending_turn_resolve = None
         ts_ms = self._ts_ms(tracks_frame.ts_cam_ns)
+        if self.pocket_fsm.has_pending_resolution(tracks_frame.ts_cam_ns):
+            safety_events = self.pocket_fsm.review_pending(
+                tracks_frame,
+                reason_codes=["final_confirmation_window_not_reached"],
+            )
+            self._annotate_shot_ids(safety_events, ts_ms=ts_ms)
+            self.aggregator.ingest(safety_events, ts_ms=ts_ms, rule_state=self.rule_state)
+            events.extend(safety_events)
         shot_ctx = self.aggregator.finalize(ts_ms=ts_ms, rule_state=self.rule_state)
         commit_shot_ctx = self._confirmed_shot_context(shot_ctx)
         commit_ledger = self.ledger.applied_copy(commit_shot_ctx)
@@ -477,11 +510,19 @@ class ModernMatchStateMachine:
                 review_reasons=list(review_reasons),
                 decision_ids=self._review_decision_ids(commit_shot_ctx, shot_ctx),
             )
+            self.pocket_fsm.mark_review_required(self._pending_review.decision_ids)
         else:
             self.ledger = commit_ledger.clone()
             self._apply_intent(commit_intent)
             self.rule_state.shot_number += 1
             self._pending_review = None
+            self.pocket_fsm.mark_confirmed(
+                [
+                    str(pocket.get("decision_id") or "")
+                    for pocket in commit_shot_ctx.committed_pockets
+                    if str(pocket.get("decision_id") or "").strip()
+                ]
+            )
             for pocket in commit_shot_ctx.committed_pockets:
                 confirmed_payload = self._confirmed_pocket_payload(pocket)
                 events.append(
@@ -581,8 +622,6 @@ class ModernMatchStateMachine:
 
     def _should_defer_turn_resolve(self, tracks_frame: TracksFrame, resolve_events: List[Event]) -> bool:
         if self._pending_turn_resolve is not None:
-            return False
-        if any(str((event.payload or {}).get("source", "")).strip().lower() == "operator" for event in resolve_events):
             return False
         if not self.pocket_fsm.has_pending_resolution(tracks_frame.ts_cam_ns):
             return False
@@ -939,6 +978,7 @@ class ModernMatchStateMachine:
         rejected.review_required = False
         rejected.reasons = []
         rejected.potted_confirmed = {group: 0 for group in rejected.potted_confirmed}
+        rejected.cue_scratch_candidate = False
         return rejected
 
     @staticmethod

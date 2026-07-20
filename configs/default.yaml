@@ -106,7 +106,9 @@ state:
   pocket_mouth_radius_mm: 125.0
   pocket_throat_radius_mm: 75.0
   pocket_interior_radius_mm: 44.0
-  pocket_confirm_missing_ms: 350
+  pocket_tentative_missing_ms: 300
+  pocket_commit_ready_missing_ms: 700
+  # pocket_confirm_missing_ms is a legacy alias used only when commit-ready is absent.
   pocket_reappear_window_ms: 800
   pocket_mouth_settle_ms: 3000
   turn_resolve_grace_ms: 900

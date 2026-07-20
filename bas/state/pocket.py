@@ -1,40 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional
 
-import cv2
 import numpy as np
 
 from ..config import StateConfig
 from ..schemas import Event, MatchPhase, TrackObservation, TracksFrame
 from .models import Group, normalize_group
+from .pocket_geometry import PocketGeometryContext, PocketGeometryModel, PocketSample
 
 
-@dataclass(frozen=True)
-class _PocketGeometry:
-    index: int
-    center_mm: tuple[float, float]
-    mouth_a_mm: tuple[float, float]
-    mouth_b_mm: tuple[float, float]
-    mouth_mid_mm: tuple[float, float]
-    tangent_unit: tuple[float, float]
-    inward_normal: tuple[float, float]
-    mouth_half_width_mm: float
-    throat_half_width_mm: float
-    throat_depth_mm: float
-    interior_depth_mm: float
-
-
-@dataclass(frozen=True)
-class _PocketSample:
-    zone: Optional[str]
-    pocket_index: Optional[int]
-    distance_mm: Optional[float]
-    depth_mm: float
-    lateral_mm: float
-    inward_speed_mm_s: float
-    inside_playable: bool
+@dataclass
+class PocketEvidence:
+    decision_id: str
+    pocket_index: int
+    candidate_since_ns: int
+    last_evidence_ts_ns: int
+    candidate_reason: Optional[str] = None
+    crossed_mouth: bool = False
+    crossed_throat: bool = False
+    entered_interior: bool = False
 
 
 @dataclass
@@ -50,16 +36,14 @@ class _PocketMemory:
     state: str = "on_table"
     decision: str = "none"
     resolved: bool = False
-    candidate_since_ns: Optional[int] = None
+    evidence: Optional[PocketEvidence] = None
     tentative_since_ns: Optional[int] = None
+    commit_ready_since_ns: Optional[int] = None
     nonvisible_since_ns: Optional[int] = None
     absent_since_ns: Optional[int] = None
     resting_mouth_since_ns: Optional[int] = None
-    pocket_index: Optional[int] = None
-    crossed_mouth: bool = False
-    crossed_throat: bool = False
-    entered_interior: bool = False
     tentative_emitted: bool = False
+    commit_ready_emitted: bool = False
     last_zone: Optional[str] = None
     last_visibility: str = "visible"
     last_lost_frames: int = 0
@@ -67,8 +51,6 @@ class _PocketMemory:
     last_depth_mm: float = 0.0
     last_lateral_mm: float = 0.0
     last_inward_speed_mm_s: float = 0.0
-    candidate_reason: Optional[str] = None
-    decision_id: Optional[str] = None
     reason_codes: list[str] = field(default_factory=list)
     reappear_veto: bool = False
     reappear_track_id: Optional[int] = None
@@ -76,16 +58,27 @@ class _PocketMemory:
 
 
 class PerBallPocketFSM:
-    """Two-stage pocket confirmation with evidence accumulation and vetoes."""
+    """Per-ball pocket evidence with retractable commit-ready decisions."""
+
+    _REAPPEAR_STATES = {"candidate", "tentative", "commit_ready"}
+    _TERMINAL_STATES = {"confirmed", "review_required", "rejected"}
 
     def __init__(self, config: StateConfig):
         self.config = config
         self.inner_polygon_mm: list[tuple[float, float]] = []
+        self.table_edge_polygon_mm: list[tuple[float, float]] = []
+        self.ball_center_reachable_polygon_mm: list[tuple[float, float]] = []
         self.pockets_mm: list[tuple[float, float]] = []
         self.pocket_curves_mm: list[list[tuple[float, float]]] = []
         self.ball_diameter_mm = 57.15
         self._memory: Dict[int, _PocketMemory] = {}
         self._decision_seq = 1
+        self._geometry_context_fingerprint: Optional[tuple[object, ...]] = None
+        self._geometry_model = PocketGeometryModel.build(
+            PocketGeometryContext(),
+            config,
+            log_diagnostics=False,
+        )
 
     def reset(self) -> None:
         self._memory.clear()
@@ -95,12 +88,24 @@ class PerBallPocketFSM:
         self,
         *,
         inner_polygon_mm: Optional[list[tuple[float, float]]] = None,
+        table_edge_polygon_mm: Optional[list[tuple[float, float]]] = None,
+        ball_center_reachable_polygon_mm: Optional[list[tuple[float, float]]] = None,
         pockets_mm: Optional[list[tuple[float, float]]] = None,
         ball_diameter_mm: Optional[float] = None,
         pocket_curves_mm: Optional[list[list[tuple[float, float]]]] = None,
     ) -> None:
         if inner_polygon_mm is not None:
             self.inner_polygon_mm = [(float(x), float(y)) for x, y in inner_polygon_mm]
+        if table_edge_polygon_mm is not None:
+            self.table_edge_polygon_mm = [(float(x), float(y)) for x, y in table_edge_polygon_mm]
+        elif inner_polygon_mm is not None and not self.table_edge_polygon_mm:
+            self.table_edge_polygon_mm = list(self.inner_polygon_mm)
+        if ball_center_reachable_polygon_mm is not None:
+            self.ball_center_reachable_polygon_mm = [
+                (float(x), float(y)) for x, y in ball_center_reachable_polygon_mm
+            ]
+        elif inner_polygon_mm is not None and not self.ball_center_reachable_polygon_mm:
+            self.ball_center_reachable_polygon_mm = list(self.inner_polygon_mm)
         if pockets_mm is not None:
             self.pockets_mm = [(float(x), float(y)) for x, y in pockets_mm]
         if ball_diameter_mm is not None:
@@ -110,6 +115,18 @@ class PerBallPocketFSM:
                 [(float(point[0]), float(point[1])) for point in list(curve or []) if len(point) >= 2]
                 for curve in pocket_curves_mm
             ]
+        context = PocketGeometryContext(
+            table_edge_polygon_mm=self.table_edge_polygon_mm or self.inner_polygon_mm,
+            ball_center_reachable_polygon_mm=self.ball_center_reachable_polygon_mm or self.inner_polygon_mm,
+            pockets_mm=self.pockets_mm,
+            pocket_curves_mm=self.pocket_curves_mm,
+            ball_diameter_mm=self.ball_diameter_mm,
+        )
+        fingerprint = context.fingerprint()
+        if fingerprint == self._geometry_context_fingerprint:
+            return
+        self._geometry_context_fingerprint = fingerprint
+        self._geometry_model = PocketGeometryModel.build(context, self.config)
 
     def update(self, frame: TracksFrame, phase: MatchPhase) -> List[Event]:
         events: List[Event] = []
@@ -121,19 +138,25 @@ class PerBallPocketFSM:
             if group is None or not self._track_relevant(track):
                 continue
             memory = self._memory.get(track.track_id)
+            memory_created_this_frame = False
             if memory is None:
                 if track.visibility != "visible" or float(track.quality) <= 0.25:
                     continue
                 memory = self._new_memory(track, group, frame)
                 self._memory[track.track_id] = memory
+                memory_created_this_frame = True
             elif memory.resolved and track.visibility == "visible":
                 memory = self._new_memory(track, group, frame)
                 self._memory[track.track_id] = memory
+                memory_created_this_frame = True
 
             seen_ids.add(track.track_id)
             if track.visibility == "visible" and float(track.quality) > 0.25:
                 sample = self._sample(track)
-                cross_track_vetoed = self._apply_cross_track_reappear_veto(memory, track, sample, frame, events)
+                cross_track_vetoed = bool(
+                    memory_created_this_frame
+                    and self._apply_cross_track_reappear_veto(memory, track, sample, frame, events)
+                )
                 self._handle_visible(memory, track, sample, frame, active and not cross_track_vetoed, events)
             elif active:
                 self._handle_nonvisible(memory, track, frame, events)
@@ -149,21 +172,22 @@ class PerBallPocketFSM:
     def debug_snapshot(self) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
         for memory in self._memory.values():
+            evidence = memory.evidence
             rows.append(
                 {
                     "track_id": int(memory.track_id),
                     "group": memory.group,
                     "state": memory.state,
                     "decision": memory.decision,
-                    "decision_id": memory.decision_id,
-                    "pocket_index": memory.pocket_index,
-                    "crossed_mouth": bool(memory.crossed_mouth),
-                    "crossed_throat": bool(memory.crossed_throat),
-                    "entered_interior": bool(memory.entered_interior),
+                    "decision_id": evidence.decision_id if evidence is not None else None,
+                    "pocket_index": evidence.pocket_index if evidence is not None else None,
+                    "crossed_mouth": bool(evidence and evidence.crossed_mouth),
+                    "crossed_throat": bool(evidence and evidence.crossed_throat),
+                    "entered_interior": bool(evidence and evidence.entered_interior),
                     "last_zone": memory.last_zone,
                     "zone": memory.last_zone,
                     "inward_speed_mm_s": float(memory.last_inward_speed_mm_s),
-                    "candidate_reason": memory.candidate_reason,
+                    "candidate_reason": evidence.candidate_reason if evidence is not None else None,
                     "missing_ms": self._memory_missing_ms(memory, memory.last_seen_ts_ns),
                     "reappear_veto": bool(memory.reappear_veto),
                     "reappear_group": memory.reappear_group,
@@ -172,31 +196,88 @@ class PerBallPocketFSM:
             )
         return rows
 
+    def geometry_diagnostics(self) -> dict[str, object]:
+        return self._geometry_model.diagnostics()
+
+    def review_pending(
+        self,
+        frame: TracksFrame,
+        *,
+        reason_codes: Optional[list[str]] = None,
+    ) -> List[Event]:
+        events: List[Event] = []
+        reasons = list(reason_codes or ["final_confirmation_window_not_reached"])
+        for memory in self._memory.values():
+            if memory.resolved or memory.evidence is None:
+                continue
+            if memory.state not in {"candidate", "tentative", "commit_ready"}:
+                continue
+            self._review(memory, frame, events, reason_codes=reasons)
+        return events
+
     def has_pending_resolution(self, now_ns: int) -> bool:
         return bool(self.pending_candidates(now_ns))
 
     def pending_candidates(self, now_ns: int) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
         for memory in self._memory.values():
-            if memory.resolved:
+            evidence = memory.evidence
+            if memory.resolved or evidence is None:
                 continue
-            if memory.state not in {"candidate", "tentative"}:
+            if memory.state not in {"candidate", "tentative", "commit_ready"}:
+                continue
+            missing_ms = self._memory_missing_ms(memory, now_ns)
+            if memory.state == "commit_ready" and missing_ms >= self._final_confirmation_missing_ms():
                 continue
             rows.append(
                 {
                     "track_id": int(memory.track_id),
                     "group": memory.group,
                     "state": memory.state,
-                    "decision_id": memory.decision_id,
-                    "pocket_index": memory.pocket_index,
-                    "missing_ms": int(self._memory_missing_ms(memory, now_ns)),
-                    "crossed_mouth": bool(memory.crossed_mouth),
-                    "crossed_throat": bool(memory.crossed_throat),
-                    "entered_interior": bool(memory.entered_interior),
-                    "candidate_reason": memory.candidate_reason,
+                    "decision_id": evidence.decision_id,
+                    "pocket_index": evidence.pocket_index,
+                    "missing_ms": int(missing_ms),
+                    "crossed_mouth": bool(evidence.crossed_mouth),
+                    "crossed_throat": bool(evidence.crossed_throat),
+                    "entered_interior": bool(evidence.entered_interior),
+                    "candidate_reason": evidence.candidate_reason,
+                    "finalizable_at_missing_ms": self._final_confirmation_missing_ms(),
                 }
             )
         return rows
+
+    def mark_confirmed(self, decision_ids: list[str]) -> None:
+        wanted = {str(value) for value in decision_ids if str(value).strip()}
+        for memory in self._memory.values():
+            evidence = memory.evidence
+            if evidence is None or evidence.decision_id not in wanted or memory.state == "rejected":
+                continue
+            memory.state = "confirmed"
+            memory.decision = "confirmed"
+            memory.resolved = True
+            memory.reason_codes = ["confirmed_at_turn_resolve"]
+
+    def mark_review_required(self, decision_ids: list[str]) -> None:
+        wanted = {str(value) for value in decision_ids if str(value).strip()}
+        for memory in self._memory.values():
+            evidence = memory.evidence
+            if evidence is None or evidence.decision_id not in wanted or memory.resolved:
+                continue
+            memory.state = "review_required"
+            memory.decision = "review_required"
+            memory.resolved = True
+            memory.reason_codes = ["state_frozen_pending_review"]
+
+    def mark_rejected(self, decision_ids: list[str]) -> None:
+        wanted = {str(value) for value in decision_ids if str(value).strip()}
+        for memory in self._memory.values():
+            evidence = memory.evidence
+            if evidence is None or evidence.decision_id not in wanted or memory.state == "confirmed":
+                continue
+            memory.state = "rejected"
+            memory.decision = "rejected"
+            memory.resolved = True
+            memory.reason_codes = ["operator_rejected_review"]
 
     def _new_memory(self, track: TrackObservation, group: Group, frame: TracksFrame) -> _PocketMemory:
         return _PocketMemory(
@@ -214,39 +295,48 @@ class PerBallPocketFSM:
         self,
         memory: _PocketMemory,
         track: TrackObservation,
-        sample: _PocketSample,
+        sample: PocketSample,
         frame: TracksFrame,
         active: bool,
         events: List[Event],
     ) -> None:
         reappeared_now = False
-        if memory.nonvisible_since_ns is not None and not memory.resolved and memory.state in {"candidate", "tentative"}:
+        if (
+            memory.nonvisible_since_ns is not None
+            and not memory.resolved
+            and memory.evidence is not None
+            and memory.state in {"on_table", *self._REAPPEAR_STATES}
+        ):
             missing_ms = self._elapsed_ms(frame.ts_cam_ns, memory.nonvisible_since_ns)
-            if missing_ms <= self._reappear_window_ms():
-                reappeared_group = normalize_group(track.group)
-                reason_codes = ["reappeared_same_track"]
-                if reappeared_group is not None and reappeared_group != memory.group:
-                    memory.reappear_group = reappeared_group
-                    reason_codes.append("reappeared_group_changed")
-                self._emit_reappeared(memory, track.track_id, frame, missing_ms, events)
+            reappeared_group = normalize_group(track.group)
+            reason_codes = ["reappeared_same_track"]
+            self._emit_reappeared(memory, track.track_id, frame, missing_ms, events)
+            if reappeared_group is not None and reappeared_group != memory.group:
+                memory.reappear_group = reappeared_group
+                reason_codes.append("reappeared_group_changed")
+                self._review(memory, frame, events, reason_codes=reason_codes)
+            else:
                 self._reject(memory, frame, events, reason_codes=reason_codes, candidate_reason="reappeared_visible")
-                reappeared_now = True
+            reappeared_now = True
 
         if active and not reappeared_now:
             self._update_candidate_evidence(memory, track, sample, frame, events)
 
-        if active and sample.inside_playable and sample.zone is None and memory.state in {"candidate", "tentative"} and not memory.resolved:
-            self._reject(memory, frame, events, reason_codes=["back_to_table"], candidate_reason="back_to_table")
+        if active and sample.zone is None and memory.evidence is not None and not memory.resolved:
+            if memory.state in {"candidate", "tentative", "commit_ready"}:
+                self._reject(memory, frame, events, reason_codes=["back_to_table"], candidate_reason="back_to_table")
+            elif not memory.tentative_emitted:
+                memory.evidence = None
+                memory.resting_mouth_since_ns = None
 
         if active and sample.zone == "mouth" and self._speed(track) <= self._still_speed(track) * 1.25:
             if memory.resting_mouth_since_ns is None:
                 memory.resting_mouth_since_ns = frame.ts_cam_ns
-            if memory.pocket_index is None:
-                memory.pocket_index = sample.pocket_index
         elif sample.zone not in {"mouth", "throat", "interior"}:
             memory.resting_mouth_since_ns = None
 
-        memory.group = normalize_group(track.group) or memory.group
+        if memory.evidence is None:
+            memory.group = normalize_group(track.group) or memory.group
         memory.last_center_px = track.center_px
         memory.last_center_mm = self._center_mm(track)
         memory.last_velocity = self._velocity(track)
@@ -259,7 +349,7 @@ class PerBallPocketFSM:
         memory.last_distance_mm = sample.distance_mm
         memory.last_depth_mm = float(sample.depth_mm)
         memory.last_lateral_mm = float(sample.lateral_mm)
-        memory.last_inward_speed_mm_s = float(sample.inward_speed_mm_s)
+        memory.last_inward_speed_mm_s = float(sample.pocketward_speed_mm_s)
         memory.nonvisible_since_ns = None
         memory.absent_since_ns = None
 
@@ -272,9 +362,7 @@ class PerBallPocketFSM:
             return
         if memory.nonvisible_since_ns is None:
             memory.nonvisible_since_ns = frame.ts_cam_ns
-        if self._should_emit_tentative(memory):
-            self._tentative(memory, frame, events, reason_codes=self._tentative_reason_codes(memory))
-        self._finalize_if_ready(memory, frame, events, allow_occluded_commit=self._occluded_commit_allowed(memory))
+        self._advance_missing(memory, frame, events, allow_occluded_commit=self._occluded_commit_allowed(memory))
 
     def _handle_absent(self, memory: _PocketMemory, frame: TracksFrame, events: List[Event]) -> None:
         if not self._has_pocket_interest(memory):
@@ -283,37 +371,51 @@ class PerBallPocketFSM:
             memory.absent_since_ns = frame.ts_cam_ns
         if memory.nonvisible_since_ns is None:
             memory.nonvisible_since_ns = memory.absent_since_ns
-        if self._should_emit_tentative(memory):
-            self._tentative(memory, frame, events, reason_codes=self._tentative_reason_codes(memory))
-        self._finalize_if_ready(memory, frame, events, allow_occluded_commit=True)
+        self._advance_missing(memory, frame, events, allow_occluded_commit=True)
 
     def _update_candidate_evidence(
         self,
         memory: _PocketMemory,
         track: TrackObservation,
-        sample: _PocketSample,
+        sample: PocketSample,
         frame: TracksFrame,
         events: List[Event],
     ) -> None:
-        zone = sample.zone
-        if zone not in {"mouth", "throat", "interior"}:
+        if sample.zone not in {"mouth", "throat", "interior"} or sample.pocket_index is None:
             return
-
-        memory.pocket_index = sample.pocket_index
-        memory.crossed_mouth = True
-        if zone in {"throat", "interior"}:
-            memory.crossed_throat = True
-        if zone == "interior":
-            memory.entered_interior = True
-
         reason = self._candidate_reason(track, sample)
+        if memory.evidence is None and reason is None:
+            return
+        if memory.evidence is not None and memory.evidence.pocket_index != sample.pocket_index:
+            self._reject(
+                memory,
+                frame,
+                events,
+                reason_codes=["pocket_changed_before_resolution"],
+                candidate_reason="pocket_changed_before_resolution",
+            )
+            return
+        if memory.evidence is None:
+            memory.evidence = PocketEvidence(
+                decision_id=self._new_decision_id(),
+                pocket_index=int(sample.pocket_index),
+                candidate_since_ns=frame.ts_cam_ns,
+                last_evidence_ts_ns=frame.ts_cam_ns,
+            )
+        evidence = memory.evidence
+        evidence.last_evidence_ts_ns = frame.ts_cam_ns
+        evidence.crossed_mouth = True
+        if sample.zone in {"throat", "interior"}:
+            evidence.crossed_throat = True
+        if sample.zone == "interior":
+            evidence.entered_interior = True
+
         if reason is None:
             return
+        if evidence.candidate_reason is None:
+            evidence.candidate_reason = reason
         if memory.state == "on_table":
             memory.state = "candidate"
-            memory.candidate_since_ns = frame.ts_cam_ns
-            memory.candidate_reason = reason
-            memory.decision_id = self._ensure_decision_id(memory)
             events.append(
                 Event(
                     name="POCKET_CANDIDATE",
@@ -323,17 +425,34 @@ class PerBallPocketFSM:
                         "track_id": memory.track_id,
                         "logical_id": f"track:{memory.track_id}",
                         "group": memory.group,
-                        "pocket_index": memory.pocket_index,
-                        "decision_id": memory.decision_id,
-                        "candidate_reason": reason,
+                        "pocket_index": evidence.pocket_index,
+                        "decision_id": evidence.decision_id,
+                        "candidate_reason": evidence.candidate_reason,
                         "distance_to_pocket_mm": sample.distance_mm,
-                        "evidence": self._evidence(memory, frame.ts_cam_ns),
+                        "evidence": self._evidence_payload(memory, frame.ts_cam_ns),
                     },
-                    confidence=0.72 if zone in {"throat", "interior"} else 0.58,
+                    confidence=0.72 if sample.zone in {"throat", "interior"} else 0.58,
                 )
             )
-        elif memory.candidate_reason is None:
-            memory.candidate_reason = reason
+
+    def _advance_missing(
+        self,
+        memory: _PocketMemory,
+        frame: TracksFrame,
+        events: List[Event],
+        *,
+        allow_occluded_commit: bool,
+    ) -> None:
+        missing_ms = self._memory_missing_ms(memory, frame.ts_cam_ns)
+        if missing_ms >= self._tentative_missing_ms() and not memory.tentative_emitted:
+            self._tentative(memory, frame, events, reason_codes=self._tentative_reason_codes(memory))
+        if missing_ms < self._commit_ready_missing_ms() or memory.state == "commit_ready" or memory.resolved:
+            return
+        if self._strong_confirmation_evidence(memory) and not memory.reappear_veto:
+            if allow_occluded_commit:
+                self._commit_ready(memory, frame, events)
+            return
+        self._review(memory, frame, events, reason_codes=self._review_reason_codes(memory))
 
     def _tentative(
         self,
@@ -343,14 +462,13 @@ class PerBallPocketFSM:
         *,
         reason_codes: list[str],
     ) -> None:
-        if memory.tentative_emitted:
+        if memory.tentative_emitted or memory.evidence is None:
             return
         memory.state = "tentative"
         memory.decision = "tentative"
         memory.tentative_since_ns = frame.ts_cam_ns
         memory.tentative_emitted = True
         memory.reason_codes = list(reason_codes)
-        memory.decision_id = self._ensure_decision_id(memory)
         events.append(
             Event(
                 name="POCKET_TENTATIVE",
@@ -367,30 +485,14 @@ class PerBallPocketFSM:
             )
         )
 
-    def _finalize_if_ready(
-        self,
-        memory: _PocketMemory,
-        frame: TracksFrame,
-        events: List[Event],
-        *,
-        allow_occluded_commit: bool,
-    ) -> None:
-        missing_ms = self._memory_missing_ms(memory, frame.ts_cam_ns)
-        if missing_ms < self._confirm_missing_ms():
+    def _commit_ready(self, memory: _PocketMemory, frame: TracksFrame, events: List[Event]) -> None:
+        if memory.commit_ready_emitted or memory.evidence is None:
             return
-        if self._strong_confirmation_evidence(memory) and not memory.reappear_veto:
-            if not allow_occluded_commit:
-                return
-            self._confirm(memory, frame, events)
-            return
-
-        reason_codes = self._review_reason_codes(memory)
-        self._review(memory, frame, events, reason_codes=reason_codes)
-
-    def _confirm(self, memory: _PocketMemory, frame: TracksFrame, events: List[Event]) -> None:
         memory.state = "commit_ready"
         memory.decision = "commit_ready"
-        memory.resolved = True
+        memory.commit_ready_since_ns = frame.ts_cam_ns
+        memory.commit_ready_emitted = True
+        memory.reason_codes = ["ready_for_turn_commit"]
         payload = self._decision_payload(
             memory,
             frame.ts_cam_ns,
@@ -398,10 +500,18 @@ class PerBallPocketFSM:
             review_required=False,
             reason_codes=["ready_for_turn_commit"],
         )
-        events.append(Event(name="POCKET_COMMIT_READY", ts_cam_ns=frame.ts_cam_ns, frame_id=frame.frame_id, payload=payload, confidence=0.92))
+        events.append(
+            Event(
+                name="POCKET_COMMIT_READY",
+                ts_cam_ns=frame.ts_cam_ns,
+                frame_id=frame.frame_id,
+                payload=payload,
+                confidence=0.92,
+            )
+        )
 
     def _review(self, memory: _PocketMemory, frame: TracksFrame, events: List[Event], *, reason_codes: list[str]) -> None:
-        if memory.resolved:
+        if memory.resolved or memory.evidence is None:
             return
         memory.state = "review_required"
         memory.decision = "review_required"
@@ -432,12 +542,12 @@ class PerBallPocketFSM:
         reason_codes: list[str],
         candidate_reason: str,
     ) -> None:
-        if memory.resolved:
+        if memory.resolved or memory.evidence is None:
             return
         memory.state = "rejected"
         memory.decision = "rejected"
         memory.resolved = True
-        memory.candidate_reason = candidate_reason
+        memory.evidence.candidate_reason = candidate_reason
         memory.reason_codes = list(reason_codes)
         events.append(
             Event(
@@ -459,31 +569,34 @@ class PerBallPocketFSM:
         self,
         memory: _PocketMemory,
         track: TrackObservation,
-        sample: _PocketSample,
+        sample: PocketSample,
         frame: TracksFrame,
         events: List[Event],
     ) -> bool:
-        vetoed = False
         if sample.pocket_index is None:
             return False
+        vetoed = False
         center_mm = self._center_mm(track)
         for candidate in self._memory.values():
-            if candidate.track_id == memory.track_id or candidate.resolved:
+            evidence = candidate.evidence
+            if candidate.track_id == memory.track_id or candidate.resolved or evidence is None:
                 continue
-            if "cue" in {candidate.group, memory.group}:
+            if candidate.state not in {"on_table", *self._REAPPEAR_STATES}:
                 continue
-            if candidate.pocket_index != sample.pocket_index:
-                continue
-            if candidate.nonvisible_since_ns is None:
-                continue
-            if self._elapsed_ms(frame.ts_cam_ns, candidate.nonvisible_since_ns) > self._reappear_window_ms():
+            if evidence.pocket_index != sample.pocket_index or candidate.nonvisible_since_ns is None:
                 continue
             if self._distance(candidate.last_center_mm, center_mm) > self._reappear_match_distance_mm():
                 continue
             candidate.reappear_veto = True
             candidate.reappear_track_id = int(track.track_id)
             candidate.reappear_group = memory.group
-            self._emit_reappeared(candidate, track.track_id, frame, self._memory_missing_ms(candidate, frame.ts_cam_ns), events)
+            self._emit_reappeared(
+                candidate,
+                track.track_id,
+                frame,
+                self._memory_missing_ms(candidate, frame.ts_cam_ns),
+                events,
+            )
             if candidate.group != memory.group:
                 self._review(
                     candidate,
@@ -510,6 +623,9 @@ class PerBallPocketFSM:
         missing_ms: int,
         events: List[Event],
     ) -> None:
+        evidence = memory.evidence
+        if evidence is None:
+            return
         events.append(
             Event(
                 name="POCKET_REAPPEARED",
@@ -520,7 +636,8 @@ class PerBallPocketFSM:
                     "group": memory.group,
                     "reappeared_track_id": int(track_id),
                     "reappeared_group": memory.reappear_group,
-                    "pocket_index": memory.pocket_index,
+                    "pocket_index": evidence.pocket_index,
+                    "decision_id": evidence.decision_id,
                     "missing_ms": int(missing_ms),
                 },
                 confidence=0.88,
@@ -536,35 +653,43 @@ class PerBallPocketFSM:
         review_required: bool,
         reason_codes: list[str],
     ) -> dict[str, object]:
+        evidence = memory.evidence
+        if evidence is None:
+            return {}
         return {
             "track_id": memory.track_id,
             "logical_id": f"track:{memory.track_id}",
             "group": memory.group,
-            "pocket_index": memory.pocket_index,
-            "decision_id": self._ensure_decision_id(memory),
+            "pocket_index": evidence.pocket_index,
+            "decision_id": evidence.decision_id,
             "decision": decision,
             "review_required": bool(review_required),
             "reason_codes": list(reason_codes),
-            "candidate_reason": memory.candidate_reason,
+            "candidate_reason": evidence.candidate_reason,
             "last_center_mm": list(memory.last_center_mm),
             "last_center_px": list(memory.last_center_px),
             "missing_ms": self._memory_missing_ms(memory, now_ns),
             "confirmation": "two_stage_commit",
-            "evidence": self._evidence(memory, now_ns),
+            "evidence": self._evidence_payload(memory, now_ns),
         }
 
-    def _evidence(self, memory: _PocketMemory, now_ns: int) -> dict[str, object]:
+    def _evidence_payload(self, memory: _PocketMemory, now_ns: int) -> dict[str, object]:
+        evidence = memory.evidence
         return {
+            "decision_id": evidence.decision_id if evidence is not None else None,
+            "candidate_since_ns": evidence.candidate_since_ns if evidence is not None else None,
+            "last_evidence_ts_ns": evidence.last_evidence_ts_ns if evidence is not None else None,
             "zone": memory.last_zone,
             "inward_speed_mm_s": float(memory.last_inward_speed_mm_s),
-            "candidate_reason": memory.candidate_reason,
+            "candidate_reason": evidence.candidate_reason if evidence is not None else None,
             "missing_ms": self._memory_missing_ms(memory, now_ns),
             "reappear_veto": bool(memory.reappear_veto),
             "reappear_track_id": memory.reappear_track_id,
             "reappear_group": memory.reappear_group,
-            "crossed_mouth": bool(memory.crossed_mouth),
-            "crossed_throat": bool(memory.crossed_throat),
-            "entered_interior": bool(memory.entered_interior),
+            "crossed_mouth": bool(evidence and evidence.crossed_mouth),
+            "crossed_throat": bool(evidence and evidence.crossed_throat),
+            "entered_interior": bool(evidence and evidence.entered_interior),
+            "pocket_index": evidence.pocket_index if evidence is not None else None,
             "distance_mm": memory.last_distance_mm,
             "depth_mm": float(memory.last_depth_mm),
             "lateral_mm": float(memory.last_lateral_mm),
@@ -573,164 +698,54 @@ class PerBallPocketFSM:
             "decision": memory.decision,
         }
 
-    def _sample(self, track: TrackObservation) -> _PocketSample:
-        center_mm = self._center_mm(track)
-        velocity = self._velocity(track)
-        inside_playable = self._inside_playable(center_mm)
-        geometries = self._pocket_geometries()
-        if not geometries:
-            return _PocketSample(None, None, None, 0.0, 0.0, 0.0, inside_playable)
+    def _sample(self, track: TrackObservation) -> PocketSample:
+        return self._geometry_model.sample(self._center_mm(track), self._velocity(track))
 
-        pos = np.asarray(center_mm, dtype=np.float32)
-        vel = np.asarray(velocity, dtype=np.float32)
-        best_geometry = min(geometries, key=lambda item: float(np.linalg.norm(np.asarray(item.center_mm, dtype=np.float32) - pos)))
-        center = np.asarray(best_geometry.center_mm, dtype=np.float32)
-        mouth_mid = np.asarray(best_geometry.mouth_mid_mm, dtype=np.float32)
-        tangent = np.asarray(best_geometry.tangent_unit, dtype=np.float32)
-        inward = np.asarray(best_geometry.inward_normal, dtype=np.float32)
-        delta = pos - mouth_mid
-        distance = float(np.linalg.norm(center - pos))
-        depth = float(np.dot(delta, inward))
-        lateral = float(abs(np.dot(delta, tangent)))
-        toward_center = center - pos
-        toward_center_norm = float(np.linalg.norm(toward_center))
-        if toward_center_norm > 1e-6:
-            toward_center = toward_center / toward_center_norm
-        else:
-            toward_center = inward
-        inward_speed = float(np.dot(vel, toward_center))
-
-        mouth_radius = max(float(getattr(self.config, "pocket_mouth_radius_mm", 125.0)), self.ball_diameter_mm * 2.05)
-        throat_radius = max(float(getattr(self.config, "pocket_throat_radius_mm", 75.0)), self.ball_diameter_mm * 1.20)
-        interior_radius = max(float(getattr(self.config, "pocket_interior_radius_mm", 44.0)), self.ball_diameter_mm * 0.72)
-        lateral_buffer = self.ball_diameter_mm * 0.55
-        mouth_depth_floor = -self.ball_diameter_mm * 0.55
-
-        zone: Optional[str] = None
-        if depth >= best_geometry.interior_depth_mm or distance <= interior_radius:
-            zone = "interior"
-        elif (depth >= best_geometry.throat_depth_mm and lateral <= best_geometry.throat_half_width_mm + lateral_buffer) or distance <= throat_radius:
-            zone = "throat"
-        elif (depth >= mouth_depth_floor and lateral <= best_geometry.mouth_half_width_mm + lateral_buffer) or distance <= mouth_radius:
-            zone = "mouth"
-
-        return _PocketSample(
-            zone=zone,
-            pocket_index=best_geometry.index,
-            distance_mm=distance,
-            depth_mm=depth,
-            lateral_mm=lateral,
-            inward_speed_mm_s=inward_speed,
-            inside_playable=inside_playable,
-        )
-
-    def _pocket_geometries(self) -> list[_PocketGeometry]:
-        geometries: list[_PocketGeometry] = []
-        if self.pockets_mm:
-            for index, center in enumerate(self.pockets_mm):
-                curve = self.pocket_curves_mm[index] if index < len(self.pocket_curves_mm) else []
-                geometries.append(self._build_geometry(index, center, curve))
-        elif self.pocket_curves_mm:
-            for index, curve in enumerate(self.pocket_curves_mm):
-                center = self._curve_center(curve)
-                geometries.append(self._build_geometry(index, center, curve))
-        return geometries
-
-    def _build_geometry(
-        self,
-        index: int,
-        center: tuple[float, float],
-        curve: Sequence[tuple[float, float]],
-    ) -> _PocketGeometry:
-        center_vec = np.asarray(center, dtype=np.float32)
-        if len(curve) >= 2:
-            curve_points = np.asarray(curve, dtype=np.float32).reshape((-1, 2))
-            mouth_a = curve_points[0]
-            mouth_b = curve_points[-1]
-            mouth_mid = np.mean(curve_points, axis=0)
-            tangent = mouth_b - mouth_a
-            tangent = self._unit(tangent, fallback=np.asarray([1.0, 0.0], dtype=np.float32))
-            inward = center_vec - mouth_mid
-            inward = self._unit(inward, fallback=np.asarray([0.0, 1.0], dtype=np.float32))
-            half_width = max(float(np.linalg.norm(mouth_b - mouth_a)) * 0.5, self.ball_diameter_mm * 0.95)
-        else:
-            table_center = self._table_center()
-            inward = center_vec - table_center
-            inward = self._unit(inward, fallback=np.asarray([0.0, 1.0], dtype=np.float32))
-            tangent = np.asarray([-inward[1], inward[0]], dtype=np.float32)
-            mouth_mid = center_vec - inward * float(max(self.ball_diameter_mm * 1.15, self.config.pocket_mouth_radius_mm * 0.55))
-            half_width = max(float(getattr(self.config, "pocket_mouth_radius_mm", 125.0)) * 0.68, self.ball_diameter_mm * 1.05)
-            mouth_a = mouth_mid - tangent * half_width
-            mouth_b = mouth_mid + tangent * half_width
-
-        throat_half_width = max(self.ball_diameter_mm * 0.62, half_width * 0.56)
-        throat_depth = max(self.ball_diameter_mm * 0.55, float(getattr(self.config, "pocket_throat_radius_mm", 75.0)) * 0.55)
-        interior_depth = max(throat_depth + self.ball_diameter_mm * 0.45, float(getattr(self.config, "pocket_interior_radius_mm", 44.0)) * 1.25)
-        return _PocketGeometry(
-            index=index,
-            center_mm=(float(center_vec[0]), float(center_vec[1])),
-            mouth_a_mm=(float(mouth_a[0]), float(mouth_a[1])),
-            mouth_b_mm=(float(mouth_b[0]), float(mouth_b[1])),
-            mouth_mid_mm=(float(mouth_mid[0]), float(mouth_mid[1])),
-            tangent_unit=(float(tangent[0]), float(tangent[1])),
-            inward_normal=(float(inward[0]), float(inward[1])),
-            mouth_half_width_mm=float(half_width),
-            throat_half_width_mm=float(throat_half_width),
-            throat_depth_mm=float(throat_depth),
-            interior_depth_mm=float(interior_depth),
-        )
-
-    def _candidate_reason(self, track: TrackObservation, sample: _PocketSample) -> Optional[str]:
+    def _candidate_reason(self, track: TrackObservation, sample: PocketSample) -> Optional[str]:
         if sample.zone == "interior":
             return "entered_interior"
         if sample.zone == "throat":
             return "crossed_throat"
-        if sample.zone == "mouth" and sample.inward_speed_mm_s >= self._inward_speed_threshold(track):
+        if sample.zone == "mouth" and sample.pocketward_speed_mm_s >= self._inward_speed_threshold(track):
             return "mouth_inward_trend"
         return None
 
     def _tentative_reason_codes(self, memory: _PocketMemory) -> list[str]:
-        if memory.entered_interior:
+        evidence = memory.evidence
+        if evidence is not None and evidence.entered_interior:
             return ["interior_missing"]
-        if memory.crossed_throat:
+        if evidence is not None and evidence.crossed_throat:
             return ["throat_missing"]
-        if memory.crossed_mouth:
+        if evidence is not None and evidence.crossed_mouth:
             return ["mouth_missing"]
         return ["near_pocket_missing"]
 
     def _review_reason_codes(self, memory: _PocketMemory) -> list[str]:
+        evidence = memory.evidence
         if memory.reappear_veto:
             reasons = ["reappeared_near_pocket"]
             if memory.reappear_group is not None and memory.reappear_group != memory.group:
                 reasons.append("reappeared_group_changed")
             return reasons
-        if memory.resting_mouth_since_ns is not None and not memory.crossed_throat:
+        if memory.resting_mouth_since_ns is not None and not bool(evidence and evidence.crossed_throat):
             return ["mouth_rest_disappear_requires_review"]
         if not self._strong_confirmation_evidence(memory):
             return ["insufficient_pocket_evidence"]
         return ["pocket_review_required"]
 
-    def _should_emit_tentative(self, memory: _PocketMemory) -> bool:
-        return (not memory.tentative_emitted) and self._has_pocket_interest(memory)
-
-    def _strong_confirmation_evidence(self, memory: _PocketMemory) -> bool:
-        return bool(memory.entered_interior or memory.crossed_throat)
+    @staticmethod
+    def _strong_confirmation_evidence(memory: _PocketMemory) -> bool:
+        evidence = memory.evidence
+        return bool(evidence and (evidence.entered_interior or evidence.crossed_throat))
 
     def _occluded_commit_allowed(self, memory: _PocketMemory) -> bool:
         if memory.absent_since_ns is not None:
             return True
         return int(memory.last_lost_frames) >= self._occluded_lost_frames_threshold()
 
-    def _has_pocket_interest(self, memory: _PocketMemory) -> bool:
-        return bool(
-            memory.pocket_index is not None
-            or memory.crossed_mouth
-            or memory.crossed_throat
-            or memory.entered_interior
-            or memory.last_zone in {"mouth", "throat", "interior"}
-            or memory.resting_mouth_since_ns is not None
-            or memory.state in {"candidate", "tentative"}
-        )
+    @staticmethod
+    def _has_pocket_interest(memory: _PocketMemory) -> bool:
+        return bool(memory.evidence is not None and not memory.resolved)
 
     def _memory_missing_ms(self, memory: _PocketMemory, now_ns: int) -> int:
         since_ns = memory.nonvisible_since_ns or memory.absent_since_ns
@@ -738,40 +753,17 @@ class PerBallPocketFSM:
             return 0
         return self._elapsed_ms(now_ns, since_ns)
 
-    def _ensure_decision_id(self, memory: _PocketMemory) -> str:
-        if memory.decision_id is None:
-            memory.decision_id = f"pocket:{self._decision_seq}"
-            self._decision_seq += 1
-        return memory.decision_id
-
-    def _curve_center(self, curve: Sequence[tuple[float, float]]) -> tuple[float, float]:
-        curve_points = np.asarray(list(curve or []), dtype=np.float32).reshape((-1, 2))
-        if curve_points.shape[0] == 0:
-            return (0.0, 0.0)
-        mean = np.mean(curve_points, axis=0)
-        return (float(mean[0]), float(mean[1]))
-
-    def _table_center(self) -> np.ndarray:
-        if len(self.inner_polygon_mm) >= 3:
-            pts = np.asarray(self.inner_polygon_mm, dtype=np.float32).reshape((-1, 2))
-            return np.mean(pts, axis=0)
-        if self.pockets_mm:
-            pts = np.asarray(self.pockets_mm, dtype=np.float32).reshape((-1, 2))
-            return np.mean(pts, axis=0)
-        return np.asarray([0.0, 0.0], dtype=np.float32)
-
-    def _inside_playable(self, center_mm: tuple[float, float]) -> bool:
-        if len(self.inner_polygon_mm) < 3:
-            return True
-        polygon = np.asarray(self.inner_polygon_mm, dtype=np.float32).reshape((-1, 1, 2))
-        dist = cv2.pointPolygonTest(polygon, (float(center_mm[0]), float(center_mm[1])), False)
-        return dist >= 0
+    def _new_decision_id(self) -> str:
+        decision_id = f"pocket:{self._decision_seq}"
+        self._decision_seq += 1
+        return decision_id
 
     def _center_mm(self, track: TrackObservation) -> tuple[float, float]:
         point = track.center_mm if track.center_mm is not None else track.center_px
         return (float(point[0]), float(point[1]))
 
-    def _velocity(self, track: TrackObservation) -> tuple[float, float]:
+    @staticmethod
+    def _velocity(track: TrackObservation) -> tuple[float, float]:
         velocity = track.velocity_mm_s if track.velocity_mm_s is not None else track.velocity_px_s
         return (float(velocity[0]), float(velocity[1]))
 
@@ -787,21 +779,33 @@ class PerBallPocketFSM:
     def _inward_speed_threshold(self, track: TrackObservation) -> float:
         return self._still_speed(track) * 1.15
 
-    def _track_relevant(self, track: TrackObservation) -> bool:
+    @staticmethod
+    def _track_relevant(track: TrackObservation) -> bool:
         if track.visibility == "visible":
             return float(track.quality) > 0.25
         return True
 
-    def _confirm_missing_ms(self) -> int:
-        return max(1, int(getattr(self.config, "pocket_confirm_missing_ms", 350)))
+    def _tentative_missing_ms(self) -> int:
+        return max(1, int(getattr(self.config, "pocket_tentative_missing_ms", 300) or 300))
 
-    def _reappear_window_ms(self) -> int:
-        return max(1, int(getattr(self.config, "pocket_reappear_window_ms", 800)))
+    def _commit_ready_missing_ms(self) -> int:
+        explicit = getattr(self.config, "pocket_commit_ready_missing_ms", None)
+        legacy = getattr(self.config, "pocket_confirm_missing_ms", None)
+        selected = explicit if explicit is not None else legacy if legacy is not None else 700
+        return max(self._tentative_missing_ms(), int(selected))
+
+    def _final_confirmation_missing_ms(self) -> int:
+        reappear = max(1, int(getattr(self.config, "pocket_reappear_window_ms", 800) or 800))
+        return max(self._commit_ready_missing_ms(), reappear)
 
     def _reappear_match_distance_mm(self) -> float:
-        return max(self.ball_diameter_mm * 2.2, float(getattr(self.config, "pocket_mouth_radius_mm", 125.0)) * 0.75)
+        return max(
+            self.ball_diameter_mm * 2.2,
+            float(getattr(self.config, "pocket_mouth_radius_mm", 125.0)) * 0.75,
+        )
 
-    def _occluded_lost_frames_threshold(self) -> int:
+    @staticmethod
+    def _occluded_lost_frames_threshold() -> int:
         return 4
 
     @staticmethod
@@ -809,12 +813,8 @@ class PerBallPocketFSM:
         return float(np.linalg.norm(np.asarray(first, dtype=np.float32) - np.asarray(second, dtype=np.float32)))
 
     @staticmethod
-    def _unit(vector: np.ndarray, *, fallback: np.ndarray) -> np.ndarray:
-        norm = float(np.linalg.norm(vector))
-        if norm <= 1e-6:
-            return np.asarray(fallback, dtype=np.float32)
-        return np.asarray(vector, dtype=np.float32) / norm
-
-    @staticmethod
     def _elapsed_ms(now_ns: int, since_ns: int) -> int:
         return max(0, int(round((int(now_ns) - int(since_ns)) / 1_000_000.0)))
+
+
+__all__ = ["PerBallPocketFSM", "PocketEvidence"]

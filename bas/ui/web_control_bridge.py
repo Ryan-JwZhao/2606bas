@@ -6,6 +6,7 @@ from PyQt5 import QtCore, QtWidgets
 from ..operator_controls import normalize_shot_mode
 from ..schemas import to_jsonable
 from ..training import RULES_MODE, TRAINING_MODE, list_training_scenarios, normalize_operating_mode
+from ..web_control.pocket_notice import PocketNoticeTracker
 
 
 class WebControlOperatorMixin:
@@ -212,6 +213,20 @@ class WebControlOperatorMixin:
         if any(str(getattr(event, "name", "")).strip().upper() == "SHOT_STARTED" for event in event_list):
             self._manual_web_target_id = None
 
+    def _pocket_notice_tracker(self) -> PocketNoticeTracker:
+        tracker = vars(self).get("_web_pocket_notice_tracker")
+        if tracker is None:
+            tracker = PocketNoticeTracker()
+            self._web_pocket_notice_tracker = tracker
+        return tracker
+
+    def _observe_web_events(self, events: object) -> list[dict[str, object]]:
+        try:
+            event_list = list(events or [])
+        except TypeError:
+            return []
+        return self._pocket_notice_tracker().observe(event_list)
+
     def _build_web_state(self) -> dict[str, object]:
         out = self.last_output
         frame_w = 0
@@ -282,6 +297,7 @@ class WebControlOperatorMixin:
             },
             "training": training_state,
             "training_scenarios": scenarios,
+            "pocket_notices": self._pocket_notice_tracker().current(),
             "shot_mode": {
                 "code": route_type,
                 "name": "勾球模式" if route_type == "hook" else "规则模式",

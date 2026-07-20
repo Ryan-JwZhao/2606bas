@@ -1,6 +1,7 @@
 {
   "config": {
-    "pocket_confirm_missing_ms": 300
+    "pocket_tentative_missing_ms": 300,
+    "pocket_commit_ready_missing_ms": 700
   },
   "table_context": {
     "inner_polygon_mm": [[0, 0], [1000, 0], [1000, 500], [0, 500]],
@@ -27,7 +28,7 @@
       "ts_cam_ns": 1000000000,
       "phase": "SHOT_ACTIVE",
       "tracks": [
-        {"track_id": 2, "group": "solid", "center_mm": [35, 35], "velocity_mm_s": [-20, -20]}
+        {"track_id": 2, "group": "solid", "center_mm": [-50, -25], "velocity_mm_s": [-20, -10]}
       ]
     },
     {
@@ -41,7 +42,7 @@
       "ts_cam_ns": 1180000000,
       "phase": "SHOT_ACTIVE",
       "tracks": [
-        {"track_id": 99, "group": "solid", "center_mm": [42, 42]}
+        {"track_id": 99, "group": "solid", "center_mm": [-45, -22]}
       ]
     },
     {

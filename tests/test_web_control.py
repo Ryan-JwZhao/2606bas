@@ -44,6 +44,8 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             assert "/manifest.webmanifest" in html
             assert "/pwa/icon-192.svg" in html
             assert 'id="installButton"' in html
+            assert 'id="pocketNotice"' in html
+            assert 'id="pocketNoticeMessage"' in html
             assert "功能开发中" not in html
             assert "临时覆盖长期规则" not in html
         with urlopen(f"{base}/manifest.webmanifest", timeout=2.0) as response:
@@ -56,7 +58,7 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
         with urlopen(f"{base}/service-worker.js", timeout=2.0) as response:
             assert response.headers.get_content_type() == "text/javascript"
             service_worker = response.read()
-            assert b"bas-pwa-shell-v3" in service_worker
+            assert b"bas-pwa-shell-v4" in service_worker
             assert b"/stream_coordinates.js" in service_worker
             assert b"/api/" not in service_worker
         with urlopen(f"{base}/pwa/icon-192.svg", timeout=2.0) as response:
@@ -64,7 +66,9 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             assert b"BAS" in response.read()
         with urlopen(f"{base}/mobile_web_client.css", timeout=2.0) as response:
             assert response.headers.get_content_type() == "text/css"
-            assert b"aspect-ratio: 16 / 9" in response.read()
+            client_css = response.read()
+            assert b"aspect-ratio: 16 / 9" in client_css
+            assert b".pocket-notice" in client_css
         with urlopen(f"{base}/stream_coordinates.js", timeout=2.0) as response:
             assert response.headers.get_content_type() == "text/javascript"
             assert b"mapRenderedPointToFrame" in response.read()
@@ -96,6 +100,8 @@ def test_web_control_serves_2604_client_state_and_frame() -> None:
             assert b"beforeinstallprompt" in client_js
             assert b"appinstalled" in client_js
             assert b"prompt.prompt()" in client_js
+            assert b"renderPocketNotices" in client_js
+            assert b"state.pocket_notices" in client_js
 
         request = Request(
             f"{base}/api/compute",

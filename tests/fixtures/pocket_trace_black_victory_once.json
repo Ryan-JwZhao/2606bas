@@ -1,6 +1,7 @@
 {
   "config": {
-    "pocket_confirm_missing_ms": 300
+    "pocket_tentative_missing_ms": 300,
+    "pocket_commit_ready_missing_ms": 700
   },
   "table_context": {
     "inner_polygon_mm": [[0, 0], [1000, 0], [1000, 500], [0, 500]],
@@ -33,7 +34,7 @@
       "ts_cam_ns": 1000000000,
       "phase": "SHOT_ACTIVE",
       "tracks": [
-        {"track_id": 8, "group": "black", "center_mm": [35, 35], "velocity_mm_s": [-20, -20]}
+        {"track_id": 8, "group": "black", "center_mm": [-50, -25], "velocity_mm_s": [-20, -10]}
       ]
     },
     {
@@ -46,14 +47,26 @@
       "frame_id": 3,
       "ts_cam_ns": 1400000000,
       "phase": "SHOT_ACTIVE",
+      "tracks": []
+    },
+    {
+      "frame_id": 4,
+      "ts_cam_ns": 1800000000,
+      "phase": "SHOT_ACTIVE",
+      "tracks": []
+    },
+    {
+      "frame_id": 5,
+      "ts_cam_ns": 1900000000,
+      "phase": "SHOT_ACTIVE",
       "operator_events": ["TURN_RESOLVE"],
       "tracks": [
         {"track_id": 1, "group": "cue", "center_mm": [100, 100]}
       ]
     },
     {
-      "frame_id": 4,
-      "ts_cam_ns": 1500000000,
+      "frame_id": 6,
+      "ts_cam_ns": 2000000000,
       "phase": "SHOT_ACTIVE",
       "operator_events": ["TURN_RESOLVE"],
       "tracks": [

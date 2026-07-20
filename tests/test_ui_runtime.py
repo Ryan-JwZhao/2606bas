@@ -54,6 +54,14 @@ def test_operator_window_uses_scrollable_three_column_layout() -> None:
     assert window.preview_caption.height() < 30
     assert abs((window.preview_label.width() / max(1, window.preview_label.height())) - (16.0 / 9.0)) < 0.05
     assert window.preview_panel.height() > window.plan_panel.height()
+    assert window.pocket_notice_label.parent() is window.preview_frame
+    assert window.pocket_notice_label.isHidden() is True
+
+    window._show_desktop_pocket_notice([{"message": "sob进球"}])
+    app.processEvents()
+
+    assert window.pocket_notice_label.isVisible() is True
+    assert "sob进球" in window.pocket_notice_label.text()
 
     window.close()
     app.processEvents()
@@ -554,6 +562,33 @@ def test_web_state_serializes_an_available_route_for_control_responses() -> None
     assert state["ok"] is True
     assert state["route"]["candidate_id"] == "web-route"
     assert state["route"]["shot_type"] == "rule"
+
+
+def test_web_state_keeps_confirmed_pocket_notices_for_all_rule_ball_codes() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    window.config = AppConfig()
+    window.control_state = RuntimeControlState()
+    window.last_output = None
+    window.pipeline = None
+    window.projection_window = None
+    window.star_formula = SimpleNamespace(enabled=False)
+    window._pending_turn_target_group = "solid"
+    window._manual_web_target_id = None
+
+    events = [
+        Event("POCKET_CONFIRMED", 1, 1, payload={"decision_id": "pocket:cue", "group": "cue"}),
+        Event("POCKET_CONFIRMED", 1, 1, payload={"decision_id": "pocket:black", "group": "black"}),
+        Event("POCKET_CONFIRMED", 1, 1, payload={"decision_id": "pocket:solid", "group": "solid"}),
+        Event("POCKET_CONFIRMED", 1, 1, payload={"decision_id": "pocket:stripe", "group": "stripe"}),
+    ]
+    main_window.OperatorWindow._observe_web_events(window, [*events, events[-1]])
+
+    state = main_window.OperatorWindow._build_web_state(window)
+
+    notices = state["pocket_notices"]
+    assert [notice["ball_code"] for notice in notices] == ["wb", "bb", "sob", "stb"]
+    assert [notice["message"] for notice in notices] == ["wb进球", "bb进球", "sob进球", "stb进球"]
+    assert len({notice["sequence"] for notice in notices}) == 4
 
 
 def _web_selection_window(track: TrackObservation) -> tuple[main_window.OperatorWindow, list[int], list[bool]]:

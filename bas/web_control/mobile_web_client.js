@@ -28,11 +28,15 @@ const elements = {
   shotOverrideTarget: document.getElementById('shotOverrideTarget'),
   cancelShotOverride: document.getElementById('cancelShotOverrideButton'),
   replay: document.getElementById('replayButton'),
+  pocketNotice: document.getElementById('pocketNotice'),
+  pocketNoticeMessage: document.getElementById('pocketNoticeMessage'),
   toast: document.getElementById('toast'),
 };
 
 let lastState = null;
 let toastTimer = 0;
+let pocketNoticeTimer = 0;
+const seenPocketNoticeIds = new Set();
 let fallbackFullscreen = false;
 let pwaAutoFullscreen = false;
 let pwaOrientationTimer = 0;
@@ -44,6 +48,40 @@ function showToast(message) {
   elements.toast.textContent = message;
   elements.toast.classList.add('is-visible');
   toastTimer = window.setTimeout(() => elements.toast.classList.remove('is-visible'), 2300);
+}
+
+function showPocketNotice(message) {
+  if (!message || !elements.pocketNotice || !elements.pocketNoticeMessage) return;
+  window.clearTimeout(pocketNoticeTimer);
+  elements.pocketNoticeMessage.textContent = message;
+  elements.pocketNotice.hidden = false;
+  elements.pocketNotice.classList.remove('is-visible');
+  void elements.pocketNotice.offsetWidth;
+  elements.pocketNotice.classList.add('is-visible');
+  pocketNoticeTimer = window.setTimeout(() => {
+    elements.pocketNotice.classList.remove('is-visible');
+    elements.pocketNotice.hidden = true;
+  }, 4500);
+}
+
+function renderPocketNotices(notices) {
+  if (!Array.isArray(notices)) return;
+  const unseen = [];
+  notices.forEach((notice) => {
+    const identity = String(notice?.notice_id || `sequence:${notice?.sequence ?? ''}`);
+    if (!identity || seenPocketNoticeIds.has(identity)) return;
+    seenPocketNoticeIds.add(identity);
+    unseen.push(notice);
+  });
+  while (seenPocketNoticeIds.size > 128) {
+    seenPocketNoticeIds.delete(seenPocketNoticeIds.values().next().value);
+  }
+  if (!unseen.length) return;
+  unseen.sort((left, right) => Number(left?.sequence || 0) - Number(right?.sequence || 0));
+  const messages = unseen
+    .map((notice) => String(notice?.message || `${String(notice?.ball_code || '').toLowerCase()}进球`).trim())
+    .filter(Boolean);
+  showPocketNotice(messages.join(' · '));
 }
 
 function setConnectionState(kind) {
@@ -101,6 +139,7 @@ function renderState(state) {
   setConnectionState(state.pipeline_ready ? 'running' : 'waiting');
   renderOperatingMode(state.operating_mode?.code || 'rules');
   renderTraining(state);
+  renderPocketNotices(state.pocket_notices);
 
   const baseShotMode = state.base_shot_mode?.code || state.shot_mode?.base_code || state.shot_mode?.code || 'rule';
   setPressed(elements.ruleMode, baseShotMode === 'rule');

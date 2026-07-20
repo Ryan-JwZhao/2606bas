@@ -95,6 +95,9 @@ class RuntimePipeline:
         self._last_plan: Optional[ShotPlan] = None
         self._last_overlay: Optional[ProjectionOverlay] = None
         self._last_pocket_curves_mm: list[list[tuple[float, float]]] = []
+        self._last_table_edge_polygon_mm: list[tuple[float, float]] = list(
+            self.calibration.table.inner_polygon_mm
+        )
         self.last_timings_ms: dict[str, float] = {}
         self._processed_frames = 0
         self._cached_detection_frames = 0
@@ -158,6 +161,12 @@ class RuntimePipeline:
             # and turn resolution are not throttled down to detector refresh cadence.
             self.state_machine.set_table_context(
                 inner_polygon_mm=self.calibration.table.inner_polygon_mm,
+                table_edge_polygon_mm=getattr(self, "_last_table_edge_polygon_mm", []),
+                ball_center_reachable_polygon_mm=getattr(
+                    self.calibration.table,
+                    "center_playable_polygon_mm",
+                    self.calibration.table.inner_polygon_mm,
+                ),
                 pockets_mm=self.calibration.table.pockets_mm,
                 ball_diameter_mm=self.calibration.table.ball_diameter_mm,
                 pocket_curves_mm=getattr(self, "_last_pocket_curves_mm", []),
@@ -315,6 +324,7 @@ class RuntimePipeline:
         if inner_px.shape[0] < 3:
             return
         visible_mm = self.calibration.camera_px_to_table_mm(inner_px)
+        self._last_table_edge_polygon_mm = _points_to_tuples(visible_mm)
         pocket_curves_mm = [
             self.calibration.camera_px_to_table_mm(np.asarray(pocket, dtype=np.float32))
             for pocket in pockets_px

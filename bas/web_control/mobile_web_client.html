@@ -28,6 +28,10 @@
 
     <section class="video-stage" id="videoStage" aria-label="实时台球画面">
       <img id="stream" src="/api/mjpeg" alt="实时台球画面，点击目标球可进行选择" draggable="false" />
+      <div class="pocket-notice" id="pocketNotice" role="status" aria-live="assertive" aria-atomic="true" hidden>
+        <span class="pocket-notice__title">进球！</span>
+        <strong class="pocket-notice__message" id="pocketNoticeMessage"></strong>
+      </div>
       <button class="fullscreen-button" id="fullscreenButton" type="button" aria-label="横屏全屏播放" title="横屏全屏播放">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
