@@ -38,6 +38,9 @@ def _visual(
     lip: bool = False,
     clear: bool = False,
     track_ids: list[int] | None = None,
+    motion_score: float = 0.0,
+    foreground_score: float = 0.0,
+    foreground_depth_diameters: float | None = None,
 ) -> PocketVisualObservationFrame:
     return PocketVisualObservationFrame(
         frame_id=frame_id,
@@ -52,7 +55,10 @@ def _visual(
                 group=group,
                 confidence=0.9,
                 associated_track_ids=list(track_ids or []),
-                evidence_sources=["frame_difference", "foreground_motion"],
+                evidence_sources=["frame_difference", "ball_sized_motion", "foreground_motion"],
+                motion_score=motion_score,
+                foreground_score=foreground_score,
+                foreground_depth_diameters=foreground_depth_diameters,
             )
         ],
         latency_ms=1.0,
@@ -105,6 +111,140 @@ def test_persistent_lip_occupancy_vetoes_cue_ball_false_goal() -> None:
 
     assert any(event.name == "POCKET_REJECTED" for event in rejected.events)
     assert not any(event.name == "POCKET_DETECTED" for event in rejected.events)
+
+
+def test_visible_ball_cannot_be_announced_before_lip_veto_arrives() -> None:
+    """Regression: shot 3 announced bb with missing_ms=0, then rejected the same decision."""
+
+    sm = _machine()
+    black = _ball(55, "black", 500, 15)
+    sm.update(
+        TracksFrame(1, 1_000_000_000, [black]),
+        _visual(1, 1_000_000_000, group="black", inward=True, track_ids=[55]),
+    )
+    premature = sm.update(
+        TracksFrame(2, 2_400_000_000, [black]),
+        _visual(2, 2_400_000_000, group="black", clear=True, track_ids=[55]),
+    )
+    sm.update(
+        TracksFrame(3, 2_500_000_000, [black]),
+        _visual(3, 2_500_000_000, group="black", lip=True, track_ids=[55]),
+    )
+    rejected = sm.update(
+        TracksFrame(4, 3_700_000_000, [black]),
+        _visual(4, 3_700_000_000, group="black", lip=True, track_ids=[55]),
+    )
+
+    assert not any(event.name == "POCKET_DETECTED" for event in premature.events)
+    assert any(event.name == "POCKET_REJECTED" for event in rejected.events)
+
+
+def test_strong_crossing_can_start_candidate_for_recently_disappeared_stationary_ball() -> None:
+    """A ball can be stationary until impact and cross the pocket between detector frames."""
+
+    sm = _machine()
+    stripe = _ball(14, "stripe", 500, 260)
+    stripe.velocity_mm_s = (0.0, 0.0)
+    sm.update(
+        TracksFrame(1, 1_000_000_000, [stripe]),
+        _visual(1, 1_000_000_000, group="stripe", clear=True),
+    )
+    candidate = sm.update(
+        TracksFrame(2, 1_100_000_000, []),
+        _visual(
+            2,
+            1_100_000_000,
+            group="stripe",
+            inward=True,
+            track_ids=[14],
+            motion_score=0.97,
+            foreground_score=0.91,
+            foreground_depth_diameters=0.44,
+        ),
+    )
+    detected = sm.update(
+        TracksFrame(3, 2_400_000_000, []),
+        _visual(3, 2_400_000_000, group="stripe", clear=True, track_ids=[14]),
+    )
+
+    assert any(event.name == "POCKET_CANDIDATE" for event in candidate.events)
+    assert any(event.name == "POCKET_DETECTED" for event in detected.events)
+
+
+def test_deep_crossing_can_start_candidate_for_newborn_visible_track() -> None:
+    """Regression: shot 27 had a two-frame zero-speed track at the crossing."""
+
+    sm = _machine()
+    stripe = _ball(1019, "stripe", 500, 90)
+    stripe.velocity_mm_s = (0.0, 0.0)
+    candidate = sm.update(
+        TracksFrame(1, 1_000_000_000, [stripe]),
+        _visual(
+            1,
+            1_000_000_000,
+            group="stripe",
+            inward=True,
+            track_ids=[1019],
+            motion_score=1.0,
+            foreground_score=1.0,
+            foreground_depth_diameters=0.44,
+        ),
+    )
+    early = sm.update(
+        TracksFrame(2, 1_100_000_000, []),
+        _visual(2, 1_100_000_000, group="stripe", clear=True, track_ids=[1019]),
+    )
+    detected = sm.update(
+        TracksFrame(3, 2_300_000_000, []),
+        _visual(3, 2_300_000_000, group="stripe", clear=True, track_ids=[1019]),
+    )
+
+    assert any(event.name == "POCKET_CANDIDATE" for event in candidate.events)
+    assert not any(event.name == "POCKET_DETECTED" for event in early.events)
+    assert any(event.name == "POCKET_DETECTED" for event in detected.events)
+
+
+def test_strong_crossing_is_relayed_when_shot_phase_starts_late() -> None:
+    """Regression: an old replay entered SHOT_ACTIVE three frames after shot 4 crossed."""
+
+    config = StateConfig(engine="modern", pocket_visual_confirmation_ms=1300, pocket_entry_handoff_ms=450)
+    fsm = PerBallPocketFSM(config)
+    fsm.set_table_context(
+        inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
+        pockets_mm=[(500, 0)],
+        ball_diameter_mm=56,
+    )
+    stripe = _ball(14, "stripe", 500, 260)
+    stripe.velocity_mm_s = (0.0, 0.0)
+    fsm.update(TracksFrame(1, 1_000_000_000, [stripe]), MatchPhase.STABLE_IDLE, _visual(1, 1_000_000_000))
+    deferred = fsm.update(
+        TracksFrame(2, 1_100_000_000, []),
+        MatchPhase.STABLE_IDLE,
+        _visual(
+            2,
+            1_100_000_000,
+            group="stripe",
+            inward=True,
+            track_ids=[14],
+            motion_score=0.97,
+            foreground_score=0.91,
+            foreground_depth_diameters=0.44,
+        ),
+    )
+    activated = fsm.update(
+        TracksFrame(3, 1_300_000_000, []),
+        MatchPhase.SHOT_ACTIVE,
+        _visual(3, 1_300_000_000, group="stripe", clear=True, track_ids=[14]),
+    )
+    detected = fsm.update(
+        TracksFrame(4, 2_400_000_000, []),
+        MatchPhase.SHOT_ACTIVE,
+        _visual(4, 2_400_000_000, group="stripe", clear=True, track_ids=[14]),
+    )
+
+    assert not any(event.name == "POCKET_CANDIDATE" for event in deferred)
+    assert any(event.name == "POCKET_CANDIDATE" for event in activated)
+    assert any(event.name == "POCKET_DETECTED" for event in detected)
 
 
 def test_blurred_two_frame_ball_can_confirm_but_round_detection_cannot() -> None:

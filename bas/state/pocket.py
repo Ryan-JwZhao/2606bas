@@ -108,6 +108,7 @@ class PerBallPocketFSM:
         self.pocket_curves_mm: list[list[tuple[float, float]]] = []
         self.ball_diameter_mm = 57.15
         self._memory: Dict[int, _PocketMemory] = {}
+        self._deferred_visual_crossings: list[tuple[int, int, PocketVisualObservation, float]] = []
         self._decision_seq = 1
         self._geometry_context_fingerprint: Optional[tuple[object, ...]] = None
         self._geometry_model = PocketGeometryModel.build(
@@ -118,6 +119,7 @@ class PerBallPocketFSM:
 
     def reset(self) -> None:
         self._memory.clear()
+        self._deferred_visual_crossings.clear()
         self._decision_seq = 1
 
     def set_table_context(
@@ -234,8 +236,14 @@ class PerBallPocketFSM:
                     visual_mode=pocket_observations is not None,
                 )
 
-        if active and pocket_observations is not None:
-            self._apply_visual_observations(frame, pocket_observations, events)
+        if pocket_observations is not None:
+            self._prune_deferred_visual_crossings(frame.ts_cam_ns)
+            if not active:
+                self._remember_deferred_visual_crossings(pocket_observations)
+            else:
+                if phase in {MatchPhase.SHOT_ACTIVE, MatchPhase.SETTLING}:
+                    self._apply_deferred_visual_crossings(frame, events)
+                self._apply_visual_observations(frame, pocket_observations, events)
 
         if active:
             for memory in list(self._memory.values()):
@@ -246,6 +254,52 @@ class PerBallPocketFSM:
         self._expire_stale_observed_candidates(frame, events)
 
         return events
+
+    def _remember_deferred_visual_crossings(self, frame: PocketVisualObservationFrame) -> None:
+        for observed in frame.observations:
+            if not self._strong_deferred_visual_crossing(observed):
+                continue
+            track_ids = tuple(sorted(int(value) for value in observed.associated_track_ids))
+            key = (int(observed.pocket_index), track_ids)
+            self._deferred_visual_crossings = [
+                row
+                for row in self._deferred_visual_crossings
+                if (int(row[2].pocket_index), tuple(sorted(int(value) for value in row[2].associated_track_ids)))
+                != key
+            ]
+            self._deferred_visual_crossings.append(
+                (int(frame.frame_id), int(frame.ts_cam_ns), observed, float(frame.latency_ms))
+            )
+
+    def _apply_deferred_visual_crossings(self, frame: TracksFrame, events: List[Event]) -> None:
+        pending = list(self._deferred_visual_crossings)
+        self._deferred_visual_crossings.clear()
+        for frame_id, ts_ns, observed, latency_ms in pending:
+            proxy = TracksFrame(
+                frame_id=int(frame_id),
+                ts_cam_ns=int(ts_ns),
+                tracks=frame.tracks,
+            )
+            self._start_visual_candidate(proxy, observed, latency_ms, events)
+
+    def _prune_deferred_visual_crossings(self, now_ns: int) -> None:
+        handoff_ns = self._trajectory_limits().handoff_ms * 1_000_000
+        self._deferred_visual_crossings = [
+            row for row in self._deferred_visual_crossings if int(now_ns) - int(row[1]) <= handoff_ns
+        ]
+
+    @staticmethod
+    def _strong_deferred_visual_crossing(observed: PocketVisualObservation) -> bool:
+        return bool(
+            observed.inward_crossing
+            and normalize_group(observed.group) is not None
+            and observed.associated_track_ids
+            and float(observed.motion_score) >= 0.35
+            and float(observed.foreground_score) >= 0.20
+            and observed.foreground_depth_diameters is not None
+            and float(observed.foreground_depth_diameters) >= -0.15
+            and {"foreground_motion", "ball_sized_motion"}.issubset(observed.evidence_sources)
+        )
 
     def _expire_stale_observed_candidates(self, frame: TracksFrame, events: List[Event]) -> None:
         timeout_ms = max(1800, int(getattr(self.config, "pocket_visual_confirmation_ms", 1300)) + 400)
@@ -357,7 +411,36 @@ class PerBallPocketFSM:
                 {"foreground_motion", "ball_sized_motion"}.intersection(observed.evidence_sources)
             )
             credible_approach = memory.last_inward_speed_mm_s >= self._trajectory_limits().min_speed_mm_s
-            if not has_ball_foreground or not credible_approach:
+            currently_visible = any(
+                int(track.track_id) == int(memory.track_id)
+                and track.visibility == "visible"
+                and float(track.quality) > 0.25
+                for track in frame.tracks
+            )
+            recently_disappeared = bool(
+                not currently_visible
+                and self._elapsed_ms(frame.ts_cam_ns, memory.last_visible_ts_ns)
+                <= self._trajectory_limits().handoff_ms
+            )
+            strong_crossing_shape = bool(
+                float(observed.motion_score) >= 0.35
+                and float(observed.foreground_score) >= 0.20
+                and observed.foreground_depth_diameters is not None
+                and float(observed.foreground_depth_diameters) >= 0.20
+                and {"foreground_motion", "ball_sized_motion"}.issubset(observed.evidence_sources)
+            )
+            newborn_visible_crossing = bool(
+                currently_visible
+                and memory.visible_observation_count <= 2
+                and self._elapsed_ms(frame.ts_cam_ns, memory.first_seen_ts_ns)
+                <= self._trajectory_limits().handoff_ms
+                and float(observed.motion_score) >= 0.75
+                and float(observed.foreground_score) >= 0.60
+            )
+            strong_fast_crossing = bool(
+                strong_crossing_shape and (recently_disappeared or newborn_visible_crossing)
+            )
+            if not has_ball_foreground or not (credible_approach or strong_fast_crossing):
                 return
         pocket_index = int(observed.pocket_index)
         if memory.evidence is not None and memory.evidence.pocket_index != pocket_index:
@@ -1037,6 +1120,7 @@ class PerBallPocketFSM:
         if (
             memory.detected_emitted
             or memory.evidence is None
+            or memory.nonvisible_since_ns is None
             or self._confirmation_elapsed_ms(memory, frame.ts_cam_ns) < self._final_confirmation_missing_ms(memory)
             or not self._strong_confirmation_evidence(memory)
             or memory.reappear_veto

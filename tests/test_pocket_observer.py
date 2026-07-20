@@ -73,3 +73,182 @@ def test_observer_does_not_promote_unassociated_tiny_motion() -> None:
     out = observer.update(FramePacket(2, 1_050_000_000, "cam", image=second), TracksFrame(2, 1_050_000_000, []), policy)
 
     assert out.observations[0].inward_crossing is False
+
+
+def test_fast_crossing_prefers_recently_disappeared_ball_over_static_lip_ball() -> None:
+    """Regression: shot 4 crossed the ROI between detections while another ball sat nearby."""
+
+    observer = PocketObserver(history_ms=1500)
+    policy = _policy()
+    before = np.zeros((100, 100, 3), dtype=np.uint8)
+    cv2.circle(before, (35, 25), 6, (120, 120, 120), -1)
+    crossing = before.copy()
+    cv2.circle(crossing, (50, 4), 6, (240, 240, 240), -1)
+    static = _track(4, "solid", 25, 45, 0)
+    target = _track(14, "stripe", 50, 75, 0)
+
+    observer.update(
+        FramePacket(1, 1_000_000_000, "cam", image=before),
+        TracksFrame(1, 1_000_000_000, [static, target]),
+        policy,
+    )
+    target.visibility = "occluded"
+    target.lost_frames = 1
+    out = observer.update(
+        FramePacket(2, 1_100_000_000, "cam", image=crossing),
+        TracksFrame(2, 1_100_000_000, [static, target]),
+        policy,
+    )
+
+    observed = out.observations[0]
+    assert observed.inward_crossing is True
+    assert observed.group == "stripe"
+    assert observed.associated_track_ids == [14]
+
+
+def test_deep_non_ball_motion_does_not_hijack_tangential_disappeared_track() -> None:
+    """Regression: a cue entering a pocket ROI must not pot a ball moving past the pocket."""
+
+    observer = PocketObserver(history_ms=1500)
+    policy = _policy()
+    empty = np.zeros((100, 100, 3), dtype=np.uint8)
+    observer.update(
+        FramePacket(1, 1_000_000_000, "cam", image=empty),
+        TracksFrame(1, 1_000_000_000, [_track(45, "stripe", 10, 75, 0)]),
+        policy,
+    )
+    observer.update(
+        FramePacket(2, 1_100_000_000, "cam", image=empty),
+        TracksFrame(2, 1_100_000_000, [_track(45, "stripe", 30, 75, 0)]),
+        policy,
+    )
+    crossing = empty.copy()
+    cv2.circle(crossing, (50, 4), 6, (240, 240, 240), -1)
+    vanished = _track(45, "stripe", 30, 75, 0)
+    vanished.visibility = "occluded"
+    vanished.lost_frames = 1
+
+    out = observer.update(
+        FramePacket(3, 1_200_000_000, "cam", image=crossing),
+        TracksFrame(3, 1_200_000_000, [vanished]),
+        policy,
+    )
+
+    assert out.observations[0].inward_crossing is False
+
+
+def test_aligned_ball_occluded_at_mouth_can_still_cross() -> None:
+    """Regression: shot 23 vanished just before the visual centroid reached pocket centre."""
+
+    observer = PocketObserver(history_ms=1500)
+    policy = _policy()
+    empty = np.zeros((100, 100, 3), dtype=np.uint8)
+    observer.update(
+        FramePacket(1, 1_000_000_000, "cam", image=empty),
+        TracksFrame(1, 1_000_000_000, [_track(11, "stripe", 50, 75, -300)]),
+        policy,
+    )
+    observer.update(
+        FramePacket(2, 1_100_000_000, "cam", image=empty),
+        TracksFrame(2, 1_100_000_000, [_track(11, "stripe", 50, 35, -300)]),
+        policy,
+    )
+    mouth = empty.copy()
+    cv2.circle(mouth, (50, 9), 6, (240, 240, 240), -1)
+    vanished = _track(11, "stripe", 50, 35, -300)
+    vanished.visibility = "occluded"
+    vanished.lost_frames = 1
+
+    out = observer.update(
+        FramePacket(3, 1_200_000_000, "cam", image=mouth),
+        TracksFrame(3, 1_200_000_000, [vanished]),
+        policy,
+    )
+
+    observed = out.observations[0]
+    assert observed.inward_crossing is True
+    assert observed.group == "stripe"
+    assert observed.associated_track_ids == [11]
+
+
+def test_latch_does_not_rearm_immediately_when_class_vote_changes() -> None:
+    """One physical crossing must not duplicate when its short class vote changes."""
+
+    observer = PocketObserver(history_ms=1500)
+    policy = _policy()
+
+    def image_with(*balls: tuple[int, int]) -> np.ndarray:
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        for x, y in balls:
+            cv2.circle(image, (x, y), 6, (240, 240, 240), -1)
+        return image
+
+    observer.update(
+        FramePacket(1, 1_000_000_000, "cam", image=image_with((35, 45))),
+        TracksFrame(1, 1_000_000_000, [_track(7, "cue", 35, 45, -300)]),
+        policy,
+    )
+    first = observer.update(
+        FramePacket(2, 1_100_000_000, "cam", image=image_with((35, 20))),
+        TracksFrame(2, 1_100_000_000, [_track(7, "cue", 35, 20, -300)]),
+        policy,
+    )
+    observer.update(
+        FramePacket(3, 1_200_000_000, "cam", image=image_with((35, 20), (60, 45))),
+        TracksFrame(
+            3,
+            1_200_000_000,
+            [_track(7, "cue", 35, 20, 0), _track(11, "stripe", 60, 45, -300)],
+        ),
+        policy,
+    )
+    second = observer.update(
+        FramePacket(4, 1_300_000_000, "cam", image=image_with((35, 20), (60, 4))),
+        TracksFrame(
+            4,
+            1_300_000_000,
+            [_track(7, "cue", 35, 20, 0), _track(11, "stripe", 60, 4, -300)],
+        ),
+        policy,
+    )
+
+    assert first.observations[0].inward_crossing is True
+    assert first.observations[0].group == "cue"
+    assert second.observations[0].inward_crossing is False
+
+
+def test_visual_centroid_prefers_nearby_visible_ball_over_disappeared_fallback() -> None:
+    """Regression: shot 23's stripe was visible near the motion while a cue track was stale."""
+
+    observer = PocketObserver(history_ms=1500)
+    policy = _policy()
+    empty = np.zeros((100, 100, 3), dtype=np.uint8)
+    cue = _track(997, "cue", 10, 75, 0)
+    stripe_far = _track(11, "stripe", 76, 75, -300)
+    observer.update(
+        FramePacket(1, 1_000_000_000, "cam", image=empty),
+        TracksFrame(1, 1_000_000_000, [cue, stripe_far]),
+        policy,
+    )
+    # The real shot-23 track is outside the normal guard association but close
+    # to the visual crossing centroid.  Keep this fixture just outside both
+    # the polygon and the normal 2.25-diameter radius.
+    stripe_near = _track(11, "stripe", 76, 23, -300)
+    observer.update(
+        FramePacket(2, 1_100_000_000, "cam", image=empty),
+        TracksFrame(2, 1_100_000_000, [stripe_near]),
+        policy,
+    )
+    mouth = empty.copy()
+    cv2.circle(mouth, (50, 9), 6, (240, 240, 240), -1)
+
+    out = observer.update(
+        FramePacket(3, 1_200_000_000, "cam", image=mouth),
+        TracksFrame(3, 1_200_000_000, [stripe_near]),
+        policy,
+    )
+
+    observed = out.observations[0]
+    assert observed.inward_crossing is True
+    assert observed.group == "stripe"
+    assert observed.associated_track_ids == [11]

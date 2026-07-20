@@ -1,0 +1,13 @@
+{
+  "name": "session_20260720_shot3_shot4_regression",
+  "video_frame_offset": 0,
+  "max_notice_delay_ms": 1500,
+  "max_match_frame_gap": 90,
+  "goals": [
+    {"shot": 2, "contact_frame": 224, "pocket_index": 0, "group": "solid", "ball_code": "sob"},
+    {"shot": 4, "contact_frame": 750, "pocket_index": 2, "group": "stripe", "ball_code": "stb"}
+  ],
+  "no_goals": [
+    {"shot": 3, "reason": "black ball remains on top-left pocket lip"}
+  ]
+}

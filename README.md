@@ -113,7 +113,7 @@ PWA 安装需要 HTTPS 安全上下文（或在本机 `localhost` 调试）；�
 Modern 进球识别由四个独立模块协作：
 
 - `bas/perception/regions.py`：球检测区域为“台面内框 + 六个袋口保护带”，保护带由各袋标定后的球直径生成，不使用固定像素值。
-- `bas/perception/pocket_observer.py`：只处理六个小 ROI，通过球尺度帧差、颜色前景和最近轨迹识别 `inward_crossing`、`outward_crossing`、`lip_occupied`、`clear`；不持续运行第二次 YOLO。
+- `bas/perception/pocket_observer.py`：只处理六个小 ROI，通过球尺度帧差、颜色前景和最近轨迹识别 `inward_crossing`、`outward_crossing`、`lip_occupied`、`clear`；高速穿袋时先按视觉穿越质心关联袋口三球径内的当前可见球，再回退到 `450 ms` 内刚消失且运动方向对准袋口的轨迹，避免袋边静止球或历史轨迹抢走类别；不持续运行第二次 YOLO。
 - `bas/state/pocket_trajectory.py`：判断可见轨迹、预击球历史和跨 ID 轨迹是否会穿过袋口。
 - `bas/state/pocket.py`：把轨迹、袋口视觉和跨 ID 证据合并为一个逻辑球决定，负责确认、撤销、去重和诊断原因。
 
@@ -144,14 +144,14 @@ MOUTH:    depth >= -ball_radius * 0.6
 
 Modern 不再使用径向 distance 产生 zone；`pocket_funnel_radius_mm` 和 `pocket_mouth_settle_ms` 只为 legacy engine 保留。真实曲线不存在时，才使用袋口中心相对台面质心的方向作为兼容法向，但仍执行相同的二维 zone 和几何自检。
 
-高速球常在球心进入严格 MOUTH 前就被袋口遮挡，因此另设“不改变 zone 的袋前轨迹走廊”：候选深度约 `125 mm`，跨 ID 接力窗口约 `450 ms`，预击球历史保留 `1.5 s`。只有球组、袋号、位移速度和捕获宽度均相容时才继承轨迹。对于只出现一两帧、检测框沿袋口方向明显拉长、低置信且随后完全消失的高速球，状态机使用受限的 `blurred_single_frame_disappearance` 证据；正常圆形静止球不满足该分支。
+高速球常在球心进入严格 MOUTH 前就被袋口遮挡，因此另设“不改变 zone 的袋前轨迹走廊”：候选深度约 `125 mm`，跨 ID 接力窗口约 `450 ms`，预击球历史保留 `1.5 s`。只有球组、袋号、位移速度和捕获宽度均相容时才继承轨迹。对于跟踪器在袋口才新建、只有一两帧且速度尚未建立的轨迹，只有帧差至少 `0.75`、前景至少 `0.60`、穿越深度至少 `0.20` 个球径的强视觉证据才能建立候选，随后仍须消失并完成 `1.3 s` 反证窗口。对于一两帧拉长、低置信且随后完全消失的高速球，状态机另使用受限的 `blurred_single_frame_disappearance` 证据；正常圆形静止球不满足这些分支。
 高速模糊兜底还要求检测框宽高比不超过 `pocket_blur_max_aspect_ratio`（默认 `2.8`），避免把球杆、手臂或栏边形成的超长伪框当成球。投影进袋候选使用独立的连续回弹计时：明确向外速度立即拒绝；位置回退但速度估计仍短暂向内时，连续 `90 ms` 后拒绝，证据时间刷新不会重新开始这段计时。
 
 自动进球时序为：
 
 1. 球进入严格袋区、满足袋前投影/跨 ID 连续性，或袋口观察器给出已关联球组的向内穿越，产生一个逻辑 `POCKET_CANDIDATE`。
 2. 候选进入袋口后等待 `1.3 s`。期间若出现向外穿越、桌面侧重现、轨迹反向或持续袋唇占用，则自动产生 `POCKET_REJECTED`。
-3. 只有持续消失且没有反证的强候选才产生一次 `POCKET_DETECTED`；单纯跟踪器 `occluded` 外推不能确认。视觉证据不足会自动拒绝并记录原因，不进入人工进球审核。
+3. 只有逻辑球已经持续离开桌面且没有反证的强候选才产生一次 `POCKET_DETECTED`；球仍处于 `visible` 时，即使袋口视觉短暂误判为 `clear` 也不得播报。单纯跟踪器 `occluded` 外推不能确认。视觉证据不足会自动拒绝并记录原因，不进入人工进球审核。
 4. 同袋多候选分别维护，真实进球与无效候选互不阻塞；过期视觉候选自动拒绝，避免跨杆残留和重复播报。
 5. 账本观测数量不一致只记录裁判异常，不阻止已经确认的 `POCKET_DETECTED` 和服务端提示。
 
@@ -189,14 +189,22 @@ state:
 .\.venv\Scripts\python.exe scripts\evaluate_pocket_video.py --replay replays\session_20260720_135725_516792 --video local_settings\captures\no_line_video_20260627_185946_1_1.mp4
 ```
 
-验收结果必须为 `PASS: matched=11/11 detected=11`，第 2 杆为 `sob`、第 34 杆为 `bb`，第 18/24/30 杆无播报，所有决定延迟不超过 `1.5 s`。当前基准为 11/11、0 误报、0 重复，观察器 p95 `4.02 ms`，估算整体帧率下降 `4.82%`。
+逐帧复核确认第 4 杆右上袋 `stb` 和第 27 杆中上袋 `stb` 都属于真实进球，因此完整验收基准为最初统计的 13 球。当前结果为 `PASS: matched=13/13 detected=13`、0 误报、0 重复，观察器 p95 为 `3.87 ms`，估算整体帧率下降 `4.84%`。第 2 杆为 `sob`、第 4 杆为 `stb`、第 27 杆为 `stb`、第 34 杆为 `bb`，第 3/18/24/30 杆无播报，所有决定延迟不超过 `1.5 s`。回放验收按 `contact_frame` 对齐真实击球，不依赖可能被空杆误触发影响的内部杆号，并会把同一杆多报的错误袋号单独计为误报。
+
+只复现本次第 3/4 杆问题可执行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\evaluate_pocket_video.py --replay replays\session_20260720_172814_256157 --video local_settings\captures\no_line_video_20260627_185946_1_1.mp4 --labels tests\fixtures\shot3_shot4_regression_labels.json --stop-frame 878
+```
+
+当前该片段结果为 2/2 命中、0 误报、0 重复；第 4 杆在 774 帧播报 `stb`、袋号 `2`、决定延迟 `1328 ms`，第 3 杆不播报。观察器 p95 约 `4.04 ms`，估算整体帧率下降约 `4.53%`。
 
 桌面预览和 Web 前端会明显显示 `wb进球`、`bb进球`、`sob进球` 或 `stb进球`。提示只消费服务端状态事件；投影交互层明确忽略 `POCKET_DETECTED`/`POT_PROBABLE`，不会显示进球文字。
 
 进球模块定向回归：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -p no:cacheprovider --basetemp .tmp\pytest-pocket tests\test_pocket_geometry.py tests\test_pocket_observer.py tests\test_pocket_visual_state.py tests\test_state_modern.py tests\test_state_replay.py tests\test_web_pocket_notice.py tests\test_projection_interaction.py tests\test_web_control.py -q
+.\.venv\Scripts\python.exe -m pytest -p no:cacheprovider --basetemp .tmp\pytest-pocket tests\test_pocket_geometry.py tests\test_pocket_observer.py tests\test_pocket_visual_state.py tests\test_pocket_evaluator.py tests\test_state_modern.py tests\test_state_replay.py tests\test_web_pocket_notice.py tests\test_projection_interaction.py tests\test_web_control.py -q
 ```
 
 ## 测试与回归

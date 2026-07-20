@@ -27,6 +27,7 @@ class _PocketHistory:
     foreground_stable_since_ns: Optional[int] = None
     clear_since_ns: Optional[int] = None
     inward_latched: bool = False
+    inward_latched_since_ns: Optional[int] = None
     outward_streak: int = 0
     previous_track_centers: dict[int, tuple[float, float]] = field(default_factory=dict)
     votes: Deque[tuple[int, int, str, tuple[float, float], float]] = field(default_factory=deque)
@@ -80,11 +81,15 @@ class PocketObserver:
         crop_image, mask, offset = _guard_crop(image, guard.polygon)
         crop = cv2.cvtColor(crop_image, cv2.COLOR_BGR2GRAY)
         current_track_centers: dict[int, tuple[float, float]] = {}
+        current_visible_ids: set[int] = set()
+        current_visible_tracks: list[TrackObservation] = []
         associated: list[TrackObservation] = []
         for track in tracks:
             group = _track_group(track)
             if group not in BALL_GROUPS or track.visibility != "visible" or float(track.quality) <= 0.25:
                 continue
+            current_visible_ids.add(int(track.track_id))
+            current_visible_tracks.append(track)
             if _near_guard(track.center_px, guard):
                 associated.append(track)
                 current_track_centers[int(track.track_id)] = (float(track.center_px[0]), float(track.center_px[1]))
@@ -134,21 +139,84 @@ class PocketObserver:
         inward = bool((motion_gate or foreground_gate) and track_inward)
         outward = bool((motion_gate or foreground_gate) and track_outward)
 
-        selected = track_inward or track_outward or associated
+        foreground_global = None
+        if foreground_center is not None:
+            foreground_global = (
+                float(foreground_center[0] + offset[0]),
+                float(foreground_center[1] + offset[1]),
+            )
+        motion_global = None
+        if motion_center is not None:
+            motion_global = (
+                float(motion_center[0] + offset[0]),
+                float(motion_center[1] + offset[1]),
+            )
+
+        selected = track_inward or track_outward
         group = _vote_group(selected, history.votes, ts_ns)
         associated_ids = sorted({int(track.track_id) for track in selected})
+        visual_global = foreground_global if foreground_gate else motion_global if motion_gate else None
+        if not associated_ids and visual_global is not None:
+            # A high-speed ball can still be detected just outside the guard
+            # polygon on the frame where its visual blob has already reached
+            # the pocket mouth.  Give that current, spatially matching track a
+            # chance before falling back to stale disappeared tracks.  The
+            # guard-centre limit prevents unrelated table balls from competing.
+            visual_candidates = {
+                int(track.track_id): track
+                for track in (*associated, *current_visible_tracks)
+                if float(
+                    np.linalg.norm(
+                        np.asarray(track.center_px, dtype=np.float32)
+                        - np.asarray(guard.center_px, dtype=np.float32)
+                    )
+                )
+                <= scale * 3.0
+            }
+            nearby = sorted(
+                (
+                    (
+                        float(
+                            np.linalg.norm(
+                                np.asarray(track.center_px, dtype=np.float32)
+                                - np.asarray(visual_global, dtype=np.float32)
+                            )
+                        ),
+                        track,
+                    )
+                    for track in visual_candidates.values()
+                ),
+                key=lambda item: (item[0], int(item[1].track_id)),
+            )
+            if nearby and nearby[0][0] <= scale * 2.5:
+                selected = [nearby[0][1]]
+                group = _vote_group(selected, history.votes, ts_ns)
+                associated_ids = [int(selected[0].track_id)]
+                if _point_in_entry_gate(visual_global, guard, table_center):
+                    visual_depth, _ = _entry_coordinates(visual_global, guard, table_center)
+                    track_depth, _ = _entry_coordinates(selected[0].center_px, guard, table_center)
+                    inward = bool(
+                        (motion_gate or foreground_gate)
+                        and visual_depth >= -scale * 0.15
+                        and visual_depth >= track_depth + scale * 0.25
+                    )
         if not associated_ids and (motion_gate or foreground_gate):
-            fallback = self._recent_global_association(guard, table_center, ts_ns)
+            # A fast object ball may disappear at impact and traverse the whole
+            # guard ROI before YOLO sees it again.  Do not let an unrelated,
+            # stationary ball beside the pocket steal that crossing.  Prefer a
+            # track which was visible very recently but is absent now.
+            fallback = self._recent_global_association(
+                guard,
+                table_center,
+                ts_ns,
+                excluded_track_ids=current_visible_ids,
+                max_age_ms=450.0,
+            )
             if fallback is not None:
                 _, fallback_id, fallback_group, fallback_center, _ = fallback
                 associated_ids = [int(fallback_id)]
                 group = fallback_group
-                foreground_global = None
-                if foreground_center is not None:
-                    foreground_global = (
-                        float(foreground_center[0] + offset[0]),
-                        float(foreground_center[1] + offset[1]),
-                    )
+                fallback_entry_depths: list[float] = []
                 inward = bool(
                     foreground_gate
                     and foreground_advance >= scale * 0.12
@@ -159,23 +227,27 @@ class PocketObserver:
                     foreground_global, guard, table_center
                 ):
                     foreground_depth, _ = _entry_coordinates(foreground_global, guard, table_center)
+                    fallback_entry_depths.append(float(foreground_depth))
                     track_depth, _ = _entry_coordinates(fallback_center, guard, table_center)
                     inward = inward or foreground_depth >= track_depth + scale * 0.25
-                motion_global = None
-                if motion_center is not None:
-                    motion_global = (
-                        float(motion_center[0] + offset[0]),
-                        float(motion_center[1] + offset[1]),
-                    )
                 if motion_gate and motion_global is not None and _point_in_entry_gate(
                     motion_global, guard, table_center
                 ):
                     motion_depth, _ = _entry_coordinates(motion_global, guard, table_center)
+                    fallback_entry_depths.append(float(motion_depth))
                     track_depth, _ = _entry_coordinates(fallback_center, guard, table_center)
                     inward = inward or motion_depth >= track_depth + scale * 0.25
+                # Approaching the jaw is not a crossing.  With no live track in
+                # the ROI, independent motion must reach beyond the pocket
+                # centre before it can be promoted to an inward event.
+                inward = bool(inward and any(depth >= -scale * 0.15 for depth in fallback_entry_depths))
                 fallback_outward = foreground_gate and foreground_advance <= -scale * 0.12
                 history.outward_streak = history.outward_streak + 1 if fallback_outward else 0
                 outward = bool(outward or history.outward_streak >= 2)
+        if not associated_ids:
+            selected = associated
+            group = _vote_group(selected, history.votes, ts_ns)
+            associated_ids = sorted({int(track.track_id) for track in selected})
         if track_outward:
             history.outward_streak = max(2, history.outward_streak)
         elif not outward and associated_ids:
@@ -221,16 +293,23 @@ class PocketObserver:
         clear = not associated and foreground_score < 0.05 and motion_score < 0.04
         if outward:
             history.inward_latched = False
+            history.inward_latched_since_ns = None
         if clear:
             if history.clear_since_ns is None:
                 history.clear_since_ns = ts_ns
             elif ts_ns - history.clear_since_ns >= 500_000_000:
                 history.inward_latched = False
+                history.inward_latched_since_ns = None
         else:
             history.clear_since_ns = None
-        emit_inward = bool(inward and not history.inward_latched)
+        latch_expired = bool(
+            history.inward_latched_since_ns is not None
+            and ts_ns - history.inward_latched_since_ns >= self.history_ms * 1_000_000
+        )
+        emit_inward = bool(inward and (not history.inward_latched or latch_expired))
         if emit_inward:
             history.inward_latched = True
+            history.inward_latched_since_ns = ts_ns
         sources: list[str] = []
         if motion_gate:
             sources.append("frame_difference")
@@ -294,19 +373,51 @@ class PocketObserver:
         guard: PocketGuardRegion,
         table_center: tuple[float, float],
         now_ns: int,
+        *,
+        excluded_track_ids: set[int] | None = None,
+        max_age_ms: float | None = None,
     ) -> Optional[tuple[int, int, str, tuple[float, float], float]]:
         latest_by_track: dict[int, tuple[int, int, str, tuple[float, float], float]] = {}
         for row in self._global_votes:
             latest_by_track[int(row[1])] = row
         candidates: list[tuple[float, float, tuple[int, int, str, tuple[float, float], float]]] = []
         center = np.asarray(guard.center_px, dtype=np.float32)
-        max_distance = max(1.0, float(guard.ball_diameter_px) * 7.0)
+        max_distance = max(1.0, float(guard.ball_diameter_px) * 12.0)
+        excluded = excluded_track_ids or set()
         for row in latest_by_track.values():
+            if int(row[1]) in excluded:
+                continue
             age_ms = max(0.0, (int(now_ns) - int(row[0])) / 1_000_000.0)
             if age_ms > float(self.history_ms):
                 continue
-            if age_ms > 300.0:
-                track_rows = [candidate for candidate in self._global_votes if int(candidate[1]) == int(row[1])]
+            if max_age_ms is not None and age_ms > float(max_age_ms):
+                continue
+            track_rows = [candidate for candidate in self._global_votes if int(candidate[1]) == int(row[1])]
+            previous_distinct = next(
+                (
+                    candidate
+                    for candidate in reversed(track_rows[:-1])
+                    if float(
+                        np.linalg.norm(
+                            np.asarray(row[3], dtype=np.float32)
+                            - np.asarray(candidate[3], dtype=np.float32)
+                        )
+                    )
+                    >= float(guard.ball_diameter_px) * 0.25
+                ),
+                None,
+            )
+            if previous_distinct is not None:
+                travel = np.asarray(row[3], dtype=np.float32) - np.asarray(previous_distinct[3], dtype=np.float32)
+                travel_norm = float(np.linalg.norm(travel))
+                if travel_norm > 1e-6:
+                    heading = travel / travel_norm
+                    remaining = center - np.asarray(row[3], dtype=np.float32)
+                    forward = float(np.dot(remaining, heading))
+                    lateral = float(abs(remaining[0] * heading[1] - remaining[1] * heading[0]))
+                    if forward <= 0.0 or lateral > float(guard.ball_diameter_px) * 2.5:
+                        continue
+            if age_ms > 300.0 and max_age_ms is None:
                 previous = track_rows[-2] if len(track_rows) >= 2 else None
                 if previous is None:
                     continue

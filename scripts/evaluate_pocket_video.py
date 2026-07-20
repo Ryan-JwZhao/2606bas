@@ -336,9 +336,10 @@ def _evaluate(
     timings: list[float],
     source_intervals_ms: list[float],
 ) -> dict[str, Any]:
-    expected = {int(item["shot"]): dict(item) for item in labels.get("goals") or []}
+    expected = [dict(item) for item in labels.get("goals") or []]
     forbidden = {int(item["shot"]) for item in labels.get("no_goals") or []}
     max_delay = int(labels.get("max_notice_delay_ms", 1500))
+    max_frame_gap = max(1, int(labels.get("max_match_frame_gap", 90)))
     by_shot: dict[int, list[dict[str, Any]]] = {}
     for item in detected:
         if item["shot"] is not None:
@@ -347,27 +348,65 @@ def _evaluate(
     duplicates: list[dict[str, Any]] = []
     wrong: list[dict[str, Any]] = []
     late: list[dict[str, Any]] = []
-    for shot, goal in expected.items():
-        found = by_shot.get(shot, [])
-        matching = [
-            item
-            for item in found
-            if item["group"] == goal["group"] and int(item["pocket_index"]) == int(goal["pocket_index"])
+    used_indices: set[int] = set()
+    duplicate_indices: set[int] = set()
+    wrong_indices: set[int] = set()
+    for goal in sorted(expected, key=lambda item: int(item.get("contact_frame", 0))):
+        shot = int(goal["shot"])
+        contact_frame = goal.get("contact_frame")
+        if contact_frame is None:
+            found_indices = [index for index, item in enumerate(detected) if item.get("shot") == shot]
+        else:
+            contact = int(contact_frame)
+            found_indices = [
+                index
+                for index, item in enumerate(detected)
+                if index not in used_indices
+                and contact - 5 <= int(item["frame_id"]) <= contact + max_frame_gap
+            ]
+        matching_indices = [
+            index
+            for index in found_indices
+            if detected[index]["group"] == goal["group"]
+            and int(detected[index]["pocket_index"]) == int(goal["pocket_index"])
         ]
+        matching_indices.sort(
+            key=lambda index: abs(int(detected[index]["frame_id"]) - int(contact_frame or detected[index]["frame_id"]))
+        )
+        matching = [detected[index] for index in matching_indices]
         if not matching:
             misses.append(goal)
-            if found:
-                wrong.extend(found)
+            legacy_wrong = [index for index in found_indices if detected[index].get("shot") == shot]
+            wrong.extend(detected[index] for index in legacy_wrong)
+            wrong_indices.update(legacy_wrong)
             continue
+        used_indices.add(matching_indices[0])
         if len(matching) > 1:
             duplicates.extend(matching[1:])
+            duplicate_indices.update(matching_indices[1:])
         for item in matching:
             if int(item.get("decision_latency_ms") or 0) > max_delay:
                 late.append(item)
     false_positives = [
         item
-        for item in detected
-        if item["shot"] not in expected or int(item["shot"] or -1) in forbidden
+        for index, item in enumerate(detected)
+        if index not in used_indices
+        and index not in duplicate_indices
+        and index not in wrong_indices
+        and (
+            int(item.get("shot") or -1) in forbidden
+            or not any(
+                item["group"] == goal["group"]
+                and int(item["pocket_index"]) == int(goal["pocket_index"])
+                and (
+                    goal.get("contact_frame") is None
+                    or int(goal["contact_frame"]) - 5
+                    <= int(item["frame_id"])
+                    <= int(goal["contact_frame"]) + max_frame_gap
+                )
+                for goal in expected
+            )
+        )
     ]
     p95 = float(np.percentile(timings, 95)) if timings else 0.0
     observer_mean = float(np.mean(timings)) if timings else 0.0
