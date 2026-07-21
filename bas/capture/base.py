@@ -16,6 +16,23 @@ class CaptureInfo:
     metadata: Dict[str, object]
 
 
+@dataclass(frozen=True)
+class VideoTimelineState:
+    """Current position and bounds for a seekable video-file source."""
+
+    current_frame: int
+    total_frames: int
+    fps: float
+
+    @property
+    def duration_seconds(self) -> float:
+        return float(self.total_frames) / self.fps if self.fps > 0.0 else 0.0
+
+    @property
+    def current_seconds(self) -> float:
+        return float(self.current_frame) / self.fps if self.fps > 0.0 else 0.0
+
+
 class CaptureSource(Protocol):
     def is_opened(self) -> bool:
         ...
@@ -28,4 +45,3 @@ class CaptureSource(Protocol):
 
     def info(self) -> CaptureInfo:
         ...
-

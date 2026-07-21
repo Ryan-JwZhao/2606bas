@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5 import QtWidgets
 
 from bas.config import AppConfig
+from bas.capture import VideoTimelineState
 from bas import runtime_env
 from bas.operator_controls import RuntimeControlState
 from bas.schemas import DetectionsFrame, Event, FramePacket, MatchStateFrame, ProjectionOverlay, ShotCandidate, ShotPlan, TrackObservation, TracksFrame
@@ -63,6 +64,58 @@ def test_operator_window_uses_scrollable_three_column_layout() -> None:
     assert window.pocket_notice_label.isVisible() is True
     assert "sob进球" in window.pocket_notice_label.text()
 
+    window.close()
+    app.processEvents()
+
+
+def test_video_timeline_is_only_shown_for_video_capture_mode() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+
+    assert window.video_timeline_widget.isHidden() is True
+
+    window.backend_combo.setCurrentText("video")
+    assert window.video_timeline_widget.isHidden() is False
+
+    window.backend_combo.setCurrentText("opencv")
+    assert window.video_timeline_widget.isHidden() is True
+
+    window.close()
+    app.processEvents()
+
+
+def test_video_timeline_drag_seeks_pipeline_and_formats_time() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    seeks: list[int] = []
+
+    class _VideoPipeline:
+        def video_timeline_state(self) -> VideoTimelineState:
+            return VideoTimelineState(current_frame=0, total_frames=3600, fps=30.0)
+
+        def seek_video(self, frame_index: int) -> VideoTimelineState:
+            seeks.append(frame_index)
+            return VideoTimelineState(current_frame=frame_index, total_frames=3600, fps=30.0)
+
+    window.backend_combo.setCurrentText("video")
+    window.pipeline = _VideoPipeline()
+    window._configure_video_timeline()
+
+    assert window.video_timeline_slider.maximum() == 3599
+    assert window.video_timeline_slider.isEnabled() is True
+    assert window.video_timeline_label.text() == "00:00 / 02:00"
+
+    window._video_timeline_slider_pressed()
+    window.video_timeline_slider.setValue(900)
+    window._video_timeline_slider_moved(900)
+    assert seeks == []
+    assert window.video_timeline_label.text() == "00:30 / 02:00"
+    window._video_timeline_slider_released()
+
+    assert seeks == [900]
+    assert window.video_timeline_slider.value() == 900
+
+    window.pipeline = None
     window.close()
     app.processEvents()
 

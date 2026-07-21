@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from bas.capture import service as capture_service
-from bas.capture.base import CaptureInfo
+from bas.capture.base import CaptureInfo, VideoTimelineState
 from bas.config import CameraConfig
 
 
@@ -52,6 +52,18 @@ class _StubVideoCapture:
 
     def info(self) -> CaptureInfo:
         return CaptureInfo(backend="video", camera_id="video_stub", width=1920, height=1080, fps=30.0, metadata={})
+
+
+class _SeekableStubVideoCapture(_StubVideoCapture):
+    def __init__(self) -> None:
+        self.current_frame = 0
+
+    def timeline_state(self) -> VideoTimelineState:
+        return VideoTimelineState(current_frame=self.current_frame, total_frames=3000, fps=25.0)
+
+    def seek(self, frame_index: int) -> VideoTimelineState:
+        self.current_frame = int(frame_index)
+        return self.timeline_state()
 
 
 def test_create_capture_service_applies_nori_white_balance_controls(monkeypatch) -> None:
@@ -127,3 +139,30 @@ def test_capture_frames_are_distortion_corrected_requires_valid_calibration_for_
     )
 
     assert capture_service.capture_frames_are_distortion_corrected(config) is False
+
+
+def test_capture_service_exposes_and_seeks_video_timeline() -> None:
+    source = _SeekableStubVideoCapture()
+    service = capture_service.CaptureService(source, camera_id="video_source")
+
+    initial = service.video_timeline_state()
+    sought = service.seek_video(1250)
+
+    assert initial == VideoTimelineState(current_frame=0, total_frames=3000, fps=25.0)
+    assert sought.current_frame == 1250
+    assert sought.current_seconds == 50.0
+    assert sought.duration_seconds == 120.0
+    assert service.frame_id == 1250
+
+
+def test_capture_service_rejects_seek_for_non_video_source() -> None:
+    service = capture_service.CaptureService(_StubNoriCapture(_StubController()), camera_id="live")
+
+    assert service.video_timeline_state() is None
+
+    try:
+        service.seek_video(10)
+    except RuntimeError as exc:
+        assert "does not support" in str(exc)
+    else:
+        raise AssertionError("live capture must not support timeline seeking")

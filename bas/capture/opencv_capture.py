@@ -8,7 +8,7 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from .base import CaptureInfo
+from .base import CaptureInfo, VideoTimelineState
 
 LOGGER = logging.getLogger(__name__)
 
@@ -111,17 +111,38 @@ class VideoFileCapture:
         meta = {"backend": "video", "path": str(self._path)}
         return bool(ok), frame if ok else None, meta
 
+    def timeline_state(self) -> VideoTimelineState:
+        total_frames = max(0, int(round(self._cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0)))
+        current_frame = max(0, int(round(self._cap.get(cv2.CAP_PROP_POS_FRAMES) or 0.0)))
+        if total_frames > 0:
+            current_frame = min(current_frame, total_frames - 1)
+        fps = max(0.0, float(self._cap.get(cv2.CAP_PROP_FPS) or 0.0))
+        return VideoTimelineState(current_frame=current_frame, total_frames=total_frames, fps=fps)
+
+    def seek(self, frame_index: int) -> VideoTimelineState:
+        state = self.timeline_state()
+        maximum = max(0, state.total_frames - 1)
+        target = min(max(0, int(frame_index)), maximum)
+        if not self._cap.set(cv2.CAP_PROP_POS_FRAMES, float(target)):
+            raise RuntimeError(f"Cannot seek video file to frame {target}: {self._path}")
+        return self.timeline_state()
+
     def release(self) -> None:
         self._cap.release()
 
     def info(self) -> CaptureInfo:
+        timeline = self.timeline_state()
         return CaptureInfo(
             backend="video",
             camera_id=self._camera_id,
             width=int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
             height=int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
-            fps=float(self._cap.get(cv2.CAP_PROP_FPS) or 0.0),
-            metadata={"path": str(self._path)},
+            fps=timeline.fps,
+            metadata={
+                "path": str(self._path),
+                "total_frames": timeline.total_frames,
+                "duration_seconds": timeline.duration_seconds,
+            },
         )
 
 

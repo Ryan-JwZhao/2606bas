@@ -39,7 +39,7 @@ from ..calibration import (
 )
 from ..calibration.charuco import CharucoBoardSpec, render_charuco_board
 from ..calibration.verification import format_holdout_report, verify_holdout_file
-from ..capture import capture_frames_are_distortion_corrected, create_capture_service, probe_cameras
+from ..capture import VideoTimelineState, capture_frames_are_distortion_corrected, create_capture_service, probe_cameras
 from ..capture.nori_sdk import NoriProtocolController
 from ..geometry import TableGeometryLoader
 from ..logging_config import configure_logging
@@ -77,6 +77,15 @@ COMMON_RESOLUTIONS = ["1920x1080", "3840x2160", "2560x1440", "1280x720", "1280x8
 COMMON_FPS = ["30", "60", "120", "164"]
 TIMESTAMPED_PROJECTION_FILE_RE = re.compile(r"^(?P<base>.*?)(?:_\d{8}_\d{6})?$")
 DEFAULT_PROJECTION_OUTPUT_DIR = PROJECT_ROOT / "local_settings" / "calibrations"
+
+
+def format_video_time(seconds: float) -> str:
+    total_seconds = max(0, int(float(seconds)))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours:d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
 
 
 def projection_config_path_or_default(path_value: Optional[str]) -> Path:
@@ -1358,6 +1367,10 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._last_heavy_ui_update_ts = 0.0
         self._heavy_ui_fps_limit = 3.0
         self._last_perf_log_ts = 0.0
+        self._video_timeline_state: Optional[VideoTimelineState] = None
+        self._video_timeline_dragging = False
+        self._video_timeline_internal_update = False
+        self._video_timeline_last_seek_value: Optional[int] = None
         self._raw_video_recorder: Optional[FfmpegH264Recorder] = None
         self._route_video_recorder: Optional[FfmpegH264Recorder] = None
         self._raw_video_path: Optional[Path] = None
@@ -1501,6 +1514,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         capture_settings_layout = capture_settings_section.contentLayout()
         self.backend_combo = QtWidgets.QComboBox()
         self.backend_combo.addItems(["auto", "nori", "opencv", "video", "synthetic"])
+        self.backend_combo.currentTextChanged.connect(self._update_video_timeline_visibility)
         self.nori_device_combo = QtWidgets.QComboBox()
         self.nori_device_combo.addItem("默认", None)
         self.device_spin = QtWidgets.QSpinBox()
@@ -1666,6 +1680,27 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._desktop_pocket_notice_timer.setSingleShot(True)
         self._desktop_pocket_notice_timer.timeout.connect(self.pocket_notice_label.hide)
         self.preview_layout.addWidget(self.preview_frame, 1)
+        self.video_timeline_widget = QtWidgets.QWidget()
+        self.video_timeline_widget.setObjectName("videoTimeline")
+        self.video_timeline_layout = QtWidgets.QHBoxLayout(self.video_timeline_widget)
+        self.video_timeline_layout.setContentsMargins(0, 0, 0, 0)
+        self.video_timeline_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.video_timeline_slider.setObjectName("videoTimelineSlider")
+        self.video_timeline_slider.setRange(0, 0)
+        self.video_timeline_slider.setTracking(False)
+        self.video_timeline_slider.setEnabled(False)
+        self.video_timeline_slider.setToolTip("拖动后松开，可快速定位视频检测位置")
+        self.video_timeline_label = QtWidgets.QLabel("00:00 / --:--")
+        self.video_timeline_label.setObjectName("videoTimelineLabel")
+        self.video_timeline_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        self.video_timeline_slider.sliderPressed.connect(self._video_timeline_slider_pressed)
+        self.video_timeline_slider.sliderMoved.connect(self._video_timeline_slider_moved)
+        self.video_timeline_slider.sliderReleased.connect(self._video_timeline_slider_released)
+        self.video_timeline_slider.valueChanged.connect(self._video_timeline_value_changed)
+        self.video_timeline_layout.addWidget(self.video_timeline_slider, 1)
+        self.video_timeline_layout.addWidget(self.video_timeline_label)
+        self.preview_layout.addWidget(self.video_timeline_widget)
+        self._update_video_timeline_visibility()
         self.center_layout.addWidget(self.preview_panel, 3)
 
         self.plan_panel = self._panel()
@@ -1938,6 +1973,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.center_layout.setSpacing(px(12))
         self.preview_layout.setContentsMargins(px(4), px(3), px(4), px(4))
         self.preview_layout.setSpacing(px(3))
+        self.video_timeline_layout.setSpacing(px(10))
+        self.video_timeline_label.setMinimumWidth(px(104))
         self.plan_layout.setContentsMargins(px(12), px(12), px(12), px(12))
         self.plan_layout.setSpacing(px(8))
         self.right_layout.setContentsMargins(px(14), px(14), px(14), px(14))
@@ -3927,6 +3964,101 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         else:
             self.stop_pipeline()
 
+    def _update_video_timeline_visibility(self, *_args) -> None:
+        widget = getattr(self, "video_timeline_widget", None)
+        if widget is None:
+            return
+        is_video_mode = str(self.backend_combo.currentText()).strip().lower() == "video"
+        widget.setVisible(is_video_mode)
+        if not is_video_mode:
+            self._video_timeline_state = None
+            self.video_timeline_slider.setEnabled(False)
+
+    def _configure_video_timeline(self) -> None:
+        self._update_video_timeline_visibility()
+        if self.pipeline is None or self.video_timeline_widget.isHidden():
+            self.video_timeline_slider.setEnabled(False)
+            return
+        state_getter = getattr(self.pipeline, "video_timeline_state", None)
+        state = state_getter() if callable(state_getter) else None
+        self._set_video_timeline_state(state)
+
+    def _set_video_timeline_state(
+        self,
+        state: Optional[VideoTimelineState],
+        *,
+        current_frame: Optional[int] = None,
+    ) -> None:
+        self._video_timeline_state = state
+        if state is None or state.total_frames <= 0:
+            self._video_timeline_internal_update = True
+            try:
+                self.video_timeline_slider.setRange(0, 0)
+                self.video_timeline_slider.setValue(0)
+            finally:
+                self._video_timeline_internal_update = False
+            self.video_timeline_slider.setEnabled(False)
+            self.video_timeline_label.setText("00:00 / --:--")
+            return
+        frame = state.current_frame if current_frame is None else int(current_frame)
+        frame = min(max(0, frame), state.total_frames - 1)
+        self._video_timeline_internal_update = True
+        try:
+            self.video_timeline_slider.setRange(0, state.total_frames - 1)
+            self.video_timeline_slider.setValue(frame)
+        finally:
+            self._video_timeline_internal_update = False
+        self.video_timeline_slider.setEnabled(self.pipeline is not None and state.total_frames > 1)
+        self._update_video_timeline_label(frame)
+
+    def _update_video_timeline_label(self, frame_index: int) -> None:
+        state = self._video_timeline_state
+        if state is None or state.fps <= 0.0:
+            self.video_timeline_label.setText("00:00 / --:--")
+            return
+        current_seconds = float(max(0, int(frame_index))) / state.fps
+        self.video_timeline_label.setText(
+            f"{format_video_time(current_seconds)} / {format_video_time(state.duration_seconds)}"
+        )
+
+    def _video_timeline_slider_pressed(self) -> None:
+        self._video_timeline_dragging = True
+
+    def _video_timeline_slider_moved(self, value: int) -> None:
+        self._update_video_timeline_label(value)
+
+    def _video_timeline_slider_released(self) -> None:
+        self._video_timeline_dragging = False
+        self._seek_video_timeline(self.video_timeline_slider.value())
+
+    def _video_timeline_value_changed(self, value: int) -> None:
+        if self._video_timeline_internal_update or self._video_timeline_dragging:
+            return
+        self._seek_video_timeline(value)
+
+    def _seek_video_timeline(self, frame_index: int) -> None:
+        if self.pipeline is None or not self.video_timeline_slider.isEnabled():
+            return
+        target = int(frame_index)
+        if self._video_timeline_last_seek_value == target:
+            return
+        seek = getattr(self.pipeline, "seek_video", None)
+        if not callable(seek):
+            return
+        self._video_timeline_last_seek_value = target
+        try:
+            state = seek(target)
+        except Exception as exc:
+            self._append_log(f"视频定位失败: {exc}")
+            self._configure_video_timeline()
+            return
+        self.last_output = None
+        self._last_preview_update_ts = 0.0
+        self._route_freeze.reset()
+        self._clear_pocket_notices()
+        self._set_video_timeline_state(state)
+        self._append_log(f"视频已定位到 {format_video_time(state.current_seconds)}")
+
     def start_pipeline(self) -> None:
         if self._pipeline_start_pending:
             self._append_log("采集正在启动中")
@@ -3967,6 +4099,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._last_heavy_ui_update_ts = 0.0
         self._last_perf_log_ts = 0.0
         self._set_running(True)
+        self._configure_video_timeline()
         self._sync_mode_dependent_controls()
         self._refresh_training_controls()
         self._update_module_status()
@@ -3997,6 +4130,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             finally:
                 self.pipeline = None
         self._set_running(False)
+        self._configure_video_timeline()
         self._update_module_status()
         self._append_log("采集已停止")
 
@@ -4181,6 +4315,9 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
                 self._show_desktop_pocket_notice(new_pocket_notices)
             out = self._apply_route_display_filters(raw_out)
             self.last_output = out
+            self._video_timeline_last_seek_value = None
+            if self._video_timeline_state is not None and not self._video_timeline_dragging:
+                self._set_video_timeline_state(self._video_timeline_state, current_frame=out.frame.frame_id)
             self._pending_turn_target_group = self.pipeline.state_machine.turn_target_group
             self.frame_count += 1
             now = time.perf_counter()
@@ -4381,6 +4518,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if not running:
             self.raw_video_btn.setText(self.RAW_VIDEO_START_LABEL)
             self.route_video_btn.setText(self.ROUTE_VIDEO_START_LABEL)
+            self.video_timeline_slider.setEnabled(False)
         self.status_label.setText("运行中" if running else "离线")
         self._update_deep_debug_controls(running=running)
 
@@ -4401,6 +4539,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.instant_replay_export_btn.setEnabled(False)
         self.raw_video_btn.setEnabled(False)
         self.route_video_btn.setEnabled(False)
+        self.video_timeline_slider.setEnabled(False)
         self.deep_debug_btn.setEnabled(False)
         self.status_label.setText("启动中")
 

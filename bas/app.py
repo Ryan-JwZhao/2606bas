@@ -8,7 +8,7 @@ from typing import Optional
 import numpy as np
 
 from .calibration import CalibrationService, create_calibration_service
-from .capture import CaptureService, create_capture_service
+from .capture import CaptureService, VideoTimelineState, create_capture_service
 from .config import AppConfig
 from .geometry import TableGeometry
 from .geometry_runtime import RuntimeGeometryReloader
@@ -277,6 +277,35 @@ class RuntimePipeline:
 
     def reset_training(self) -> TrainingStateFrame:
         return self.training_session.reset()
+
+    def video_timeline_state(self) -> Optional[VideoTimelineState]:
+        return self.capture.video_timeline_state()
+
+    def seek_video(self, frame_index: int) -> VideoTimelineState:
+        state = self.capture.seek_video(frame_index)
+        self._reset_temporal_processing_state()
+        return state
+
+    def _reset_temporal_processing_state(self) -> None:
+        """Drop history that is invalid after a non-sequential video seek."""
+
+        reset_cache = getattr(self.detector, "reset_cache", None)
+        if callable(reset_cache):
+            reset_cache()
+        self.rule_tracker.reset()
+        self.training_tracker.reset()
+        self.pocket_observer.reset()
+        reset_state = getattr(self.state_machine, "reset", None)
+        if callable(reset_state):
+            reset_state()
+        self.training_session.reset()
+        self.planner.target_lock.reset()
+        self.planner.target_shot_mode.reset()
+        self.planner.cue_sector.reset()
+        self._last_tracks = None
+        self._last_state = None
+        self._last_plan = None
+        self._last_overlay = None
 
     def close(self) -> None:
         self.capture.release()

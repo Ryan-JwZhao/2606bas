@@ -11,7 +11,7 @@ from ..calibration.camera import CameraCalibration
 from ..config import CameraConfig
 from ..schemas import FramePacket
 from ..utils import monotonic_ns
-from .base import CaptureInfo, CaptureSource
+from .base import CaptureInfo, CaptureSource, VideoTimelineState
 from .nori_sdk import NoriProtocolController, open_nori_capture
 from .opencv_capture import OpenCVCapture, SyntheticCapture, VideoFileCapture, probe_cameras as _probe_opencv
 
@@ -48,6 +48,20 @@ class CaptureService:
 
     def info(self) -> CaptureInfo:
         return self.source.info()
+
+    def video_timeline_state(self) -> Optional[VideoTimelineState]:
+        timeline_state = getattr(self.source, "timeline_state", None)
+        if not callable(timeline_state):
+            return None
+        return timeline_state()
+
+    def seek_video(self, frame_index: int) -> VideoTimelineState:
+        seek = getattr(self.source, "seek", None)
+        if not callable(seek):
+            raise RuntimeError("Current capture source does not support video seeking.")
+        state = seek(frame_index)
+        self.frame_id = int(state.current_frame)
+        return state
 
     def release(self) -> None:
         self.source.release()
