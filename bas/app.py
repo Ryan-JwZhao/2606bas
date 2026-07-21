@@ -92,6 +92,7 @@ class RuntimePipeline:
         self.overlay_builder = OverlayBuilder(config.projection, self.calibration, star_formula=star_formula)
         self.training_session = TrainingSession(
             config.training,
+            state_config=config.state,
             ball_diameter_mm=float(config.calibration.ball_diameter_mm),
         )
         self.training_overlay_builder = TrainingOverlayBuilder(config.projection, self.calibration)
@@ -144,8 +145,10 @@ class RuntimePipeline:
         stage_start = time.perf_counter()
         pocket_observations = None
         if (
-            getattr(self, "operating_mode", RULES_MODE) == RULES_MODE
-            and bool(getattr(self.state_machine, "supports_pocket_observations", False))
+            (
+                getattr(self, "operating_mode", RULES_MODE) == TRAINING_MODE
+                or bool(getattr(self.state_machine, "supports_pocket_observations", False))
+            )
             and detection_regions is not None
             and detection_regions.ball_guard_regions
         ):
@@ -154,8 +157,19 @@ class RuntimePipeline:
         stage_start = time.perf_counter()
         training_state: Optional[TrainingStateFrame] = None
         if getattr(self, "operating_mode", RULES_MODE) == TRAINING_MODE:
-            self.training_session.set_table_context(pockets_mm=self.calibration.table.pockets_mm)
-            training_state = self.training_session.update(tracks)
+            self.training_session.set_table_context(
+                inner_polygon_mm=self.calibration.table.inner_polygon_mm,
+                table_edge_polygon_mm=getattr(self, "_last_table_edge_polygon_mm", []),
+                ball_center_reachable_polygon_mm=getattr(
+                    self.calibration.table,
+                    "center_playable_polygon_mm",
+                    self.calibration.table.inner_polygon_mm,
+                ),
+                pockets_mm=self.calibration.table.pockets_mm,
+                ball_diameter_mm=self.calibration.table.ball_diameter_mm,
+                pocket_curves_mm=getattr(self, "_last_pocket_curves_mm", []),
+            )
+            training_state = self.training_session.update(tracks, pocket_observations)
             state = MatchStateFrame(
                 frame_id=frame.frame_id,
                 ts_cam_ns=frame.ts_cam_ns,

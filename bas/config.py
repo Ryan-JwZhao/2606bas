@@ -91,7 +91,7 @@ class TrainingConfig:
     operating_mode: str = "rules"  # rules | training
     scenario_id: str = "ordered_line_1_7"
     disappearance_confirm_frames: int = 8
-    pocket_proximity_mm: float = 190.0
+    pocket_proximity_mm: float = 190.0  # legacy compatibility; shared pocket FSM does not use it
 
 
 @dataclass

@@ -6,7 +6,8 @@ from bas.app import RuntimePipeline
 from bas.config import AppConfig, DetectorConfig, TrackerConfig, TrainingConfig
 from bas.perception.detector import Detector
 from bas.perception.mode_service import ModeAwareDetectService
-from bas.schemas import Detection, FramePacket, TrackObservation, TracksFrame
+from bas.perception.regions import DetectionRegionPolicy, PocketGuardRegion
+from bas.schemas import Detection, FramePacket, PocketVisualObservationFrame, TrackObservation, TracksFrame
 from bas.training import NumberedBallTracker, TrainingSession, get_training_scenario, list_training_scenarios
 
 
@@ -18,7 +19,15 @@ class _TaggedDetector(Detector):
         return [Detection(bbox=(1, 1, 5, 5), conf=0.9, cls_id=0, cls_name=self.version)]
 
 
-def _track(number: int, x: float, y: float, *, visible: bool = True) -> TrackObservation:
+def _track(
+    number: int,
+    x: float,
+    y: float,
+    *,
+    visible: bool = True,
+    vx: float = 0.0,
+    vy: float = 0.0,
+) -> TrackObservation:
     return TrackObservation(
         track_id=number,
         bbox=(x - 10, y - 10, x + 10, y + 10),
@@ -26,8 +35,18 @@ def _track(number: int, x: float, y: float, *, visible: bool = True) -> TrackObs
         center_mm=(x, y),
         radius_px=10.0,
         radius_mm=28.575,
+        velocity_px_s=(vx, vy),
+        velocity_mm_s=(vx, vy),
         cls_name=str(number),
-        group="cue" if number == 0 else "object",
+        group=(
+            "cue"
+            if number == 0
+            else "solid"
+            if number <= 7
+            else "black"
+            if number == 8
+            else "stripe"
+        ),
         confidence=0.95,
         visibility="visible" if visible else "occluded",
         lost_frames=0 if visible else 1,
@@ -96,6 +115,64 @@ def test_training_session_rejects_disappearance_away_from_pocket() -> None:
     assert lost_in_middle.failure_reason == "ball_lost_away_from_pocket"
 
 
+def test_training_session_accepts_rule_judged_projected_entry() -> None:
+    session = TrainingSession(
+        TrainingConfig(
+            scenario_id="solids_then_black",
+            disappearance_confirm_frames=1,
+            pocket_proximity_mm=50.0,
+        )
+    )
+    session.set_table_context(
+        inner_polygon_mm=[(0.0, 0.0), (1_000.0, 0.0), (1_000.0, 500.0), (0.0, 500.0)],
+        table_edge_polygon_mm=[(0.0, 0.0), (1_000.0, 0.0), (1_000.0, 500.0), (0.0, 500.0)],
+        ball_center_reachable_polygon_mm=[
+            (28.0, 28.0),
+            (972.0, 28.0),
+            (972.0, 472.0),
+            (28.0, 472.0),
+        ],
+        pockets_mm=[(500.0, 0.0)],
+        ball_diameter_mm=56.0,
+    )
+    setup_tracks = [_track(0, 200.0, 400.0)] + [
+        _track(number, 250.0 + number * 60.0, 300.0)
+        for number in range(1, 9)
+    ]
+    session.update(TracksFrame(frame_id=1, ts_cam_ns=1_000_000_000, tracks=setup_tracks))
+    assert session.start()[0] is True
+
+    stationary = [
+        _track(number, 250.0 + number * 60.0, 300.0)
+        for number in range(2, 9)
+    ]
+    session.update(
+        TracksFrame(
+            frame_id=2,
+            ts_cam_ns=1_100_000_000,
+            tracks=[_track(0, 200.0, 400.0), _track(1, 515.0, 180.0, vy=-700.0), *stationary],
+        )
+    )
+    session.update(
+        TracksFrame(
+            frame_id=3,
+            ts_cam_ns=1_200_000_000,
+            tracks=[_track(0, 200.0, 400.0), _track(1, 514.0, 72.0, vy=-1_080.0), *stationary],
+        )
+    )
+    missing = [_track(0, 200.0, 400.0), *stationary]
+    session.update(TracksFrame(frame_id=4, ts_cam_ns=1_300_000_000, tracks=missing))
+    session.update(TracksFrame(frame_id=5, ts_cam_ns=1_600_000_000, tracks=missing))
+    resolved = session.update(TracksFrame(frame_id=6, ts_cam_ns=2_100_000_000, tracks=missing))
+
+    assert resolved.phase == "running"
+    assert resolved.failure_reason is None
+    assert resolved.potted_numbers == [1]
+    potted = next(event for event in resolved.events if event.name == "TRAINING_BALL_POTTED")
+    assert potted.payload["judgment"] == "rules_pocket_fsm"
+    assert potted.payload["decision_id"] == "pocket:1"
+
+
 def test_numbered_tracker_keeps_identity_by_ball_number() -> None:
     tracker = NumberedBallTracker(TrackerConfig(high_conf=0.4, low_conf=0.1, max_lost_frames=3))
     frame = FramePacket(frame_id=1, ts_cam_ns=100_000_000, camera_id="test", image=np.zeros((20, 20, 3), dtype=np.uint8))
@@ -143,12 +220,26 @@ def test_runtime_pipeline_uses_training_branch_without_rule_planning() -> None:
     config.replay.enabled = False
     pipeline = RuntimePipeline(config)
     try:
+        observed_modes: list[str] = []
+        guard = PocketGuardRegion(
+            pocket_index=0,
+            polygon=np.asarray([(0.0, 0.0), (20.0, 0.0), (20.0, 20.0)], dtype=np.float32),
+            center_px=(10.0, 10.0),
+            ball_diameter_px=10.0,
+        )
+        pipeline._camera_detection_regions = lambda frame: DetectionRegionPolicy(ball_guard_regions=(guard,))
+        pipeline.pocket_observer.update = lambda frame, tracks, regions: (
+            observed_modes.append(pipeline.operating_mode)
+            or PocketVisualObservationFrame(frame_id=frame.frame_id, ts_cam_ns=frame.ts_cam_ns)
+        )
+
         output = pipeline.step()
         assert output is not None
         assert output.training is not None
         assert output.plan.shot_mode == "training"
         assert output.state.phase.startswith("TRAINING_")
         assert pipeline.detector.mode == "training"
+        assert observed_modes == ["training"]
 
         assert pipeline.set_operating_mode("rules") == "rules"
         rule_output = pipeline.step()

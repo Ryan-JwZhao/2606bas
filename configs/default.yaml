@@ -50,6 +50,7 @@ training:
   operating_mode: rules  # rules | training
   scenario_id: ordered_line_1_7
   disappearance_confirm_frames: 8
+  # Legacy compatibility only; shared Modern pocket judgment ignores this value.
   pocket_proximity_mm: 190.0
 
 tracker:

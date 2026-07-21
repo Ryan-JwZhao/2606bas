@@ -3,29 +3,33 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Sequence
 
-import numpy as np
-
-from ..config import TrainingConfig
-from ..schemas import Event, TrackObservation, TracksFrame
+from ..config import StateConfig, TrainingConfig
+from ..schemas import Event, PocketVisualObservationFrame, TrackObservation, TracksFrame
 from .models import TrainingScenario, TrainingStateFrame
 from .numbered_tracker import ball_number_from_track
+from .pocket_judge import TrainingPocketJudge
 from .scenarios import get_training_scenario, validate_scenario_setup
 
 
 class TrainingSession:
-    version = "numbered_training_session_v1"
+    version = "numbered_training_session_v2_shared_pocket_fsm"
 
-    def __init__(self, config: TrainingConfig, *, ball_diameter_mm: float = 57.15):
+    def __init__(
+        self,
+        config: TrainingConfig,
+        *,
+        state_config: StateConfig | None = None,
+        ball_diameter_mm: float = 57.15,
+    ):
         self.config = config
         self.ball_diameter_mm = float(ball_diameter_mm)
         self.scenario: TrainingScenario = get_training_scenario(config.scenario_id)
+        self._pocket_judge = TrainingPocketJudge(state_config or StateConfig(engine="modern"))
         self._latest_tracks: list[TrackObservation] = []
         self._missing_frames: dict[int, int] = {}
         self._potted: list[int] = []
         self._attempt = 0
         self._started_ts_ns = 0
-        self._pockets_mm: list[tuple[float, float]] = []
-        self._last_visible_centers_mm: dict[int, tuple[float, float]] = {}
         self._state = self._new_state(0, 0)
 
     @property
@@ -43,8 +47,13 @@ class TrainingSession:
         self._missing_frames.clear()
         self._potted.clear()
         self._started_ts_ns = 0
+        self._pocket_judge.reset()
         self._state = self._new_state(frame_id, ts_cam_ns)
         if self._latest_tracks:
+            self._pocket_judge.update(
+                TracksFrame(frame_id=frame_id, ts_cam_ns=ts_cam_ns, tracks=list(self._latest_tracks)),
+                active=False,
+            )
             self._state = self._setup_state(frame_id, ts_cam_ns, self._latest_tracks)
         return self._state
 
@@ -76,17 +85,38 @@ class TrainingSession:
         )
         return True, self._state
 
-    def set_table_context(self, *, pockets_mm: Sequence[tuple[float, float]]) -> None:
-        self._pockets_mm = [(float(x), float(y)) for x, y in pockets_mm]
+    def set_table_context(
+        self,
+        *,
+        inner_polygon_mm: Sequence[tuple[float, float]] | None = None,
+        table_edge_polygon_mm: Sequence[tuple[float, float]] | None = None,
+        ball_center_reachable_polygon_mm: Sequence[tuple[float, float]] | None = None,
+        pockets_mm: Sequence[tuple[float, float]] | None = None,
+        ball_diameter_mm: float | None = None,
+        pocket_curves_mm: Sequence[Sequence[tuple[float, float]]] | None = None,
+    ) -> None:
+        self._pocket_judge.set_table_context(
+            inner_polygon_mm=inner_polygon_mm,
+            table_edge_polygon_mm=table_edge_polygon_mm,
+            ball_center_reachable_polygon_mm=ball_center_reachable_polygon_mm,
+            pockets_mm=pockets_mm,
+            ball_diameter_mm=ball_diameter_mm,
+            pocket_curves_mm=pocket_curves_mm,
+        )
 
-    def update(self, tracks_frame: TracksFrame) -> TrainingStateFrame:
+    def update(
+        self,
+        tracks_frame: TracksFrame,
+        pocket_observations: PocketVisualObservationFrame | None = None,
+    ) -> TrainingStateFrame:
         self._latest_tracks = list(tracks_frame.tracks)
-        for track in self._latest_tracks:
-            number = ball_number_from_track(track)
-            if number is not None and track.visibility == "visible" and track.center_mm is not None:
-                self._last_visible_centers_mm[number] = (float(track.center_mm[0]), float(track.center_mm[1]))
         frame_id = int(tracks_frame.frame_id)
         ts_cam_ns = int(tracks_frame.ts_cam_ns)
+        pocket_judgment = self._pocket_judge.update(
+            tracks_frame,
+            active=self._state.phase == "running",
+            pocket_observations=pocket_observations,
+        )
         if self._state.phase not in {"running", "passed", "failed"}:
             self._state = self._setup_state(frame_id, ts_cam_ns, self._latest_tracks)
             return self._state
@@ -104,18 +134,30 @@ class TrainingSession:
         visible = set(self._visible_numbers(self._latest_tracks))
         pending_numbers = set(self.scenario.required_balls) - set(self._potted)
         watched = pending_numbers | ({0} if self.scenario.require_cue_ball else set())
-        confirmed: list[int] = []
+        missing_confirmed: list[int] = []
         confirm_frames = max(1, int(self.config.disappearance_confirm_frames))
         for number in watched:
             if number in visible:
                 self._missing_frames[number] = 0
                 continue
             self._missing_frames[number] = self._missing_frames.get(number, 0) + 1
-            if self._missing_frames[number] == confirm_frames:
-                confirmed.append(number)
+            if self._missing_frames[number] >= confirm_frames:
+                missing_confirmed.append(number)
+
+        if self._pocket_judge.has_table_context:
+            confirmed = [number for number in pocket_judgment.detected_numbers if number in watched]
+            away_from_pocket = [
+                number
+                for number in missing_confirmed
+                if number not in pocket_judgment.pending_numbers and number not in confirmed
+            ]
+        else:
+            # Unit tests and incomplete calibration historically treated a sustained
+            # disappearance as a pot. Real runtime always supplies table geometry.
+            confirmed = list(missing_confirmed)
+            away_from_pocket = []
 
         events: list[Event] = []
-        away_from_pocket = [number for number in confirmed if not self._last_seen_near_pocket(number)]
         if away_from_pocket:
             events.append(
                 self._event(
@@ -154,7 +196,25 @@ class TrainingSession:
                 self._state = self._failed(frame_id, ts_cam_ns, message, "wrong_ball", visible, events)
                 return self._state
             self._potted.append(number)
-            events.append(self._event("TRAINING_BALL_POTTED", frame_id, ts_cam_ns, ball=number))
+            detected_event = next(
+                (
+                    event
+                    for event in pocket_judgment.detected_events
+                    if int(event.payload.get("track_id", -1)) == number
+                ),
+                None,
+            )
+            events.append(
+                self._event(
+                    "TRAINING_BALL_POTTED",
+                    frame_id,
+                    ts_cam_ns,
+                    ball=number,
+                    pocket_index=(detected_event.payload.get("pocket_index") if detected_event else None),
+                    decision_id=(detected_event.payload.get("decision_id") if detected_event else None),
+                    judgment="rules_pocket_fsm" if detected_event else "no_geometry_fallback",
+                )
+            )
             if len(self._potted) == len(self.scenario.required_balls):
                 events.append(self._event("TRAINING_PASSED", frame_id, ts_cam_ns, scenario=self.scenario.scenario_id))
                 self._state = replace(
@@ -268,16 +328,6 @@ class TrainingSession:
         if self._started_ts_ns <= 0:
             return 0.0
         return max(0.0, (int(ts_cam_ns) - self._started_ts_ns) / 1e9)
-
-    def _last_seen_near_pocket(self, number: int) -> bool:
-        if not self._pockets_mm:
-            return True
-        center = self._last_visible_centers_mm.get(number)
-        if center is None:
-            return True
-        point = np.asarray(center, dtype=np.float32)
-        distance = min(float(np.linalg.norm(point - np.asarray(pocket, dtype=np.float32))) for pocket in self._pockets_mm)
-        return distance <= float(self.config.pocket_proximity_mm)
 
     @staticmethod
     def _visible_numbers(tracks: Sequence[TrackObservation]) -> list[int]:
