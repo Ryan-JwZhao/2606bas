@@ -50,22 +50,33 @@ class TrainingSession:
         self._pocket_judge.reset()
         self._state = self._new_state(frame_id, ts_cam_ns)
         if self._latest_tracks:
+            current_tracks = TracksFrame(
+                frame_id=frame_id,
+                ts_cam_ns=ts_cam_ns,
+                tracks=list(self._latest_tracks),
+            )
             self._pocket_judge.update(
-                TracksFrame(frame_id=frame_id, ts_cam_ns=ts_cam_ns, tracks=list(self._latest_tracks)),
+                self.pocket_observer_tracks(current_tracks),
                 active=False,
             )
             self._state = self._setup_state(frame_id, ts_cam_ns, self._latest_tracks)
         return self._state
 
     def start(self) -> tuple[bool, TrainingStateFrame]:
-        ready, message = validate_scenario_setup(
-            self.scenario,
-            self._latest_tracks,
-            ball_diameter_mm=self.ball_diameter_mm,
-        )
+        ready, message = self._validate_setup(self._latest_tracks)
         if not ready:
             self._state = replace(self._state, phase="setup", setup_ready=False, message=message, failure_reason=None)
             return False, self._state
+        self._pocket_judge.reset()
+        current_tracks = TracksFrame(
+            frame_id=int(self._state.frame_id),
+            ts_cam_ns=int(self._state.ts_cam_ns),
+            tracks=list(self._latest_tracks),
+        )
+        self._pocket_judge.update(
+            self.pocket_observer_tracks(current_tracks),
+            active=False,
+        )
         self._attempt += 1
         self._potted.clear()
         self._missing_frames.clear()
@@ -95,6 +106,8 @@ class TrainingSession:
         ball_diameter_mm: float | None = None,
         pocket_curves_mm: Sequence[Sequence[tuple[float, float]]] | None = None,
     ) -> None:
+        if ball_diameter_mm is not None:
+            self.ball_diameter_mm = float(ball_diameter_mm)
         self._pocket_judge.set_table_context(
             inner_polygon_mm=inner_polygon_mm,
             table_edge_polygon_mm=table_edge_polygon_mm,
@@ -113,7 +126,7 @@ class TrainingSession:
         frame_id = int(tracks_frame.frame_id)
         ts_cam_ns = int(tracks_frame.ts_cam_ns)
         pocket_judgment = self._pocket_judge.update(
-            tracks_frame,
+            self.pocket_observer_tracks(tracks_frame),
             active=self._state.phase == "running",
             pocket_observations=pocket_observations,
         )
@@ -133,6 +146,24 @@ class TrainingSession:
 
         visible = set(self._visible_numbers(self._latest_tracks))
         tracked = set(self._tracked_numbers(self._latest_tracks))
+        if not self._pocket_judge.has_table_context:
+            events = [
+                self._event(
+                    "TRAINING_FAILED",
+                    frame_id,
+                    ts_cam_ns,
+                    reason="pocket_context_unavailable",
+                )
+            ]
+            self._state = self._failed(
+                frame_id,
+                ts_cam_ns,
+                "袋口标定不可用，训练已停止",
+                "pocket_context_unavailable",
+                visible,
+                events,
+            )
+            return self._state
         pending_numbers = set(self.scenario.required_balls) - set(self._potted)
         watched = pending_numbers | ({0} if self.scenario.require_cue_ball else set())
         missing_confirmed: list[int] = []
@@ -147,22 +178,21 @@ class TrainingSession:
                 # visual evidence, reappearance vetoes, or tracker eviction.
                 self._missing_frames[number] = 0
                 continue
+            if number in pocket_judgment.lip_occupied_numbers:
+                # A stationary ball can be hidden by the pocket jaw while the
+                # pocket ROI still proves it remains on the table-side lip.
+                self._missing_frames[number] = 0
+                continue
             self._missing_frames[number] = self._missing_frames.get(number, 0) + 1
             if self._missing_frames[number] >= confirm_frames:
                 missing_confirmed.append(number)
 
-        if self._pocket_judge.has_table_context:
-            confirmed = [number for number in pocket_judgment.detected_numbers if number in watched]
-            away_from_pocket = [
-                number
-                for number in missing_confirmed
-                if number not in pocket_judgment.pending_numbers and number not in confirmed
-            ]
-        else:
-            # Unit tests and incomplete calibration historically treated a sustained
-            # disappearance as a pot. Real runtime always supplies table geometry.
-            confirmed = list(missing_confirmed)
-            away_from_pocket = []
+        confirmed = [number for number in pocket_judgment.detected_numbers if number in watched]
+        away_from_pocket = [
+            number
+            for number in missing_confirmed
+            if number not in pocket_judgment.pending_numbers and number not in confirmed
+        ]
 
         events: list[Event] = []
         if away_from_pocket:
@@ -219,7 +249,7 @@ class TrainingSession:
                     ball=number,
                     pocket_index=(detected_event.payload.get("pocket_index") if detected_event else None),
                     decision_id=(detected_event.payload.get("decision_id") if detected_event else None),
-                    judgment="rules_pocket_fsm" if detected_event else "no_geometry_fallback",
+                    judgment="rules_pocket_fsm",
                 )
             )
             if len(self._potted) == len(self.scenario.required_balls):
@@ -271,11 +301,7 @@ class TrainingSession:
         )
 
     def _setup_state(self, frame_id: int, ts_cam_ns: int, tracks: Sequence[TrackObservation]) -> TrainingStateFrame:
-        ready, message = validate_scenario_setup(
-            self.scenario,
-            tracks,
-            ball_diameter_mm=self.ball_diameter_mm,
-        )
+        ready, message = self._validate_setup(tracks)
         return TrainingStateFrame(
             frame_id=frame_id,
             ts_cam_ns=ts_cam_ns,
@@ -290,6 +316,26 @@ class TrainingSession:
             potted_numbers=[],
             progress_total=len(self.scenario.required_balls),
             attempt=self._attempt,
+        )
+
+    def pocket_observer_tracks(self, tracks_frame: TracksFrame) -> TracksFrame:
+        allowed = set(self.scenario.required_balls)
+        if self.scenario.require_cue_ball:
+            allowed.add(0)
+        tracks = [
+            track
+            for track in tracks_frame.tracks
+            if (number := ball_number_from_track(track)) is not None and number in allowed
+        ]
+        return replace(tracks_frame, tracks=tracks)
+
+    def _validate_setup(self, tracks: Sequence[TrackObservation]) -> tuple[bool, str]:
+        if not self._pocket_judge.has_table_context:
+            return False, "袋口标定不可用，无法开始训练"
+        return validate_scenario_setup(
+            self.scenario,
+            tracks,
+            ball_diameter_mm=self.ball_diameter_mm,
         )
 
     def _expected_numbers(self) -> tuple[int, ...]:

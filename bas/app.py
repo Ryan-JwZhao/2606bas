@@ -152,7 +152,10 @@ class RuntimePipeline:
             and detection_regions is not None
             and detection_regions.ball_guard_regions
         ):
-            pocket_observations = self.pocket_observer.update(frame, tracks, detection_regions)
+            observer_tracks = tracks
+            if getattr(self, "operating_mode", RULES_MODE) == TRAINING_MODE:
+                observer_tracks = self.training_session.pocket_observer_tracks(tracks)
+            pocket_observations = self.pocket_observer.update(frame, observer_tracks, detection_regions)
         pocket_observer_ms = (time.perf_counter() - stage_start) * 1000.0
         stage_start = time.perf_counter()
         training_state: Optional[TrainingStateFrame] = None
@@ -284,13 +287,20 @@ class RuntimePipeline:
         return normalized
 
     def select_training_scenario(self, scenario_id: str) -> TrainingStateFrame:
-        return self.training_session.select_scenario(scenario_id)
+        state = self.training_session.select_scenario(scenario_id)
+        self.pocket_observer.reset()
+        return state
 
     def start_training(self) -> tuple[bool, TrainingStateFrame]:
-        return self.training_session.start()
+        started, state = self.training_session.start()
+        if started:
+            self.pocket_observer.reset()
+        return started, state
 
     def reset_training(self) -> TrainingStateFrame:
-        return self.training_session.reset()
+        state = self.training_session.reset()
+        self.pocket_observer.reset()
+        return state
 
     def video_timeline_state(self) -> Optional[VideoTimelineState]:
         return self.capture.video_timeline_state()

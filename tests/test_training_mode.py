@@ -15,7 +15,13 @@ from bas.schemas import (
     TrackObservation,
     TracksFrame,
 )
-from bas.training import NumberedBallTracker, TrainingSession, get_training_scenario, list_training_scenarios
+from bas.training import (
+    NumberedBallTracker,
+    TrainingSession,
+    TrainingStateFrame,
+    get_training_scenario,
+    list_training_scenarios,
+)
 
 
 class _TaggedDetector(Detector):
@@ -67,6 +73,51 @@ def _tracks(frame_id: int, numbers: list[int]) -> TracksFrame:
     return TracksFrame(frame_id=frame_id, ts_cam_ns=frame_id * 100_000_000, tracks=observations)
 
 
+def _confirm_visual_pot(
+    session: TrainingSession,
+    *,
+    ball: int,
+    frame_id: int,
+    ts_cam_ns: int,
+    remaining_numbers: list[int],
+) -> TrainingStateFrame:
+    remaining_tracks = [
+        track
+        for track in _tracks(frame_id, remaining_numbers).tracks
+        if int(track.track_id) != int(ball)
+    ]
+    group = _track(ball, 0.0, 0.0).group
+    session.update(
+        TracksFrame(frame_id=frame_id, ts_cam_ns=ts_cam_ns, tracks=remaining_tracks),
+        PocketVisualObservationFrame(
+            frame_id=frame_id,
+            ts_cam_ns=ts_cam_ns,
+            observations=[
+                PocketVisualObservation(
+                    pocket_index=0,
+                    inward_crossing=True,
+                    group=group,
+                    confidence=0.98,
+                    associated_track_ids=[ball],
+                    evidence_sources=["foreground_motion", "ball_sized_motion"],
+                    motion_score=0.9,
+                    foreground_score=0.8,
+                    foreground_depth_diameters=0.5,
+                )
+            ],
+        ),
+    )
+    resolved_ts_ns = ts_cam_ns + 1_300_000_000
+    return session.update(
+        TracksFrame(frame_id=frame_id + 1, ts_cam_ns=resolved_ts_ns, tracks=remaining_tracks),
+        PocketVisualObservationFrame(
+            frame_id=frame_id + 1,
+            ts_cam_ns=resolved_ts_ns,
+            observations=[PocketVisualObservation(pocket_index=0, clear=True)],
+        ),
+    )
+
+
 def test_training_catalog_contains_multiple_number_aware_drills() -> None:
     scenarios = list_training_scenarios()
     assert len(scenarios) >= 6
@@ -80,37 +131,350 @@ def test_ordered_line_session_passes_correct_ball_and_rejects_wrong_ball() -> No
         TrainingConfig(scenario_id="ordered_line_1_7", disappearance_confirm_frames=2),
         ball_diameter_mm=57.15,
     )
+    session.set_table_context(pockets_mm=[(0.0, 0.0)])
     ready = session.update(_tracks(1, list(range(1, 8))))
     assert ready.phase == "ready"
     ok, running = session.start()
     assert ok is True
     assert running.expected_numbers == [1]
 
-    session.update(_tracks(2, list(range(2, 8))))
-    accepted = session.update(_tracks(3, list(range(2, 8))))
+    accepted = _confirm_visual_pot(
+        session,
+        ball=1,
+        frame_id=2,
+        ts_cam_ns=200_000_000,
+        remaining_numbers=list(range(2, 8)),
+    )
     assert accepted.phase == "running"
     assert accepted.potted_numbers == [1]
     assert accepted.expected_numbers == [2]
 
-    session.update(_tracks(4, [2, 4, 5, 6, 7]))
-    failed = session.update(_tracks(5, [2, 4, 5, 6, 7]))
+    failed = _confirm_visual_pot(
+        session,
+        ball=3,
+        frame_id=4,
+        ts_cam_ns=1_600_000_000,
+        remaining_numbers=[2, 4, 5, 6, 7],
+    )
     assert failed.phase == "failed"
     assert failed.failure_reason == "wrong_ball"
 
 
 def test_training_session_rejects_cue_ball_scratch() -> None:
     session = TrainingSession(TrainingConfig(scenario_id="finish_6_7_8", disappearance_confirm_frames=1))
+    session.set_table_context(pockets_mm=[(0.0, 0.0)])
     session.update(_tracks(1, [6, 7, 8]))
     assert session.start()[0] is True
-    scratched = session.update(
-        TracksFrame(
-            frame_id=2,
-            ts_cam_ns=200_000_000,
-            tracks=[_track(6, 780, 300), _track(7, 860, 300), _track(8, 940, 300)],
-        )
+    scratched = _confirm_visual_pot(
+        session,
+        ball=0,
+        frame_id=2,
+        ts_cam_ns=200_000_000,
+        remaining_numbers=[6, 7, 8],
     )
     assert scratched.phase == "failed"
     assert scratched.failure_reason == "cue_ball_pocketed"
+
+
+def test_training_requires_pocket_calibration_before_start() -> None:
+    session = TrainingSession(TrainingConfig(scenario_id="finish_6_7_8"))
+
+    setup = session.update(_tracks(1, [6, 7, 8]))
+    started, state = session.start()
+
+    assert setup.phase == "setup"
+    assert setup.setup_ready is False
+    assert "袋口标定" in setup.message
+    assert started is False
+    assert state.phase == "setup"
+
+
+def test_training_rejects_early_black_eight_with_shared_pocket_judgment() -> None:
+    session = TrainingSession(
+        TrainingConfig(scenario_id="solids_then_black", disappearance_confirm_frames=1)
+    )
+    session.set_table_context(pockets_mm=[(0.0, 0.0)])
+    session.update(_tracks(1, list(range(1, 9))))
+    assert session.start()[0] is True
+
+    failed = _confirm_visual_pot(
+        session,
+        ball=8,
+        frame_id=2,
+        ts_cam_ns=200_000_000,
+        remaining_numbers=list(range(1, 8)),
+    )
+
+    assert failed.phase == "failed"
+    assert failed.failure_reason == "wrong_ball"
+
+
+def test_training_fails_if_a_confirmed_potted_ball_reappears() -> None:
+    session = TrainingSession(
+        TrainingConfig(scenario_id="solids_then_black", disappearance_confirm_frames=1)
+    )
+    session.set_table_context(pockets_mm=[(0.0, 0.0)])
+    session.update(_tracks(1, list(range(1, 9))))
+    assert session.start()[0] is True
+    confirmed = _confirm_visual_pot(
+        session,
+        ball=1,
+        frame_id=2,
+        ts_cam_ns=200_000_000,
+        remaining_numbers=list(range(2, 9)),
+    )
+    assert confirmed.potted_numbers == [1]
+
+    failed = session.update(_tracks(4, list(range(1, 9))))
+
+    assert failed.phase == "failed"
+    assert failed.failure_reason == "potted_ball_reappeared"
+
+
+def test_training_restart_discards_visual_candidates_from_previous_attempt() -> None:
+    session = TrainingSession(
+        TrainingConfig(scenario_id="finish_6_7_8", disappearance_confirm_frames=1)
+    )
+    session.set_table_context(pockets_mm=[(0.0, 0.0)])
+    session.update(_tracks(1, [6, 7, 8]))
+    assert session.start()[0] is True
+    all_balls = _tracks(2, [6, 7, 8])
+    candidate = session.update(
+        all_balls,
+        PocketVisualObservationFrame(
+            frame_id=2,
+            ts_cam_ns=all_balls.ts_cam_ns,
+            observations=[
+                PocketVisualObservation(
+                    pocket_index=0,
+                    inward_crossing=True,
+                    group="solid",
+                    confidence=0.98,
+                    associated_track_ids=[6],
+                    evidence_sources=["foreground_motion", "ball_sized_motion"],
+                    motion_score=0.9,
+                    foreground_score=0.8,
+                    foreground_depth_diameters=0.5,
+                )
+            ],
+        ),
+    )
+    assert candidate.phase == "running"
+    assert candidate.potted_numbers == []
+
+    started, restarted = session.start()
+    assert started is True
+    assert restarted.potted_numbers == []
+
+    resolved = session.update(
+        TracksFrame(
+            frame_id=3,
+            ts_cam_ns=1_500_000_000,
+            tracks=_tracks(3, [7, 8]).tracks,
+        ),
+        PocketVisualObservationFrame(
+            frame_id=3,
+            ts_cam_ns=1_500_000_000,
+            observations=[PocketVisualObservation(pocket_index=0, clear=True)],
+        ),
+    )
+
+    assert resolved.phase == "failed"
+    assert resolved.failure_reason == "ball_lost_away_from_pocket"
+    assert resolved.potted_numbers == []
+
+
+def test_training_pocket_observer_ignores_numbers_outside_the_scenario() -> None:
+    session = TrainingSession(TrainingConfig(scenario_id="solids_then_black"))
+    tracks = _tracks(1, list(range(1, 10)))
+
+    filtered = session.pocket_observer_tracks(tracks)
+
+    assert [int(track.track_id) for track in filtered.tracks] == list(range(0, 9))
+
+
+def test_training_session_holds_when_cue_ball_remains_on_pocket_lip() -> None:
+    session = TrainingSession(
+        TrainingConfig(scenario_id="finish_6_7_8", disappearance_confirm_frames=8)
+    )
+    session.set_table_context(pockets_mm=[(500.0, 0.0)])
+    object_balls = [_track(6, 780.0, 300.0), _track(7, 860.0, 300.0), _track(8, 940.0, 300.0)]
+    cue_on_lip = _track(0, 500.0, 70.0)
+    session.update(
+        TracksFrame(
+            frame_id=1,
+            ts_cam_ns=1_000_000_000,
+            tracks=[cue_on_lip, *object_balls],
+        )
+    )
+    assert session.start()[0] is True
+
+    state = session.update(
+        TracksFrame(
+            frame_id=2,
+            ts_cam_ns=1_100_000_000,
+            tracks=[cue_on_lip, *object_balls],
+        ),
+        PocketVisualObservationFrame(
+            frame_id=2,
+            ts_cam_ns=1_100_000_000,
+            observations=[
+                PocketVisualObservation(
+                    pocket_index=0,
+                    inward_crossing=True,
+                    lip_occupied=True,
+                    group="cue",
+                    confidence=0.98,
+                    associated_track_ids=[0],
+                    evidence_sources=["foreground_motion", "ball_sized_motion"],
+                    motion_score=0.9,
+                    foreground_score=0.8,
+                    foreground_depth_diameters=0.2,
+                )
+            ],
+        ),
+    )
+
+    for offset in range(1, 13):
+        ts_ns = 1_100_000_000 + offset * 100_000_000
+        state = session.update(
+            TracksFrame(
+                frame_id=2 + offset,
+                ts_cam_ns=ts_ns,
+                tracks=[
+                    _track(0, 500.0, 70.0, visible=False, lost_frames=offset),
+                    *object_balls,
+                ],
+            ),
+            PocketVisualObservationFrame(
+                frame_id=2 + offset,
+                ts_cam_ns=ts_ns,
+                observations=[
+                    PocketVisualObservation(
+                        pocket_index=0,
+                        lip_occupied=True,
+                        group="cue",
+                        associated_track_ids=[0],
+                    )
+                ],
+            ),
+        )
+
+    for offset in range(13, 21):
+        ts_ns = 1_100_000_000 + offset * 100_000_000
+        state = session.update(
+            TracksFrame(frame_id=2 + offset, ts_cam_ns=ts_ns, tracks=object_balls),
+            PocketVisualObservationFrame(
+                frame_id=2 + offset,
+                ts_cam_ns=ts_ns,
+                observations=[
+                    PocketVisualObservation(
+                        pocket_index=0,
+                        lip_occupied=True,
+                        group="cue",
+                        associated_track_ids=[0],
+                    )
+                ],
+            ),
+        )
+
+    assert state.phase == "running"
+    assert state.failure_reason is None
+    assert state.potted_numbers == []
+
+    for offset in range(21, 29):
+        ts_ns = 1_100_000_000 + offset * 100_000_000
+        state = session.update(
+            TracksFrame(frame_id=2 + offset, ts_cam_ns=ts_ns, tracks=object_balls),
+            PocketVisualObservationFrame(
+                frame_id=2 + offset,
+                ts_cam_ns=ts_ns,
+                observations=[PocketVisualObservation(pocket_index=0, clear=True)],
+            ),
+        )
+
+    assert state.phase == "failed"
+    assert state.failure_reason == "ball_lost_away_from_pocket"
+
+
+def test_training_holds_numbered_ball_when_lip_loses_track_association() -> None:
+    session = TrainingSession(
+        TrainingConfig(scenario_id="finish_6_7_8", disappearance_confirm_frames=4)
+    )
+    session.set_table_context(pockets_mm=[(500.0, 0.0)])
+    cue = _track(0, 200.0, 500.0)
+    ball_on_lip = _track(6, 500.0, 70.0)
+    other_balls = [_track(7, 860.0, 300.0), _track(8, 940.0, 300.0)]
+    session.update(
+        TracksFrame(
+            frame_id=1,
+            ts_cam_ns=1_000_000_000,
+            tracks=[cue, ball_on_lip, *other_balls],
+        )
+    )
+    assert session.start()[0] is True
+    session.update(
+        TracksFrame(
+            frame_id=2,
+            ts_cam_ns=1_100_000_000,
+            tracks=[cue, ball_on_lip, *other_balls],
+        ),
+        PocketVisualObservationFrame(
+            frame_id=2,
+            ts_cam_ns=1_100_000_000,
+            observations=[
+                PocketVisualObservation(
+                    pocket_index=0,
+                    lip_occupied=True,
+                    group="solid",
+                    associated_track_ids=[6],
+                )
+            ],
+        ),
+    )
+
+    for offset in range(1, 7):
+        ts_ns = 1_100_000_000 + offset * 100_000_000
+        state = session.update(
+            TracksFrame(
+                frame_id=2 + offset,
+                ts_cam_ns=ts_ns,
+                tracks=[cue, *other_balls],
+            ),
+            PocketVisualObservationFrame(
+                frame_id=2 + offset,
+                ts_cam_ns=ts_ns,
+                observations=[
+                    PocketVisualObservation(
+                        pocket_index=0,
+                        lip_occupied=True,
+                        group="solid",
+                    )
+                ],
+            ),
+        )
+
+    assert state.phase == "running"
+    assert state.failure_reason is None
+    assert state.potted_numbers == []
+
+    for offset in range(7, 11):
+        ts_ns = 1_100_000_000 + offset * 100_000_000
+        state = session.update(
+            TracksFrame(
+                frame_id=2 + offset,
+                ts_cam_ns=ts_ns,
+                tracks=[cue, *other_balls],
+            ),
+            PocketVisualObservationFrame(
+                frame_id=2 + offset,
+                ts_cam_ns=ts_ns,
+                observations=[PocketVisualObservation(pocket_index=0, clear=True)],
+            ),
+        )
+
+    assert state.phase == "failed"
+    assert state.failure_reason == "ball_lost_away_from_pocket"
 
 
 def test_training_session_rejects_disappearance_away_from_pocket() -> None:
@@ -376,5 +740,27 @@ def test_runtime_pipeline_uses_training_branch_without_rule_planning() -> None:
         assert rule_output is not None
         assert rule_output.training is None
         assert rule_output.plan.shot_mode in {"rule", "hook", "target"}
+    finally:
+        pipeline.close()
+
+
+def test_runtime_clears_pocket_observer_history_at_training_boundaries() -> None:
+    config = AppConfig()
+    config.camera.backend = "synthetic"
+    config.detector.backend = "disabled"
+    config.training_detector.backend = "disabled"
+    config.training.operating_mode = "training"
+    config.replay.enabled = False
+    pipeline = RuntimePipeline(config)
+    try:
+        reset_reasons: list[str] = []
+        pipeline.pocket_observer.reset = lambda: reset_reasons.append("reset")
+        pipeline.training_session.start = lambda: (True, pipeline.training_session.state)
+
+        assert pipeline.start_training()[0] is True
+        pipeline.reset_training()
+        pipeline.select_training_scenario("finish_6_7_8")
+
+        assert reset_reasons == ["reset", "reset", "reset"]
     finally:
         pipeline.close()
