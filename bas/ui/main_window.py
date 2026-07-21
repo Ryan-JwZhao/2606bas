@@ -1371,6 +1371,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._video_timeline_dragging = False
         self._video_timeline_internal_update = False
         self._video_timeline_last_seek_value: Optional[int] = None
+        self._video_playback_paused = False
         self._raw_video_recorder: Optional[FfmpegH264Recorder] = None
         self._route_video_recorder: Optional[FfmpegH264Recorder] = None
         self._raw_video_path: Optional[Path] = None
@@ -1684,6 +1685,10 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.video_timeline_widget.setObjectName("videoTimeline")
         self.video_timeline_layout = QtWidgets.QHBoxLayout(self.video_timeline_widget)
         self.video_timeline_layout.setContentsMargins(0, 0, 0, 0)
+        self.video_pause_btn = self._button("暂停", variant="compact")
+        self.video_pause_btn.setEnabled(False)
+        self.video_pause_btn.setToolTip("暂停或继续视频检测")
+        self.video_pause_btn.clicked.connect(self.toggle_video_pause)
         self.video_timeline_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.video_timeline_slider.setObjectName("videoTimelineSlider")
         self.video_timeline_slider.setRange(0, 0)
@@ -1697,6 +1702,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.video_timeline_slider.sliderMoved.connect(self._video_timeline_slider_moved)
         self.video_timeline_slider.sliderReleased.connect(self._video_timeline_slider_released)
         self.video_timeline_slider.valueChanged.connect(self._video_timeline_value_changed)
+        self.video_timeline_layout.addWidget(self.video_pause_btn)
         self.video_timeline_layout.addWidget(self.video_timeline_slider, 1)
         self.video_timeline_layout.addWidget(self.video_timeline_label)
         self.preview_layout.addWidget(self.video_timeline_widget)
@@ -3973,11 +3979,13 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if not is_video_mode:
             self._video_timeline_state = None
             self.video_timeline_slider.setEnabled(False)
+            self.video_pause_btn.setEnabled(False)
 
     def _configure_video_timeline(self) -> None:
         self._update_video_timeline_visibility()
         if self.pipeline is None or self.video_timeline_widget.isHidden():
             self.video_timeline_slider.setEnabled(False)
+            self.video_pause_btn.setEnabled(False)
             return
         state_getter = getattr(self.pipeline, "video_timeline_state", None)
         state = state_getter() if callable(state_getter) else None
@@ -3998,6 +4006,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             finally:
                 self._video_timeline_internal_update = False
             self.video_timeline_slider.setEnabled(False)
+            self.video_pause_btn.setEnabled(False)
             self.video_timeline_label.setText("00:00 / --:--")
             return
         frame = state.current_frame if current_frame is None else int(current_frame)
@@ -4009,6 +4018,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         finally:
             self._video_timeline_internal_update = False
         self.video_timeline_slider.setEnabled(self.pipeline is not None and state.total_frames > 1)
+        self.video_pause_btn.setEnabled(self.pipeline is not None)
         self._update_video_timeline_label(frame)
 
     def _update_video_timeline_label(self, frame_index: int) -> None:
@@ -4029,7 +4039,9 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
 
     def _video_timeline_slider_released(self) -> None:
         self._video_timeline_dragging = False
-        self._seek_video_timeline(self.video_timeline_slider.value())
+        # With tracking disabled Qt commits value() only after sliderReleased.
+        # sliderPosition() is the actual handle location at this point.
+        self._seek_video_timeline(self.video_timeline_slider.sliderPosition())
 
     def _video_timeline_value_changed(self, value: int) -> None:
         if self._video_timeline_internal_update or self._video_timeline_dragging:
@@ -4058,6 +4070,24 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._clear_pocket_notices()
         self._set_video_timeline_state(state)
         self._append_log(f"视频已定位到 {format_video_time(state.current_seconds)}")
+        if self._video_playback_paused:
+            self._tick(allow_paused_frame=True)
+
+    @QtCore.pyqtSlot()
+    def toggle_video_pause(self) -> None:
+        if self.pipeline is None or self._video_timeline_state is None:
+            return
+        self._set_video_playback_paused(not self._video_playback_paused, write_log=True)
+
+    def _set_video_playback_paused(self, paused: bool, *, write_log: bool = False) -> None:
+        self._video_playback_paused = bool(paused)
+        self.video_pause_btn.setText("继续" if self._video_playback_paused else "暂停")
+        if self._video_playback_paused:
+            self.timer.stop()
+        elif self.pipeline is not None:
+            self.timer.start(1)
+        if write_log:
+            self._append_log("视频检测已暂停" if self._video_playback_paused else "视频检测已继续")
 
     def start_pipeline(self) -> None:
         if self._pipeline_start_pending:
@@ -4098,6 +4128,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._last_metrics_update_ts = 0.0
         self._last_heavy_ui_update_ts = 0.0
         self._last_perf_log_ts = 0.0
+        self._video_playback_paused = False
+        self.video_pause_btn.setText("暂停")
         self._set_running(True)
         self._configure_video_timeline()
         self._sync_mode_dependent_controls()
@@ -4130,6 +4162,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             finally:
                 self.pipeline = None
         self._set_running(False)
+        self._set_video_playback_paused(False)
         self._configure_video_timeline()
         self._update_module_status()
         self._append_log("采集已停止")
@@ -4296,10 +4329,13 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             )
         )
 
-    def _tick(self) -> None:
+    def _tick(self, *, allow_paused_frame: bool = False) -> None:
         tick_start = time.perf_counter()
+        if bool(self.__dict__.get("_video_playback_paused", False)) and not allow_paused_frame:
+            return
         if self._frame_busy:
-            self.timer.start(self._capture_timer_interval_ms())
+            if not bool(self.__dict__.get("_video_playback_paused", False)):
+                self.timer.start(self._capture_timer_interval_ms())
             return
         if self.pipeline is None:
             return
@@ -4347,7 +4383,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self._handle_runtime_failure(exc)
         finally:
             self._frame_busy = False
-            if self.pipeline is not None:
+            if self.pipeline is not None and not bool(self.__dict__.get("_video_playback_paused", False)):
                 elapsed_ms = (time.perf_counter() - tick_start) * 1000.0
                 self.timer.start(self._capture_timer_interval_ms(elapsed_ms=elapsed_ms))
 
@@ -4519,6 +4555,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.raw_video_btn.setText(self.RAW_VIDEO_START_LABEL)
             self.route_video_btn.setText(self.ROUTE_VIDEO_START_LABEL)
             self.video_timeline_slider.setEnabled(False)
+            self.video_pause_btn.setEnabled(False)
         self.status_label.setText("运行中" if running else "离线")
         self._update_deep_debug_controls(running=running)
 
@@ -4540,6 +4577,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.raw_video_btn.setEnabled(False)
         self.route_video_btn.setEnabled(False)
         self.video_timeline_slider.setEnabled(False)
+        self.video_pause_btn.setEnabled(False)
         self.deep_debug_btn.setEnabled(False)
         self.status_label.setText("启动中")
 

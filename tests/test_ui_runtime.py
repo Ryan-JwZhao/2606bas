@@ -105,12 +105,11 @@ def test_video_timeline_drag_seeks_pipeline_and_formats_time() -> None:
     assert window.video_timeline_slider.isEnabled() is True
     assert window.video_timeline_label.text() == "00:00 / 02:00"
 
-    window._video_timeline_slider_pressed()
-    window.video_timeline_slider.setValue(900)
-    window._video_timeline_slider_moved(900)
+    window.video_timeline_slider.setSliderDown(True)
+    window.video_timeline_slider.setSliderPosition(900)
     assert seeks == []
     assert window.video_timeline_label.text() == "00:30 / 02:00"
-    window._video_timeline_slider_released()
+    window.video_timeline_slider.setSliderDown(False)
 
     assert seeks == [900]
     assert window.video_timeline_slider.value() == 900
@@ -118,6 +117,75 @@ def test_video_timeline_drag_seeks_pipeline_and_formats_time() -> None:
     window.pipeline = None
     window.close()
     app.processEvents()
+
+
+def test_video_timeline_pause_stops_ticks_and_resume_restarts_timer() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    window.backend_combo.setCurrentText("video")
+    window.pipeline = SimpleNamespace()
+    window._set_video_timeline_state(VideoTimelineState(current_frame=0, total_frames=300, fps=30.0))
+    window.timer.start(1000)
+
+    window.video_pause_btn.click()
+
+    assert window._video_playback_paused is True
+    assert window.timer.isActive() is False
+    assert window.video_pause_btn.text() == "继续"
+
+    window.video_pause_btn.click()
+
+    assert window._video_playback_paused is False
+    assert window.timer.isActive() is True
+    assert window.video_pause_btn.text() == "暂停"
+
+    window.pipeline = None
+    window.close()
+    app.processEvents()
+
+
+def test_paused_video_seek_refreshes_one_frame_without_resuming() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    refresh_calls: list[bool] = []
+
+    class _VideoPipeline:
+        def video_timeline_state(self) -> VideoTimelineState:
+            return VideoTimelineState(current_frame=0, total_frames=300, fps=30.0)
+
+        def seek_video(self, frame_index: int) -> VideoTimelineState:
+            return VideoTimelineState(current_frame=frame_index, total_frames=300, fps=30.0)
+
+    window.backend_combo.setCurrentText("video")
+    window.pipeline = _VideoPipeline()
+    window._configure_video_timeline()
+    window._set_video_playback_paused(True)
+    window._tick = lambda *, allow_paused_frame=False: refresh_calls.append(allow_paused_frame)
+
+    window._seek_video_timeline(150)
+
+    assert refresh_calls == [True]
+    assert window._video_playback_paused is True
+    assert window.timer.isActive() is False
+
+    window.pipeline = None
+    window.close()
+    app.processEvents()
+
+
+def test_tick_does_not_read_another_frame_while_video_is_paused() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    step_calls: list[bool] = []
+    timer_starts: list[int] = []
+    window._video_playback_paused = True
+    window._frame_busy = False
+    window.pipeline = SimpleNamespace(step=lambda: step_calls.append(True))
+    window.timer = SimpleNamespace(start=lambda interval: timer_starts.append(interval))
+
+    main_window.OperatorWindow._tick(window)
+
+    assert step_calls == []
+    assert timer_starts == []
 
 
 def test_operator_window_preserves_preview_ratio_at_minimum_size() -> None:
