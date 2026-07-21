@@ -132,12 +132,19 @@ class TrainingSession:
             return self._state
 
         visible = set(self._visible_numbers(self._latest_tracks))
+        tracked = set(self._tracked_numbers(self._latest_tracks))
         pending_numbers = set(self.scenario.required_balls) - set(self._potted)
         watched = pending_numbers | ({0} if self.scenario.require_cue_ball else set())
         missing_confirmed: list[int] = []
         confirm_frames = max(1, int(self.config.disappearance_confirm_frames))
         for number in watched:
             if number in visible:
+                self._missing_frames[number] = 0
+                continue
+            if number in tracked:
+                # Cached pipeline frames repeat the same numbered-track occlusion.
+                # The shared pocket FSM still owns the ball and needs time to use
+                # visual evidence, reappearance vetoes, or tracker eviction.
                 self._missing_frames[number] = 0
                 continue
             self._missing_frames[number] = self._missing_frames.get(number, 0) + 1
@@ -335,6 +342,15 @@ class TrainingSession:
             number
             for track in tracks
             if track.visibility == "visible" and (number := ball_number_from_track(track)) is not None
+        }
+        return sorted(numbers)
+
+    @staticmethod
+    def _tracked_numbers(tracks: Sequence[TrackObservation]) -> list[int]:
+        numbers = {
+            number
+            for track in tracks
+            if (number := ball_number_from_track(track)) is not None
         }
         return sorted(numbers)
 

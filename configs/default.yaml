@@ -49,6 +49,7 @@ training_detector:
 training:
   operating_mode: rules  # rules | training
   scenario_id: ordered_line_1_7
+  # Counted only after the numbered tracker no longer owns an occluded ball.
   disappearance_confirm_frames: 8
   # Legacy compatibility only; shared Modern pocket judgment ignores this value.
   pocket_proximity_mm: 190.0

@@ -7,7 +7,14 @@ from bas.config import AppConfig, DetectorConfig, TrackerConfig, TrainingConfig
 from bas.perception.detector import Detector
 from bas.perception.mode_service import ModeAwareDetectService
 from bas.perception.regions import DetectionRegionPolicy, PocketGuardRegion
-from bas.schemas import Detection, FramePacket, PocketVisualObservationFrame, TrackObservation, TracksFrame
+from bas.schemas import (
+    Detection,
+    FramePacket,
+    PocketVisualObservation,
+    PocketVisualObservationFrame,
+    TrackObservation,
+    TracksFrame,
+)
 from bas.training import NumberedBallTracker, TrainingSession, get_training_scenario, list_training_scenarios
 
 
@@ -27,6 +34,7 @@ def _track(
     visible: bool = True,
     vx: float = 0.0,
     vy: float = 0.0,
+    lost_frames: int | None = None,
 ) -> TrackObservation:
     return TrackObservation(
         track_id=number,
@@ -49,7 +57,7 @@ def _track(
         ),
         confidence=0.95,
         visibility="visible" if visible else "occluded",
-        lost_frames=0 if visible else 1,
+        lost_frames=(0 if visible else 1) if lost_frames is None else int(lost_frames),
     )
 
 
@@ -113,6 +121,128 @@ def test_training_session_rejects_disappearance_away_from_pocket() -> None:
     lost_in_middle = session.update(_tracks(2, [7, 8]))
     assert lost_in_middle.phase == "failed"
     assert lost_in_middle.failure_reason == "ball_lost_away_from_pocket"
+
+
+def test_training_session_does_not_fail_while_numbered_tracker_still_owns_occluded_ball() -> None:
+    session = TrainingSession(
+        TrainingConfig(scenario_id="solids_then_black", disappearance_confirm_frames=8)
+    )
+    session.set_table_context(pockets_mm=[(0.0, 0.0)])
+    setup_tracks = [_track(0, 200.0, 500.0)] + [
+        _track(number, 300.0 + number * 80.0, 300.0)
+        for number in range(1, 9)
+    ]
+    session.update(TracksFrame(frame_id=1, ts_cam_ns=1_000_000_000, tracks=setup_tracks))
+    assert session.start()[0] is True
+
+    state = session.state
+    for offset in range(1, 9):
+        lost_frames = 1 if offset <= 4 else 2
+        tracks = [_track(0, 200.0, 500.0)] + [
+            _track(
+                number,
+                300.0 + number * 80.0,
+                300.0,
+                visible=number != 1,
+                lost_frames=lost_frames if number == 1 else 0,
+            )
+            for number in range(1, 9)
+        ]
+        state = session.update(
+            TracksFrame(
+                frame_id=1 + offset,
+                ts_cam_ns=1_000_000_000 + offset * 16_700_000,
+                tracks=tracks,
+            )
+        )
+
+    assert state.phase == "running"
+    assert state.failure_reason is None
+
+    without_ball_one = [_track(0, 200.0, 500.0)] + [
+        _track(number, 300.0 + number * 80.0, 300.0)
+        for number in range(2, 9)
+    ]
+    for offset in range(9, 17):
+        state = session.update(
+            TracksFrame(
+                frame_id=1 + offset,
+                ts_cam_ns=1_000_000_000 + offset * 16_700_000,
+                tracks=without_ball_one,
+            )
+        )
+
+    assert state.phase == "failed"
+    assert state.failure_reason == "ball_lost_away_from_pocket"
+
+
+def test_training_session_waits_for_late_visual_crossing_and_confirms_occluded_ball() -> None:
+    session = TrainingSession(
+        TrainingConfig(scenario_id="solids_then_black", disappearance_confirm_frames=8)
+    )
+    session.set_table_context(pockets_mm=[(0.0, 0.0)])
+    setup_tracks = [_track(0, 200.0, 500.0)] + [
+        _track(number, 300.0 + number * 80.0, 300.0)
+        for number in range(1, 9)
+    ]
+    session.update(TracksFrame(frame_id=1, ts_cam_ns=1_000_000_000, tracks=setup_tracks))
+    assert session.start()[0] is True
+
+    state = session.state
+    for offset in range(1, 101):
+        tracker_lost_frames = min(18, (offset + 3) // 4)
+        include_ball_one = offset <= 72
+        tracks = [_track(0, 200.0, 500.0)] + [
+            _track(number, 300.0 + number * 80.0, 300.0)
+            for number in range(2, 9)
+        ]
+        if include_ball_one:
+            tracks.append(
+                _track(
+                    1,
+                    380.0,
+                    300.0,
+                    visible=False,
+                    lost_frames=tracker_lost_frames,
+                )
+            )
+        observations = []
+        if offset == 12:
+            observations.append(
+                PocketVisualObservation(
+                    pocket_index=0,
+                    inward_crossing=True,
+                    group="solid",
+                    confidence=0.98,
+                    associated_track_ids=[1],
+                    evidence_sources=["foreground_motion", "ball_sized_motion"],
+                    motion_score=0.9,
+                    foreground_score=0.8,
+                    foreground_depth_diameters=0.5,
+                )
+            )
+        elif offset > 12:
+            observations.append(PocketVisualObservation(pocket_index=0, clear=True))
+        state = session.update(
+            TracksFrame(
+                frame_id=1 + offset,
+                ts_cam_ns=1_000_000_000 + offset * 16_700_000,
+                tracks=tracks,
+            ),
+            PocketVisualObservationFrame(
+                frame_id=1 + offset,
+                ts_cam_ns=1_000_000_000 + offset * 16_700_000,
+                observations=observations,
+            ),
+        )
+        if state.potted_numbers == [1]:
+            break
+
+    assert state.phase == "running"
+    assert state.failure_reason is None
+    assert state.potted_numbers == [1]
+    potted = next(event for event in state.events if event.name == "TRAINING_BALL_POTTED")
+    assert potted.payload["judgment"] == "rules_pocket_fsm"
 
 
 def test_training_session_accepts_rule_judged_projected_entry() -> None:
