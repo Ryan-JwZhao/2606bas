@@ -6,11 +6,6 @@ from typing import Sequence
 from ..config import StateConfig
 from ..schemas import Event, MatchPhase, PocketVisualObservationFrame, TracksFrame
 from ..state.pocket import PerBallPocketFSM
-from .numbered_tracker import numbered_ball_group
-
-
-_PENDING_EVENT_NAMES = {"POCKET_CANDIDATE", "POCKET_TENTATIVE", "POCKET_COMMIT_READY"}
-_TERMINAL_EVENT_NAMES = {"POCKET_DETECTED", "POCKET_REJECTED", "POCKET_REVIEW_REQUIRED", "POCKET_REAPPEARED"}
 
 
 @dataclass(frozen=True)
@@ -19,8 +14,6 @@ class TrainingPocketJudgment:
 
     events: tuple[Event, ...]
     detected_events: tuple[Event, ...]
-    pending_numbers: frozenset[int]
-    lip_occupied_numbers: frozenset[int]
 
     @property
     def detected_numbers(self) -> tuple[int, ...]:
@@ -38,8 +31,6 @@ class TrainingPocketJudge:
 
     def __init__(self, state_config: StateConfig):
         self._fsm = PerBallPocketFSM(state_config)
-        self._pending_numbers: set[int] = set()
-        self._lip_occupants_by_pocket: dict[int, set[int]] = {}
         self._pockets_mm: list[tuple[float, float]] = []
 
     @property
@@ -48,8 +39,6 @@ class TrainingPocketJudge:
 
     def reset(self) -> None:
         self._fsm.reset()
-        self._pending_numbers.clear()
-        self._lip_occupants_by_pocket.clear()
 
     def set_table_context(
         self,
@@ -93,15 +82,6 @@ class TrainingPocketJudge:
         )
         detected_events = tuple(event for event in events if event.name == "POCKET_DETECTED")
 
-        for event in events:
-            number = _event_ball_number(event)
-            if number is None:
-                continue
-            if event.name in _PENDING_EVENT_NAMES:
-                self._pending_numbers.add(number)
-            elif event.name in _TERMINAL_EVENT_NAMES:
-                self._pending_numbers.discard(number)
-
         decision_ids = [
             str(event.payload.get("decision_id", ""))
             for event in detected_events
@@ -113,55 +93,7 @@ class TrainingPocketJudge:
         return TrainingPocketJudgment(
             events=events,
             detected_events=detected_events,
-            pending_numbers=frozenset(self._pending_numbers),
-            lip_occupied_numbers=self._lip_occupied_numbers(pocket_observations),
         )
-
-    def _lip_occupied_numbers(
-        self,
-        observations_frame: PocketVisualObservationFrame | None,
-    ) -> frozenset[int]:
-        if observations_frame is None:
-            self._lip_occupants_by_pocket.clear()
-            return frozenset()
-        observed_pockets: set[int] = set()
-        occupied_numbers: set[int] = set()
-        for observed in observations_frame.observations:
-            pocket_index = int(observed.pocket_index)
-            observed_pockets.add(pocket_index)
-            if not observed.lip_occupied:
-                self._lip_occupants_by_pocket.pop(pocket_index, None)
-                continue
-
-            explicit = {
-                number
-                for value in observed.associated_track_ids
-                if (number := _ball_number(value)) is not None
-            }
-            if explicit:
-                occupants = explicit
-            else:
-                occupants = set(self._lip_occupants_by_pocket.get(pocket_index, set()))
-                if observed.group is not None:
-                    occupants = {
-                        number
-                        for number in occupants
-                        if numbered_ball_group(number) == observed.group
-                    }
-                if not occupants and observed.group == "cue":
-                    occupants.add(0)
-                elif not occupants and observed.group == "black":
-                    occupants.add(8)
-
-            if occupants:
-                self._lip_occupants_by_pocket[pocket_index] = occupants
-                occupied_numbers.update(occupants)
-            else:
-                self._lip_occupants_by_pocket.pop(pocket_index, None)
-
-        for pocket_index in set(self._lip_occupants_by_pocket) - observed_pockets:
-            self._lip_occupants_by_pocket.pop(pocket_index, None)
-        return frozenset(occupied_numbers)
 
 
 def _event_ball_number(event: Event) -> int | None:

@@ -2706,7 +2706,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.config.training_detector.batch_size,
             self.config.training_detector.detect_interval_frames,
             self.config.training_detector.detect_fps_limit_hz,
-            self.config.training.disappearance_confirm_frames,
             self.config.training.pocket_proximity_mm,
             self.config.calibration.camera_file,
             self.config.calibration.normalized_projection_mode(),

@@ -128,7 +128,7 @@ def test_training_catalog_contains_multiple_number_aware_drills() -> None:
 
 def test_ordered_line_session_passes_correct_ball_and_rejects_wrong_ball() -> None:
     session = TrainingSession(
-        TrainingConfig(scenario_id="ordered_line_1_7", disappearance_confirm_frames=2),
+        TrainingConfig(scenario_id="ordered_line_1_7"),
         ball_diameter_mm=57.15,
     )
     session.set_table_context(pockets_mm=[(0.0, 0.0)])
@@ -161,7 +161,7 @@ def test_ordered_line_session_passes_correct_ball_and_rejects_wrong_ball() -> No
 
 
 def test_training_session_rejects_cue_ball_scratch() -> None:
-    session = TrainingSession(TrainingConfig(scenario_id="finish_6_7_8", disappearance_confirm_frames=1))
+    session = TrainingSession(TrainingConfig(scenario_id="finish_6_7_8"))
     session.set_table_context(pockets_mm=[(0.0, 0.0)])
     session.update(_tracks(1, [6, 7, 8]))
     assert session.start()[0] is True
@@ -191,7 +191,7 @@ def test_training_requires_pocket_calibration_before_start() -> None:
 
 def test_training_rejects_early_black_eight_with_shared_pocket_judgment() -> None:
     session = TrainingSession(
-        TrainingConfig(scenario_id="solids_then_black", disappearance_confirm_frames=1)
+        TrainingConfig(scenario_id="solids_then_black")
     )
     session.set_table_context(pockets_mm=[(0.0, 0.0)])
     session.update(_tracks(1, list(range(1, 9))))
@@ -209,9 +209,9 @@ def test_training_rejects_early_black_eight_with_shared_pocket_judgment() -> Non
     assert failed.failure_reason == "wrong_ball"
 
 
-def test_training_fails_if_a_confirmed_potted_ball_reappears() -> None:
+def test_training_ignores_a_confirmed_potted_ball_reappearing() -> None:
     session = TrainingSession(
-        TrainingConfig(scenario_id="solids_then_black", disappearance_confirm_frames=1)
+        TrainingConfig(scenario_id="solids_then_black")
     )
     session.set_table_context(pockets_mm=[(0.0, 0.0)])
     session.update(_tracks(1, list(range(1, 9))))
@@ -225,15 +225,16 @@ def test_training_fails_if_a_confirmed_potted_ball_reappears() -> None:
     )
     assert confirmed.potted_numbers == [1]
 
-    failed = session.update(_tracks(4, list(range(1, 9))))
+    continued = session.update(_tracks(4, list(range(1, 9))))
 
-    assert failed.phase == "failed"
-    assert failed.failure_reason == "potted_ball_reappeared"
+    assert continued.phase == "running"
+    assert continued.failure_reason is None
+    assert continued.potted_numbers == [1]
 
 
 def test_training_restart_discards_visual_candidates_from_previous_attempt() -> None:
     session = TrainingSession(
-        TrainingConfig(scenario_id="finish_6_7_8", disappearance_confirm_frames=1)
+        TrainingConfig(scenario_id="finish_6_7_8")
     )
     session.set_table_context(pockets_mm=[(0.0, 0.0)])
     session.update(_tracks(1, [6, 7, 8]))
@@ -279,8 +280,8 @@ def test_training_restart_discards_visual_candidates_from_previous_attempt() -> 
         ),
     )
 
-    assert resolved.phase == "failed"
-    assert resolved.failure_reason == "ball_lost_away_from_pocket"
+    assert resolved.phase == "running"
+    assert resolved.failure_reason is None
     assert resolved.potted_numbers == []
 
 
@@ -295,7 +296,7 @@ def test_training_pocket_observer_ignores_numbers_outside_the_scenario() -> None
 
 def test_training_session_holds_when_cue_ball_remains_on_pocket_lip() -> None:
     session = TrainingSession(
-        TrainingConfig(scenario_id="finish_6_7_8", disappearance_confirm_frames=8)
+        TrainingConfig(scenario_id="finish_6_7_8")
     )
     session.set_table_context(pockets_mm=[(500.0, 0.0)])
     object_balls = [_track(6, 780.0, 300.0), _track(7, 860.0, 300.0), _track(8, 940.0, 300.0)]
@@ -393,13 +394,13 @@ def test_training_session_holds_when_cue_ball_remains_on_pocket_lip() -> None:
             ),
         )
 
-    assert state.phase == "failed"
-    assert state.failure_reason == "ball_lost_away_from_pocket"
+    assert state.phase == "running"
+    assert state.failure_reason is None
 
 
 def test_training_holds_numbered_ball_when_lip_loses_track_association() -> None:
     session = TrainingSession(
-        TrainingConfig(scenario_id="finish_6_7_8", disappearance_confirm_frames=4)
+        TrainingConfig(scenario_id="finish_6_7_8")
     )
     session.set_table_context(pockets_mm=[(500.0, 0.0)])
     cue = _track(0, 200.0, 500.0)
@@ -473,24 +474,22 @@ def test_training_holds_numbered_ball_when_lip_loses_track_association() -> None
             ),
         )
 
-    assert state.phase == "failed"
-    assert state.failure_reason == "ball_lost_away_from_pocket"
+    assert state.phase == "running"
+    assert state.failure_reason is None
 
 
-def test_training_session_rejects_disappearance_away_from_pocket() -> None:
-    session = TrainingSession(TrainingConfig(scenario_id="finish_6_7_8", disappearance_confirm_frames=1))
+def test_training_session_ignores_disappearance_away_from_pocket() -> None:
+    session = TrainingSession(TrainingConfig(scenario_id="finish_6_7_8"))
     session.set_table_context(pockets_mm=[(0.0, 0.0)])
     session.update(_tracks(1, [6, 7, 8]))
     assert session.start()[0] is True
     lost_in_middle = session.update(_tracks(2, [7, 8]))
-    assert lost_in_middle.phase == "failed"
-    assert lost_in_middle.failure_reason == "ball_lost_away_from_pocket"
+    assert lost_in_middle.phase == "running"
+    assert lost_in_middle.failure_reason is None
 
 
-def test_training_session_does_not_fail_while_numbered_tracker_still_owns_occluded_ball() -> None:
-    session = TrainingSession(
-        TrainingConfig(scenario_id="solids_then_black", disappearance_confirm_frames=8)
-    )
+def test_training_session_ignores_missing_ball_after_tracker_eviction() -> None:
+    session = TrainingSession(TrainingConfig(scenario_id="solids_then_black"))
     session.set_table_context(pockets_mm=[(0.0, 0.0)])
     setup_tracks = [_track(0, 200.0, 500.0)] + [
         _track(number, 300.0 + number * 80.0, 300.0)
@@ -536,13 +535,13 @@ def test_training_session_does_not_fail_while_numbered_tracker_still_owns_occlud
             )
         )
 
-    assert state.phase == "failed"
-    assert state.failure_reason == "ball_lost_away_from_pocket"
+    assert state.phase == "running"
+    assert state.failure_reason is None
 
 
 def test_training_session_waits_for_late_visual_crossing_and_confirms_occluded_ball() -> None:
     session = TrainingSession(
-        TrainingConfig(scenario_id="solids_then_black", disappearance_confirm_frames=8)
+        TrainingConfig(scenario_id="solids_then_black")
     )
     session.set_table_context(pockets_mm=[(0.0, 0.0)])
     setup_tracks = [_track(0, 200.0, 500.0)] + [
@@ -613,7 +612,6 @@ def test_training_session_accepts_rule_judged_projected_entry() -> None:
     session = TrainingSession(
         TrainingConfig(
             scenario_id="solids_then_black",
-            disappearance_confirm_frames=1,
             pocket_proximity_mm=50.0,
         )
     )

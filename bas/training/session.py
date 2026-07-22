@@ -26,7 +26,6 @@ class TrainingSession:
         self.scenario: TrainingScenario = get_training_scenario(config.scenario_id)
         self._pocket_judge = TrainingPocketJudge(state_config or StateConfig(engine="modern"))
         self._latest_tracks: list[TrackObservation] = []
-        self._missing_frames: dict[int, int] = {}
         self._potted: list[int] = []
         self._attempt = 0
         self._started_ts_ns = 0
@@ -44,7 +43,6 @@ class TrainingSession:
     def reset(self) -> TrainingStateFrame:
         frame_id = self._state.frame_id
         ts_cam_ns = self._state.ts_cam_ns
-        self._missing_frames.clear()
         self._potted.clear()
         self._started_ts_ns = 0
         self._pocket_judge.reset()
@@ -79,7 +77,6 @@ class TrainingSession:
         )
         self._attempt += 1
         self._potted.clear()
-        self._missing_frames.clear()
         self._started_ts_ns = int(self._state.ts_cam_ns)
         self._state = replace(
             self._state,
@@ -145,7 +142,6 @@ class TrainingSession:
             return self._state
 
         visible = set(self._visible_numbers(self._latest_tracks))
-        tracked = set(self._tracked_numbers(self._latest_tracks))
         if not self._pocket_judge.has_table_context:
             events = [
                 self._event(
@@ -166,54 +162,9 @@ class TrainingSession:
             return self._state
         pending_numbers = set(self.scenario.required_balls) - set(self._potted)
         watched = pending_numbers | ({0} if self.scenario.require_cue_ball else set())
-        missing_confirmed: list[int] = []
-        confirm_frames = max(1, int(self.config.disappearance_confirm_frames))
-        for number in watched:
-            if number in visible:
-                self._missing_frames[number] = 0
-                continue
-            if number in tracked:
-                # Cached pipeline frames repeat the same numbered-track occlusion.
-                # The shared pocket FSM still owns the ball and needs time to use
-                # visual evidence, reappearance vetoes, or tracker eviction.
-                self._missing_frames[number] = 0
-                continue
-            if number in pocket_judgment.lip_occupied_numbers:
-                # A stationary ball can be hidden by the pocket jaw while the
-                # pocket ROI still proves it remains on the table-side lip.
-                self._missing_frames[number] = 0
-                continue
-            self._missing_frames[number] = self._missing_frames.get(number, 0) + 1
-            if self._missing_frames[number] >= confirm_frames:
-                missing_confirmed.append(number)
-
         confirmed = [number for number in pocket_judgment.detected_numbers if number in watched]
-        away_from_pocket = [
-            number
-            for number in missing_confirmed
-            if number not in pocket_judgment.pending_numbers and number not in confirmed
-        ]
 
         events: list[Event] = []
-        if away_from_pocket:
-            events.append(
-                self._event(
-                    "TRAINING_FAILED",
-                    frame_id,
-                    ts_cam_ns,
-                    reason="ball_lost_away_from_pocket",
-                    balls=away_from_pocket,
-                )
-            )
-            self._state = self._failed(
-                frame_id,
-                ts_cam_ns,
-                "球在非袋口区域持续丢失，无法确认进球",
-                "ball_lost_away_from_pocket",
-                visible,
-                events,
-            )
-            return self._state
         if 0 in confirmed:
             events.append(self._event("TRAINING_FAILED", frame_id, ts_cam_ns, reason="cue_ball_pocketed"))
             self._state = self._failed(frame_id, ts_cam_ns, "白球落袋，本次训练失败", "cue_ball_pocketed", visible, events)
@@ -268,12 +219,6 @@ class TrainingSession:
                     events=events,
                 )
                 return self._state
-
-        reappeared = sorted(number for number in self._potted if number in visible)
-        if reappeared:
-            events.append(self._event("TRAINING_FAILED", frame_id, ts_cam_ns, reason="potted_ball_reappeared", balls=reappeared))
-            self._state = self._failed(frame_id, ts_cam_ns, "已记进球重新出现，请重置后再试", "potted_ball_reappeared", visible, events)
-            return self._state
 
         self._state = replace(
             self._state,
@@ -388,15 +333,6 @@ class TrainingSession:
             number
             for track in tracks
             if track.visibility == "visible" and (number := ball_number_from_track(track)) is not None
-        }
-        return sorted(numbers)
-
-    @staticmethod
-    def _tracked_numbers(tracks: Sequence[TrackObservation]) -> list[int]:
-        numbers = {
-            number
-            for track in tracks
-            if (number := ball_number_from_track(track)) is not None
         }
         return sorted(numbers)
 

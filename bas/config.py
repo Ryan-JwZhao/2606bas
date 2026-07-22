@@ -90,7 +90,6 @@ class DetectorConfig:
 class TrainingConfig:
     operating_mode: str = "rules"  # rules | training
     scenario_id: str = "ordered_line_1_7"
-    disappearance_confirm_frames: int = 8  # counted only after numbered-tracker eviction
     pocket_proximity_mm: float = 190.0  # legacy compatibility; shared pocket FSM does not use it
 
 
@@ -416,7 +415,6 @@ class AppConfig:
         mode = str(self.training.operating_mode or "rules").strip().lower()
         self.training.operating_mode = "training" if mode in {"training", "train", "practice", "drill"} else "rules"
         self.training.scenario_id = str(self.training.scenario_id or "ordered_line_1_7").strip() or "ordered_line_1_7"
-        self.training.disappearance_confirm_frames = max(1, int(self.training.disappearance_confirm_frames or 8))
         self.training.pocket_proximity_mm = max(50.0, float(self.training.pocket_proximity_mm or 190.0))
         self.web_control.host = str(self.web_control.host or "0.0.0.0").strip() or "0.0.0.0"
         self.web_control.port = max(1, min(65535, int(self.web_control.port or 17070)))
