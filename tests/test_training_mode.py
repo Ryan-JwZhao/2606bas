@@ -12,6 +12,8 @@ from bas.schemas import (
     FramePacket,
     PocketVisualObservation,
     PocketVisualObservationFrame,
+    OverlayLine,
+    ProjectionOverlay,
     TrackObservation,
     TracksFrame,
 )
@@ -701,7 +703,7 @@ def test_mode_aware_detector_lazily_builds_each_model_once() -> None:
     assert created == ["rule-model", "training-model"]
 
 
-def test_runtime_pipeline_uses_training_branch_without_rule_planning() -> None:
+def test_runtime_pipeline_routes_training_scenarios_through_existing_planners() -> None:
     config = AppConfig()
     config.camera.backend = "synthetic"
     config.camera.width = 320
@@ -728,10 +730,17 @@ def test_runtime_pipeline_uses_training_branch_without_rule_planning() -> None:
         output = pipeline.step()
         assert output is not None
         assert output.training is not None
-        assert output.plan.shot_mode == "training"
+        assert output.plan.shot_mode == "hook"
         assert output.state.phase.startswith("TRAINING_")
         assert pipeline.detector.mode == "training"
         assert observed_modes == ["training"]
+
+        pipeline.select_training_scenario("solids_then_black")
+        open_stage_output = pipeline.step()
+        assert open_stage_output is not None
+        assert open_stage_output.training is not None
+        assert open_stage_output.training.expected_numbers == list(range(1, 8))
+        assert open_stage_output.plan.shot_mode == "rule"
 
         assert pipeline.set_operating_mode("rules") == "rules"
         rule_output = pipeline.step()
@@ -740,6 +749,31 @@ def test_runtime_pipeline_uses_training_branch_without_rule_planning() -> None:
         assert rule_output.plan.shot_mode in {"rule", "hook", "target"}
     finally:
         pipeline.close()
+
+
+def test_training_overlay_keeps_route_lines_and_adds_training_status() -> None:
+    from bas.config import ProjectionConfig
+    from bas.training.overlay import TrainingOverlayBuilder
+
+    route_overlay = ProjectionOverlay(
+        overlay_id="route",
+        frame_id=1,
+        projector_size=(1920, 1080),
+        lines=[OverlayLine(points=[(10.0, 10.0), (20.0, 20.0)], label="aim")],
+    )
+    state = TrainingStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        scenario_id="ordered_line_1_7",
+        scenario_title="ordered",
+        expected_numbers=[1],
+    )
+    builder = TrainingOverlayBuilder(ProjectionConfig(), calibration=object())
+
+    overlay = builder.build(TracksFrame(frame_id=1, ts_cam_ns=1), state, route_overlay=route_overlay)
+
+    assert [line.label for line in overlay.lines] == ["aim"]
+    assert any("TARGET 1" in text for _, text, _ in overlay.labels)
 
 
 def test_runtime_clears_pocket_observer_history_at_training_boundaries() -> None:

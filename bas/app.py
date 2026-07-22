@@ -182,14 +182,22 @@ class RuntimePipeline:
                 confidence=1.0 if training_state.setup_ready or training_state.phase in {"running", "passed", "failed"} else 0.5,
                 state_version=self.training_session.version,
             )
-            plan = ShotPlan(
-                plan_id=f"training_{frame.frame_id}",
-                frame_id=frame.frame_id,
-                ts_cam_ns=frame.ts_cam_ns,
-                shot_mode="training",
-                planner_version=self.training_session.version,
+            expected_numbers = [int(number) for number in training_state.expected_numbers]
+            explicit_target = len(expected_numbers) == 1
+            target_groups = {
+                "solid" if 1 <= number <= 7 else "black" if number == 8 else "stripe" if 9 <= number <= 15 else "other"
+                for number in expected_numbers
+            }
+            forced_target_group = next(iter(target_groups)) if len(target_groups) == 1 else None
+            plan = self.planner.plan(
+                state,
+                frame_bgr=frame.image,
+                forced_shot_mode="hook" if explicit_target else "rule",
+                forced_turn_target_group=forced_target_group,
+                forced_target_track_ids=expected_numbers,
             )
-            overlay = self.training_overlay_builder.build(tracks, training_state)
+            route_overlay = self.overlay_builder.from_plan(plan)
+            overlay = self.training_overlay_builder.build(tracks, training_state, route_overlay=route_overlay)
         else:
             # Cached detections still need fresh state transitions so sample collection
             # and turn resolution are not throttled down to detector refresh cadence.

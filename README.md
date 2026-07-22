@@ -325,3 +325,18 @@ Web 端会根据实时画面的 `object-fit` 显示方式补偿裁剪和黑边�
 ```powershell
 node --test tests\web_control_coordinates.test.js
 ```
+
+## 训练模式进洞路线
+
+训练模式会根据当前训练阶段自动复用已有的进洞路线规划器，不维护第三套路线算法：
+
+- 当前阶段只有一个明确球号时（例如 `1→7` 顺序清台），只把该球号交给现有勾球模式规划器，比较直球、一库和两库路线并推荐最优路线。
+- 当前阶段允许多个球号时（例如实色球清台或花色球清台），把当前仍可进的球号交给现有规则模式规划器，并继续根据白球、球杆方向和合法目标球画线。
+- `实色清台 + 黑八` 与 `花色清台 + 黑八` 在组内球清完之前会把 8 号球排除在候选目标之外；进入最后的黑八阶段后，才会为 8 号球规划路线。
+- 训练目标圈、球号、进度和用时会与进洞路线叠加显示；训练完成或当前没有合法目标时不会生成新的路线。
+
+本地验证命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_training_mode.py tests\test_planner.py -q --basetemp=pytest_tmp_training_routes -o cache_dir=pytest_cache_local\training_routes
+```

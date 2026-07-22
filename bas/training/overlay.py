@@ -14,11 +14,20 @@ class TrainingOverlayBuilder:
         self.config = config
         self.calibration = calibration
 
-    def build(self, tracks: TracksFrame, state: TrainingStateFrame) -> ProjectionOverlay:
+    def build(
+        self,
+        tracks: TracksFrame,
+        state: TrainingStateFrame,
+        *,
+        route_overlay: ProjectionOverlay | None = None,
+    ) -> ProjectionOverlay:
         overlay = ProjectionOverlay(
             overlay_id=f"training_{state.scenario_id}_{state.frame_id}",
             frame_id=state.frame_id,
             projector_size=(int(self.config.projector_width), int(self.config.projector_height)),
+            lines=list(route_overlay.lines) if route_overlay is not None else [],
+            circles=list(route_overlay.circles) if route_overlay is not None else [],
+            labels=list(route_overlay.labels) if route_overlay is not None else [],
         )
         expected = set(state.expected_numbers)
         for track in tracks.tracks:

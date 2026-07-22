@@ -185,6 +185,70 @@ def test_hook_mode_global_selection_does_not_use_rule_cue_sector(monkeypatch) ->
     assert plan.best.target_track_id == 2
 
 
+def test_training_explicit_target_reuses_hook_planner_for_only_that_number() -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(top_k=20, target_shot_enabled=False),
+        _service(),
+    )
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="TRAINING_RUNNING",
+        layout=[
+            _obs(0, "cue", 120, 250),
+            _obs(2, "solid", 620, 250),
+            _obs(3, "solid", 620, 350),
+            _obs(8, "black", 820, 250),
+        ],
+    )
+
+    plan = planner.plan(
+        state,
+        forced_shot_mode="hook",
+        forced_target_track_ids=[3],
+    )
+
+    assert plan.shot_mode == "hook"
+    assert plan.best is not None
+    assert {candidate.target_track_id for candidate in plan.candidates} == {3}
+    assert plan.best.explanation["hook_selection_source"] == "training_target"
+    assert plan.locked_target_id == 3
+
+
+def test_training_open_stage_reuses_rule_planner_and_excludes_early_black() -> None:
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            target_shot_enabled=False,
+            cue_sector_correction_enabled=False,
+        ),
+        _service(),
+    )
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="TRAINING_RUNNING",
+        layout=[
+            _obs(0, "cue", 120, 250),
+            _obs(2, "solid", 620, 250),
+            _obs(3, "solid", 620, 350),
+            _obs(8, "black", 820, 250),
+        ],
+    )
+
+    plan = planner.plan(
+        state,
+        forced_shot_mode="rule",
+        forced_turn_target_group="solid",
+        forced_target_track_ids=[2, 3],
+    )
+
+    assert plan.shot_mode == "rule"
+    assert plan.best is not None
+    assert {candidate.target_track_id for candidate in plan.candidates} <= {2, 3}
+    assert all(candidate.target_group == "solid" for candidate in plan.candidates)
+
+
 def test_planner_manual_web_target_is_released_on_shot_started() -> None:
     planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20), _service())
     layout = [

@@ -66,9 +66,15 @@ class GeometryPhysicsPlanner:
         *,
         forced_shot_mode: Optional[str] = None,
         forced_turn_target_group: Optional[str] = None,
+        forced_target_track_ids: Optional[Sequence[int]] = None,
     ) -> ShotPlan:
         self._release_manual_target_on_shot_start(state)
         shot_mode = self._shot_mode(forced_shot_mode=forced_shot_mode)
+        allowed_target_ids = (
+            {int(track_id) for track_id in forced_target_track_ids}
+            if forced_target_track_ids is not None
+            else None
+        )
         if not self.config.enabled:
             return self._empty_plan(state, shot_mode=shot_mode, hook_status="disabled")
         balls = self._extract_balls(state.layout)
@@ -81,10 +87,13 @@ class GeometryPhysicsPlanner:
                 balls,
                 frame_bgr=frame_bgr,
                 turn_target_group=forced_turn_target_group,
+                allowed_target_ids=allowed_target_ids,
             )
-        if self.manual_target_id is not None:
+        if self.manual_target_id is not None and allowed_target_ids is None:
             return self._manual_target_plan(state, cue, balls)
         if cue is None:
+            return self._empty_plan(state, shot_mode=shot_mode)
+        if allowed_target_ids == set():
             return self._empty_plan(state, shot_mode=shot_mode)
         frame_context = self._build_aim_frame_context(
             cue=cue,
@@ -98,7 +107,9 @@ class GeometryPhysicsPlanner:
             frame_bgr=frame_bgr,
             frame_context=frame_context,
         )
-        if target_shot.active:
+        if target_shot.active and (
+            allowed_target_ids is None or target_shot.active_target_id in allowed_target_ids
+        ):
             return self._target_shot_plan(state, cue, balls, target_shot)
         turn_target_group = forced_turn_target_group if forced_turn_target_group is not None else getattr(state, "turn_target_group", None)
         cue_sector_aim = self.cue_sector.detect_aim(
@@ -109,6 +120,8 @@ class GeometryPhysicsPlanner:
         )
         target_lock = self.target_lock.update(state=state, cue_ball=cue, balls=balls, aim=cue_sector_aim)
         locked_target = self._locked_target(balls, target_lock)
+        if locked_target is not None and allowed_target_ids is not None and locked_target.track_id not in allowed_target_ids:
+            locked_target = None
         if locked_target is not None:
             targets = [locked_target]
         elif cue_sector_aim is not None:
@@ -118,6 +131,8 @@ class GeometryPhysicsPlanner:
                 balls,
                 turn_target_group=turn_target_group,
             )
+        if allowed_target_ids is not None:
+            targets = [target for target in targets if target.track_id in allowed_target_ids]
         if not targets:
             return self._empty_plan(
                 state,
@@ -192,13 +207,25 @@ class GeometryPhysicsPlanner:
         *,
         frame_bgr: Optional[np.ndarray],
         turn_target_group: Optional[str],
+        allowed_target_ids: Optional[set[int]],
     ) -> ShotPlan:
         if cue is None:
             return self._empty_plan(state, shot_mode="hook", hook_status="no_cue_ball")
 
-        manual_target = self._manual_target(balls)
+        forced_targets = (
+            [ball for ball in balls if ball.track_id in allowed_target_ids and ball.group in {"solid", "stripe", "black"}]
+            if allowed_target_ids is not None
+            else []
+        )
+        manual_target = self._manual_target(balls) if allowed_target_ids is None else None
         frame_context = self._build_aim_frame_context(cue=cue, tracks=state.layout, frame_bgr=frame_bgr)
-        if manual_target is not None:
+        if allowed_target_ids is not None:
+            targets = forced_targets
+            selection_source = "training_target"
+            locked_target_id = int(forced_targets[0].track_id) if len(forced_targets) == 1 else None
+            lock_status = "training_target" if forced_targets else "training_target_missing"
+            target_shot_status = "training_target"
+        elif manual_target is not None:
             targets = [manual_target]
             selection_source = "manual"
             locked_target_id = int(manual_target.track_id)
