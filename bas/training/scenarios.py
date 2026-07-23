@@ -5,7 +5,7 @@ from typing import Sequence
 
 from ..schemas import TrackObservation
 from .layout_validation import validate_scenario_setup as _validate_scenario_setup
-from .models import BallTargetZone, LayoutConstraints, TrainingScenario
+from .models import BallTargetZone, CueBallControlGoal, LayoutConstraints, TrainingScenario
 
 
 _BEGINNER_SAFETY = LayoutConstraints(
@@ -183,6 +183,100 @@ ENTRY_SCENARIOS: tuple[TrainingScenario, ...] = (
 )
 
 
+def _cue_control_single_ball(
+    *,
+    scenario_id: str,
+    title: str,
+    description: str,
+    setup_instructions: str,
+    display_number: int,
+    goal: CueBallControlGoal,
+) -> TrainingScenario:
+    return replace(
+        _BEGINNER_BY_ID["BEGINNER_SINGLE_STRAIGHT"],
+        scenario_id=scenario_id,
+        title=title,
+        description=description,
+        setup_instructions=setup_instructions,
+        group="cue_control",
+        display_number=display_number,
+        rule_set_id="strict",
+        cue_ball_goals=(goal,),
+        require_cue_ball_settle_after_pot=True,
+        success_message="白球控制达标，训练完成",
+    )
+
+
+CUE_CONTROL_SCENARIOS: tuple[TrainingScenario, ...] = (
+    TrainingScenario(
+        scenario_id="CUE_CONTROL_TWO_BALL_LINK",
+        title="两球基础衔接",
+        description="先打 1 号球，将白球留到较大的合格区域，再继续处理 2 号球。",
+        setup_instructions="按推荐区域摆放白球、1 号球和 2 号球；必须先打 1 号，再打 2 号。",
+        required_balls=(1, 2),
+        stages=((1,), (2,)),
+        layout="zones",
+        group="cue_control",
+        display_number=1,
+        zones=(
+            BallTargetZone(0, (0.20, 0.68), (0.14, 0.18)),
+            BallTargetZone(1, (0.42, 0.42), (0.16, 0.20)),
+            BallTargetZone(2, (0.78, 0.30), (0.15, 0.20)),
+        ),
+        constraints=_BEGINNER_SAFETY,
+        rule_set_id="strict",
+        cue_ball_goals=(
+            CueBallControlGoal(
+                after_ball=1,
+                kind="table_zone",
+                center=(0.56, 0.62),
+                radius_ball_diameters=4.5,
+            ),
+        ),
+        require_cue_ball_settle_after_pot=True,
+        success_message="两球衔接完成，白球控制达标",
+    ),
+    _cue_control_single_ball(
+        scenario_id="CUE_CONTROL_STOP_ZONE",
+        title="白球停球区",
+        description="1 号球进袋后，让白球停在起始位置附近的大圆形区域内。",
+        setup_instructions="按基础直球方式摆放白球和 1 号球；1 号球进袋后，白球应停在原位附近。",
+        display_number=2,
+        goal=CueBallControlGoal(
+            after_ball=1,
+            kind="stop",
+            radius_ball_diameters=3.0,
+        ),
+    ),
+    _cue_control_single_ball(
+        scenario_id="CUE_CONTROL_FOLLOW_ZONE",
+        title="白球前进区",
+        description="1 号球进袋后，让白球进入目标球前方的宽泛区域。",
+        setup_instructions="按基础直球方式摆放白球和 1 号球；使用跟杆让白球穿过目标球原位置并进入前方区域。",
+        display_number=3,
+        goal=CueBallControlGoal(
+            after_ball=1,
+            kind="follow",
+            radius_ball_diameters=3.0,
+            distance_ball_diameters=4.0,
+        ),
+    ),
+    _cue_control_single_ball(
+        scenario_id="CUE_CONTROL_DRAW_ZONE",
+        title="白球回位区",
+        description="1 号球进袋后，让白球回到目标球后方的宽泛区域。",
+        setup_instructions="按基础直球方式摆放白球和 1 号球；使用低杆让白球回到目标球后方区域。",
+        display_number=4,
+        goal=CueBallControlGoal(
+            after_ball=1,
+            kind="draw",
+            radius_ball_diameters=3.0,
+            distance_ball_diameters=4.0,
+        ),
+    ),
+)
+
+
 ADVANCED_SCENARIOS: tuple[TrainingScenario, ...] = (
     TrainingScenario(
         scenario_id="ordered_line_1_7",
@@ -252,7 +346,7 @@ ADVANCED_SCENARIOS: tuple[TrainingScenario, ...] = (
     ),
 )
 
-SCENARIOS = BEGINNER_SCENARIOS + ENTRY_SCENARIOS + ADVANCED_SCENARIOS
+SCENARIOS = BEGINNER_SCENARIOS + ENTRY_SCENARIOS + CUE_CONTROL_SCENARIOS + ADVANCED_SCENARIOS
 _BY_ID = {scenario.scenario_id: scenario for scenario in SCENARIOS}
 _DEFAULT_SCENARIO = _BY_ID["ordered_line_1_7"]
 

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from .cue_ball_control import CueBallStop, CueBallStopObserver, CueBallTargetRegion
 from .models import (
     RULES_MODE,
     TRAINING_MODE,
     BallTargetZone,
+    CueBallControlGoal,
     LayoutConstraints,
     TrainingScenario,
     TrainingStateFrame,
@@ -26,6 +28,10 @@ __all__ = [
     "RULES_MODE",
     "TRAINING_MODE",
     "BallTargetZone",
+    "CueBallControlGoal",
+    "CueBallStop",
+    "CueBallStopObserver",
+    "CueBallTargetRegion",
     "LayoutConstraints",
     "TrainingScenario",
     "TrainingStateFrame",

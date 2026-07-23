@@ -292,6 +292,17 @@ state:
 
 其中 12、13、14、16 直接复用对应新手项目的球号、阶段、布局、安全约束和 `guided` 规则，仅使用独立场景 ID 出现在入门目录中；15 也只增加三个归一化位置区域，继续走相同的摆球校验、进球判定、会话和投影提示链路。
 
+白球控制训练模式：
+
+1. `白球控制训练1：两球基础衔接`（`CUE_CONTROL_TWO_BALL_LINK`）：必须先打 1 号，再打 2 号；1 号进球后，白球需要停入较大的合格区域，合格后才进入 2 号球阶段。
+2. `白球控制训练2：白球停球区`（`CUE_CONTROL_STOP_ZONE`）：1 号球进袋后，白球应停在开球位置附近的大圆形区域，训练中杆停球。
+3. `白球控制训练3：白球前进区`（`CUE_CONTROL_FOLLOW_ZONE`）：1 号球进袋后，白球应进入目标球前方的宽泛圆形区域，训练跟杆基础。
+4. `白球控制训练4：白球回位区`（`CUE_CONTROL_DRAW_ZONE`）：1 号球进袋后，白球应回到目标球后方的宽泛圆形区域，训练低杆基础。
+
+这四个项目复用同一个白球停止观察模块。目标球确认进袋后，训练会话暂停阶段推进；只有可见白球的毫米速度低于静止阈值、位置在抖动容差内连续稳定至少 `650 ms`，才记录本杆白球停止位置并判断目标区。白球丢失、仍在移动或尚未稳定时不会提前给出结果。两球衔接的第二杆虽然没有额外目标区，也必须等白球稳定后才完成训练。
+
+白球目标区使用球桌毫米坐标生成 64 段圆形轮廓，并通过当前投影校准映射到投影画布：黄色虚线表示待完成，绿色表示达标，红色表示未达标。停球区以本杆初始白球位置为中心；前进区和回位区根据初始白球到目标球的方向自动计算，因此不依赖某一套固定相机或投影分辨率。
+
 进阶训练模式：
 
 1. `进阶训练1：1–7 顺序一字线`：校验 1–7 是否按号码排成直线，并要求按 `1→7` 进球。
@@ -360,7 +371,7 @@ Web 端使用步骤：
 训练模式回归测试：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_beginner_training.py tests\test_training_mode.py tests\test_web_control.py -q --basetemp=pytest_tmp_training -o cache_dir=pytest_cache_local\training
+.\.venv\Scripts\python.exe -m pytest tests\test_beginner_training.py tests\test_cue_ball_control_training.py tests\test_training_mode.py tests\test_web_control.py -q --basetemp=pytest_tmp_training -o cache_dir=pytest_cache_local\training
 ```
 
 ## 仓库约定

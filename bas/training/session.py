@@ -5,6 +5,12 @@ from typing import Sequence
 
 from ..config import StateConfig, TrainingConfig
 from ..schemas import Event, PocketVisualObservationFrame, TrackObservation, TracksFrame
+from .cue_ball_control import (
+    CueBallStop,
+    CueBallStopObserver,
+    CueBallTargetRegion,
+    resolve_cue_ball_target_region,
+)
 from .models import TrainingScenario, TrainingStateFrame
 from .numbered_tracker import ball_number_from_track
 from .pocket_judge import TrainingPocketJudge
@@ -21,7 +27,7 @@ from .scenarios import get_training_scenario, validate_scenario_setup
 
 
 class TrainingSession:
-    version = "numbered_training_session_v3_rule_sets"
+    version = "numbered_training_session_v4_cue_ball_control"
 
     def __init__(
         self,
@@ -34,7 +40,11 @@ class TrainingSession:
         self.ball_diameter_mm = float(ball_diameter_mm)
         self.scenario: TrainingScenario = get_training_scenario(config.scenario_id)
         self.rules = get_training_rule_set(self.scenario.rule_set_id)
-        self._pocket_judge = TrainingPocketJudge(state_config or StateConfig(engine="modern"))
+        effective_state_config = state_config or StateConfig(engine="modern")
+        self._pocket_judge = TrainingPocketJudge(effective_state_config)
+        self._cue_stop_observer = CueBallStopObserver(
+            still_speed_mm_s=float(effective_state_config.still_speed_mm_s),
+        )
         self._latest_tracks: list[TrackObservation] = []
         self._potted: list[int] = []
         self._error_count = 0
@@ -44,6 +54,9 @@ class TrainingSession:
         self._started_ts_ns = 0
         self._ball_center_reachable_polygon_mm: list[tuple[float, float]] = []
         self._pockets_mm: list[tuple[float, float]] = []
+        self._cue_goal_regions: dict[int, CueBallTargetRegion] = {}
+        self._pending_cue_ball_after: int | None = None
+        self._pending_cue_region: CueBallTargetRegion | None = None
         self._state = self._new_state(0, 0)
 
     @property
@@ -65,6 +78,10 @@ class TrainingSession:
         self._cue_respot_required = False
         self._started_ts_ns = 0
         self._pocket_judge.reset()
+        self._cue_stop_observer.reset()
+        self._cue_goal_regions.clear()
+        self._pending_cue_ball_after = None
+        self._pending_cue_region = None
         self._state = self._new_state(frame_id, ts_cam_ns)
         if self._latest_tracks:
             current_tracks = TracksFrame(
@@ -84,6 +101,16 @@ class TrainingSession:
         if not ready:
             self._state = replace(self._state, phase="setup", setup_ready=False, message=message, failure_reason=None)
             return False, self._state
+        cue_ready, cue_message = self._prepare_cue_ball_control()
+        if not cue_ready:
+            self._state = replace(
+                self._state,
+                phase="setup",
+                setup_ready=False,
+                message=cue_message,
+                failure_reason=None,
+            )
+            return False, self._state
         self._pocket_judge.reset()
         current_tracks = TracksFrame(
             frame_id=int(self._state.frame_id),
@@ -94,12 +121,16 @@ class TrainingSession:
             self.pocket_observer_tracks(current_tracks),
             active=False,
         )
+        if self.scenario.require_cue_ball_settle_after_pot:
+            self._cue_stop_observer.reset()
+            self._cue_stop_observer.update(current_tracks)
         self._attempt += 1
         self._potted.clear()
         self._error_count = 0
         self._respot_required.clear()
         self._cue_respot_required = False
         self._started_ts_ns = int(self._state.ts_cam_ns)
+        initial_goal = self._first_cue_goal_region()
         self._state = replace(
             self._state,
             phase="running",
@@ -115,6 +146,16 @@ class TrainingSession:
             remaining_numbers=list(self.scenario.required_balls),
             mode_hint=self._mode_hint(),
             respot_required_numbers=[],
+            cue_ball_status=(
+                self._cue_stop_observer.status
+                if self.scenario.require_cue_ball_settle_after_pot
+                else "idle"
+            ),
+            cue_ball_position_mm=None,
+            cue_ball_goal_center_mm=(initial_goal.center_mm if initial_goal is not None else None),
+            cue_ball_goal_radius_mm=(initial_goal.radius_mm if initial_goal is not None else None),
+            cue_ball_goal_polygon_mm=(list(initial_goal.polygon_mm) if initial_goal is not None else []),
+            cue_ball_goal_result=None,
             events=[],
         )
         return True, self._state
@@ -156,6 +197,11 @@ class TrainingSession:
         self._latest_tracks = list(tracks_frame.tracks)
         frame_id = int(tracks_frame.frame_id)
         ts_cam_ns = int(tracks_frame.ts_cam_ns)
+        cue_stop = (
+            self._cue_stop_observer.update(tracks_frame)
+            if self.scenario.require_cue_ball_settle_after_pot and self._state.phase == "running"
+            else None
+        )
         pocket_judgment = self._pocket_judge.update(
             self.pocket_observer_tracks(tracks_frame),
             active=self._state.phase == "running",
@@ -197,6 +243,31 @@ class TrainingSession:
                 events,
             )
             return self._state
+        if self._pending_cue_ball_after is not None:
+            if 0 in pocket_judgment.detected_numbers:
+                decision = self.rules.evaluate_pocket_result([0], ())
+                events = [
+                    self._event(
+                        "TRAINING_FAILED",
+                        frame_id,
+                        ts_cam_ns,
+                        **self._decision_payload(decision),
+                    )
+                ]
+                self._state = self._failed(
+                    frame_id,
+                    ts_cam_ns,
+                    rule_decision_message(decision),
+                    "cue_ball_pocketed",
+                    visible,
+                    events,
+                )
+                return self._state
+            return self._update_pending_cue_control(
+                tracks_frame,
+                visible,
+                cue_stop,
+            )
         pending_numbers = set(self.scenario.required_balls) - set(self._potted)
         watched = pending_numbers | ({0} if self.scenario.require_cue_ball else set())
         confirmed = [number for number in pocket_judgment.detected_numbers if number in watched]
@@ -265,25 +336,47 @@ class TrainingSession:
                     judgment="rules_pocket_fsm",
                 )
             )
-            if len(self._potted) == len(self.scenario.required_balls):
-                events.append(self._event("TRAINING_PASSED", frame_id, ts_cam_ns, scenario=self.scenario.scenario_id))
+            if self.scenario.require_cue_ball_settle_after_pot:
+                # Start a fresh confirmation window for this shot so a stable
+                # position cached before the pot can never complete the goal.
+                self._cue_stop_observer.reset()
+                self._cue_stop_observer.update(tracks_frame)
+                cue_stop = None
+                self._pending_cue_ball_after = number
+                self._pending_cue_region = self._cue_goal_regions.get(number)
                 self._state = replace(
-                    self._state,
-                    frame_id=frame_id,
-                    ts_cam_ns=ts_cam_ns,
-                    phase="passed",
-                    message=completion_message(self.scenario.stages),
+                    self._running_state(
+                        frame_id,
+                        ts_cam_ns,
+                        visible,
+                        events,
+                        message=self._cue_settle_waiting_message(number),
+                    ),
                     expected_numbers=[],
-                    visible_numbers=sorted(visible),
-                    potted_numbers=list(self._potted),
-                    progress_current=len(self._potted),
-                    elapsed_s=self._elapsed_s(ts_cam_ns),
-                    error_count=self._error_count,
-                    remaining_numbers=[],
-                    mode_hint=self._mode_hint(),
-                    respot_required_numbers=[],
-                    events=events,
+                    cue_ball_goal_center_mm=(
+                        self._pending_cue_region.center_mm
+                        if self._pending_cue_region is not None
+                        else None
+                    ),
+                    cue_ball_goal_radius_mm=(
+                        self._pending_cue_region.radius_mm
+                        if self._pending_cue_region is not None
+                        else None
+                    ),
+                    cue_ball_goal_polygon_mm=(
+                        list(self._pending_cue_region.polygon_mm)
+                        if self._pending_cue_region is not None
+                        else []
+                    ),
+                    cue_ball_goal_result=None,
                 )
+                return self._update_pending_cue_control(
+                    tracks_frame,
+                    visible,
+                    cue_stop,
+                )
+            if len(self._potted) == len(self.scenario.required_balls):
+                self._state = self._passed(frame_id, ts_cam_ns, visible, events)
                 return self._state
         elif decision.action != ACTION_NONE:
             raise RuntimeError(f"训练规则返回了无法处理的动作: {decision.action}")
@@ -347,6 +440,40 @@ class TrainingSession:
             pockets_mm=self._pockets_mm,
         )
 
+    def _prepare_cue_ball_control(self) -> tuple[bool, str]:
+        self._cue_stop_observer.reset()
+        self._cue_goal_regions.clear()
+        self._pending_cue_ball_after = None
+        self._pending_cue_region = None
+        if not self.scenario.require_cue_ball_settle_after_pot:
+            return True, ""
+
+        start_positions = {
+            int(number): (float(track.center_mm[0]), float(track.center_mm[1]))
+            for track in self._latest_tracks
+            if track.visibility == "visible"
+            and track.center_mm is not None
+            and (number := ball_number_from_track(track)) is not None
+        }
+        for goal in self.scenario.cue_ball_goals:
+            region = resolve_cue_ball_target_region(
+                goal,
+                start_positions_mm=start_positions,
+                table_polygon_mm=self._ball_center_reachable_polygon_mm,
+                ball_diameter_mm=self.ball_diameter_mm,
+            )
+            if region is None:
+                return False, "无法建立白球目标区域，请检查球桌标定和摆球位置"
+            self._cue_goal_regions[int(goal.after_ball)] = region
+        return True, ""
+
+    def _first_cue_goal_region(self) -> CueBallTargetRegion | None:
+        for goal in self.scenario.cue_ball_goals:
+            region = self._cue_goal_regions.get(int(goal.after_ball))
+            if region is not None:
+                return region
+        return None
+
     def _expected_numbers(self) -> tuple[int, ...]:
         potted = set(self._potted)
         for stage in self.scenario.stages:
@@ -373,6 +500,7 @@ class TrainingSession:
     ) -> TrainingStateFrame:
         remaining = [number for number in self.scenario.required_balls if number not in self._potted]
         respot = sorted(self._respot_required | ({0} if self._cue_respot_required else set()))
+        cue_stop = self._cue_stop_observer.last_stop
         return replace(
             self._state,
             frame_id=frame_id,
@@ -389,7 +517,184 @@ class TrainingSession:
             remaining_numbers=remaining,
             mode_hint=self._mode_hint(),
             respot_required_numbers=respot,
+            cue_ball_status=(
+                self._cue_stop_observer.status
+                if self.scenario.require_cue_ball_settle_after_pot
+                else self._state.cue_ball_status
+            ),
+            cue_ball_position_mm=(cue_stop.position_mm if cue_stop is not None else None),
             events=events,
+        )
+
+    def _update_pending_cue_control(
+        self,
+        tracks_frame: TracksFrame,
+        visible: set[int],
+        cue_stop: CueBallStop | None,
+    ) -> TrainingStateFrame:
+        frame_id = int(tracks_frame.frame_id)
+        ts_cam_ns = int(tracks_frame.ts_cam_ns)
+        events = list(self._state.events) if int(self._state.frame_id) == frame_id else []
+        potted_ball = int(self._pending_cue_ball_after or 0)
+        region = self._pending_cue_region
+        if cue_stop is None:
+            self._state = replace(
+                self._state,
+                frame_id=frame_id,
+                ts_cam_ns=ts_cam_ns,
+                phase="running",
+                message=self._cue_settle_waiting_message(potted_ball),
+                expected_numbers=[],
+                visible_numbers=sorted(visible),
+                elapsed_s=self._elapsed_s(ts_cam_ns),
+                cue_ball_status=self._cue_stop_observer.status,
+                cue_ball_position_mm=None,
+                events=events,
+            )
+            return self._state
+
+        events.append(
+            self._event(
+                "TRAINING_CUE_BALL_STOPPED",
+                frame_id,
+                ts_cam_ns,
+                after_ball=potted_ball,
+                position_mm=list(cue_stop.position_mm),
+                stable_since_ns=int(cue_stop.stable_since_ns),
+            )
+        )
+        if region is not None and not region.contains(cue_stop.position_mm):
+            events.append(
+                self._event(
+                    "TRAINING_CUE_BALL_CONTROL_FAILED",
+                    frame_id,
+                    ts_cam_ns,
+                    after_ball=potted_ball,
+                    position_mm=list(cue_stop.position_mm),
+                    goal_center_mm=list(region.center_mm),
+                    goal_radius_mm=float(region.radius_mm),
+                )
+            )
+            self._pending_cue_ball_after = None
+            self._pending_cue_region = None
+            self._state = replace(
+                self._failed(
+                    frame_id,
+                    ts_cam_ns,
+                    "白球已停止，但未进入目标区域",
+                    "cue_ball_outside_target",
+                    visible,
+                    events,
+                ),
+                cue_ball_status="stopped",
+                cue_ball_position_mm=cue_stop.position_mm,
+                cue_ball_goal_center_mm=region.center_mm,
+                cue_ball_goal_radius_mm=region.radius_mm,
+                cue_ball_goal_polygon_mm=list(region.polygon_mm),
+                cue_ball_goal_result="failed",
+            )
+            return self._state
+
+        if region is not None:
+            events.append(
+                self._event(
+                    "TRAINING_CUE_BALL_CONTROL_PASSED",
+                    frame_id,
+                    ts_cam_ns,
+                    after_ball=potted_ball,
+                    position_mm=list(cue_stop.position_mm),
+                    goal_center_mm=list(region.center_mm),
+                    goal_radius_mm=float(region.radius_mm),
+                )
+            )
+        self._pending_cue_ball_after = None
+        self._pending_cue_region = None
+        self._prime_pocket_judge(tracks_frame)
+        if len(self._potted) == len(self.scenario.required_balls):
+            self._state = self._passed(
+                frame_id,
+                ts_cam_ns,
+                visible,
+                events,
+                cue_stop=cue_stop,
+                cue_region=region,
+            )
+            return self._state
+
+        next_target = self._expected_numbers()
+        next_text = " / ".join(str(number) for number in next_target)
+        message = (
+            f"白球位置合格，继续击打 {next_text} 号球"
+            if region is not None
+            else f"白球已停止，继续击打 {next_text} 号球"
+        )
+        self._state = replace(
+            self._running_state(
+                frame_id,
+                ts_cam_ns,
+                visible,
+                events,
+                message=message,
+            ),
+            cue_ball_status="stopped",
+            cue_ball_position_mm=cue_stop.position_mm,
+            cue_ball_goal_center_mm=(region.center_mm if region is not None else None),
+            cue_ball_goal_radius_mm=(region.radius_mm if region is not None else None),
+            cue_ball_goal_polygon_mm=(list(region.polygon_mm) if region is not None else []),
+            cue_ball_goal_result=("passed" if region is not None else None),
+        )
+        return self._state
+
+    def _cue_settle_waiting_message(self, potted_ball: int) -> str:
+        if self._pending_cue_region is None:
+            return f"{potted_ball} 号球已进，等待白球停止后完成本杆"
+        return f"{potted_ball} 号球已进，等待白球停止后判定位置"
+
+    def _passed(
+        self,
+        frame_id: int,
+        ts_cam_ns: int,
+        visible: set[int],
+        events: list[Event],
+        *,
+        cue_stop: CueBallStop | None = None,
+        cue_region: CueBallTargetRegion | None = None,
+    ) -> TrainingStateFrame:
+        passed_events = list(events)
+        passed_events.append(
+            self._event(
+                "TRAINING_PASSED",
+                frame_id,
+                ts_cam_ns,
+                scenario=self.scenario.scenario_id,
+            )
+        )
+        return replace(
+            self._state,
+            frame_id=frame_id,
+            ts_cam_ns=ts_cam_ns,
+            phase="passed",
+            message=self.scenario.success_message or completion_message(self.scenario.stages),
+            expected_numbers=[],
+            visible_numbers=sorted(visible),
+            potted_numbers=list(self._potted),
+            progress_current=len(self._potted),
+            elapsed_s=self._elapsed_s(ts_cam_ns),
+            error_count=self._error_count,
+            remaining_numbers=[],
+            mode_hint=self._mode_hint(),
+            respot_required_numbers=[],
+            cue_ball_status=("stopped" if cue_stop is not None else self._state.cue_ball_status),
+            cue_ball_position_mm=(cue_stop.position_mm if cue_stop is not None else self._state.cue_ball_position_mm),
+            cue_ball_goal_center_mm=(cue_region.center_mm if cue_region is not None else self._state.cue_ball_goal_center_mm),
+            cue_ball_goal_radius_mm=(cue_region.radius_mm if cue_region is not None else self._state.cue_ball_goal_radius_mm),
+            cue_ball_goal_polygon_mm=(
+                list(cue_region.polygon_mm)
+                if cue_region is not None
+                else list(self._state.cue_ball_goal_polygon_mm)
+            ),
+            cue_ball_goal_result=("passed" if cue_region is not None else self._state.cue_ball_goal_result),
+            events=passed_events,
         )
 
     def _prime_pocket_judge(self, tracks_frame: TracksFrame) -> None:

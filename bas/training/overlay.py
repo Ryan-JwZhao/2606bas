@@ -4,7 +4,7 @@ import numpy as np
 
 from ..calibration import CalibrationService
 from ..config import ProjectionConfig
-from ..schemas import OverlayCircle, OverlayText, ProjectionOverlay, TracksFrame
+from ..schemas import OverlayCircle, OverlayLine, OverlayText, ProjectionOverlay, TracksFrame
 from .models import TrainingStateFrame
 from .numbered_tracker import ball_number_from_track
 from .prompts import projection_prompt_for_state
@@ -31,6 +31,30 @@ class TrainingOverlayBuilder:
             labels=list(route_overlay.labels) if route_overlay is not None else [],
             texts=list(route_overlay.texts) if route_overlay is not None else [],
         )
+        if state.cue_ball_goal_polygon_mm:
+            try:
+                goal_points = self.calibration.table_mm_to_projector_px(
+                    np.asarray(state.cue_ball_goal_polygon_mm, dtype=np.float32)
+                )
+            except Exception:
+                goal_points = np.empty((0, 2), dtype=np.float32)
+            if goal_points.shape[0] >= 3:
+                goal_color = (
+                    (0, 220, 80)
+                    if state.cue_ball_goal_result == "passed"
+                    else (0, 80, 255)
+                    if state.cue_ball_goal_result == "failed"
+                    else (0, 220, 255)
+                )
+                overlay.lines.append(
+                    OverlayLine(
+                        points=[(float(x), float(y)) for x, y in goal_points],
+                        color=goal_color,
+                        width=4,
+                        label="cue_ball_goal",
+                        style="dashed",
+                    )
+                )
         expected = set(state.expected_numbers)
         for track in tracks.tracks:
             if track.visibility != "visible":

@@ -811,6 +811,36 @@ def test_training_projection_prompt_uses_configured_final_canvas_position_and_si
     assert "当前目标：1 号球" in overlay.texts[0].text
 
 
+def test_training_overlay_projects_cue_ball_goal_region_and_result_color() -> None:
+    from bas.config import ProjectionConfig
+    from bas.training.overlay import TrainingOverlayBuilder
+
+    class _Calibration:
+        @staticmethod
+        def table_mm_to_projector_px(points):
+            return np.asarray(points, dtype=np.float32) * 0.5
+
+    state = TrainingStateFrame(
+        frame_id=3,
+        ts_cam_ns=3,
+        scenario_id="CUE_CONTROL_STOP_ZONE",
+        scenario_title="白球停球区",
+        phase="running",
+        cue_ball_goal_polygon_mm=[(100.0, 100.0), (200.0, 100.0), (200.0, 200.0), (100.0, 100.0)],
+        cue_ball_goal_result="passed",
+    )
+    overlay = TrainingOverlayBuilder(ProjectionConfig(), _Calibration()).build(
+        TracksFrame(frame_id=3, ts_cam_ns=3),
+        state,
+    )
+    goal = next(line for line in overlay.lines if line.label == "cue_ball_goal")
+
+    assert goal.points[0] == (50.0, 50.0)
+    assert goal.points[-1] == goal.points[0]
+    assert goal.style == "dashed"
+    assert goal.color == (0, 220, 80)
+
+
 def test_runtime_clears_pocket_observer_history_at_training_boundaries() -> None:
     config = AppConfig()
     config.camera.backend = "synthetic"

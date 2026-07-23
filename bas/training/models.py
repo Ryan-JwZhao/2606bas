@@ -11,6 +11,7 @@ TRAINING_MODE = "training"
 TRAINING_GROUP_TITLES = {
     "beginner": ("新手训练模式", "新手训练"),
     "entry": ("入门训练模式", "入门训练"),
+    "cue_control": ("白球控制训练模式", "白球控制训练"),
     "advanced": ("进阶训练模式", "进阶训练"),
 }
 
@@ -37,6 +38,15 @@ class LayoutConstraints:
 
 
 @dataclass(frozen=True)
+class CueBallControlGoal:
+    after_ball: int
+    kind: str
+    radius_ball_diameters: float
+    distance_ball_diameters: float = 0.0
+    center: tuple[float, float] | None = None
+
+
+@dataclass(frozen=True)
 class TrainingScenario:
     scenario_id: str
     title: str
@@ -52,6 +62,9 @@ class TrainingScenario:
     zones: Tuple[BallTargetZone, ...] = ()
     constraints: LayoutConstraints = LayoutConstraints()
     rule_set_id: str = "strict"
+    cue_ball_goals: Tuple[CueBallControlGoal, ...] = ()
+    require_cue_ball_settle_after_pot: bool = False
+    success_message: str | None = None
 
     @property
     def ordered_numbers(self) -> Tuple[int, ...]:
@@ -89,6 +102,12 @@ class TrainingStateFrame:
     remaining_numbers: list[int] = field(default_factory=list)
     mode_hint: str = ""
     respot_required_numbers: list[int] = field(default_factory=list)
+    cue_ball_status: str = "idle"
+    cue_ball_position_mm: tuple[float, float] | None = None
+    cue_ball_goal_center_mm: tuple[float, float] | None = None
+    cue_ball_goal_radius_mm: float | None = None
+    cue_ball_goal_polygon_mm: list[tuple[float, float]] = field(default_factory=list)
+    cue_ball_goal_result: str | None = None
     events: list[Event] = field(default_factory=list)
 
     @property

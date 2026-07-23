@@ -109,14 +109,16 @@ def _confirm_pot(
     )
 
 
-def test_catalog_orders_beginner_entry_and_advanced_modes_without_changing_existing_ids() -> None:
+def test_catalog_orders_all_training_groups_without_changing_existing_ids() -> None:
     scenarios = list_training_scenarios()
     beginner = [scenario for scenario in scenarios if scenario.group == "beginner"]
     entry = [scenario for scenario in scenarios if scenario.group == "entry"]
+    cue_control = [scenario for scenario in scenarios if scenario.group == "cue_control"]
     advanced = [scenario for scenario in scenarios if scenario.group == "advanced"]
 
     assert [scenario.display_number for scenario in beginner] == list(range(1, 7))
     assert [scenario.display_number for scenario in entry] == list(range(12, 17))
+    assert [scenario.display_number for scenario in cue_control] == list(range(1, 5))
     assert [scenario.display_number for scenario in advanced] == list(range(1, 8))
     assert [scenario.scenario_id for scenario in entry] == [
         "ENTRY_12_1_TO_3_LINE",
@@ -136,10 +138,12 @@ def test_catalog_orders_beginner_entry_and_advanced_modes_without_changing_exist
     ]
     assert {scenario.rule_set_id for scenario in beginner} == {"guided"}
     assert {scenario.rule_set_id for scenario in entry} == {"guided"}
+    assert {scenario.rule_set_id for scenario in cue_control} == {"strict"}
     assert {scenario.rule_set_id for scenario in advanced} == {"strict"}
     assert [scenario.group for scenario in scenarios] == [
         *(["beginner"] * 6),
         *(["entry"] * 5),
+        *(["cue_control"] * 4),
         *(["advanced"] * 7),
     ]
 
