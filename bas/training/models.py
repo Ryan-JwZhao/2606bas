@@ -10,6 +10,7 @@ RULES_MODE = "rules"
 TRAINING_MODE = "training"
 TRAINING_GROUP_TITLES = {
     "beginner": ("新手训练模式", "新手训练"),
+    "entry": ("入门训练模式", "入门训练"),
     "advanced": ("进阶训练模式", "进阶训练"),
 }
 

@@ -109,13 +109,22 @@ def _confirm_pot(
     )
 
 
-def test_catalog_groups_six_beginner_and_seven_advanced_modes_without_changing_ids() -> None:
+def test_catalog_orders_beginner_entry_and_advanced_modes_without_changing_existing_ids() -> None:
     scenarios = list_training_scenarios()
     beginner = [scenario for scenario in scenarios if scenario.group == "beginner"]
+    entry = [scenario for scenario in scenarios if scenario.group == "entry"]
     advanced = [scenario for scenario in scenarios if scenario.group == "advanced"]
 
     assert [scenario.display_number for scenario in beginner] == list(range(1, 7))
+    assert [scenario.display_number for scenario in entry] == list(range(12, 17))
     assert [scenario.display_number for scenario in advanced] == list(range(1, 8))
+    assert [scenario.scenario_id for scenario in entry] == [
+        "ENTRY_12_1_TO_3_LINE",
+        "ENTRY_13_1_TO_3_POINTS",
+        "ENTRY_14_3_BALL_FREE",
+        "ENTRY_15_LEFT_RIGHT_3_BALL",
+        "ENTRY_16_5_BALL_FREE",
+    ]
     assert [scenario.scenario_id for scenario in advanced] == [
         "ordered_line_1_7",
         "snake_1_15",
@@ -126,7 +135,70 @@ def test_catalog_groups_six_beginner_and_seven_advanced_modes_without_changing_i
         "finish_6_7_8",
     ]
     assert {scenario.rule_set_id for scenario in beginner} == {"guided"}
+    assert {scenario.rule_set_id for scenario in entry} == {"guided"}
     assert {scenario.rule_set_id for scenario in advanced} == {"strict"}
+    assert [scenario.group for scenario in scenarios] == [
+        *(["beginner"] * 6),
+        *(["entry"] * 5),
+        *(["advanced"] * 7),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("entry_id", "beginner_id"),
+    [
+        ("ENTRY_12_1_TO_3_LINE", "BEGINNER_1_TO_3_LINE"),
+        ("ENTRY_13_1_TO_3_POINTS", "BEGINNER_1_TO_3_POINTS"),
+        ("ENTRY_14_3_BALL_FREE", "BEGINNER_3_BALL_FREE"),
+        ("ENTRY_16_5_BALL_FREE", "BEGINNER_5_BALL_FREE"),
+    ],
+)
+def test_entry_catalog_reuses_existing_drill_layout_and_rules(entry_id: str, beginner_id: str) -> None:
+    entry = get_training_scenario(entry_id)
+    source = get_training_scenario(beginner_id)
+
+    assert entry.required_balls == source.required_balls
+    assert entry.stages == source.stages
+    assert entry.layout == source.layout
+    assert entry.zones == source.zones
+    assert entry.constraints == source.constraints
+    assert entry.rule_set_id == source.rule_set_id == "guided"
+
+
+def test_entry_left_right_three_ball_layout_requires_left_right_and_center_zones() -> None:
+    valid = {0: (150, 400), 1: (275, 230), 2: (725, 230), 3: (500, 310)}
+    assert _validate("ENTRY_15_LEFT_RIGHT_3_BALL", valid)[0] is True
+
+    swapped = dict(valid)
+    swapped[1], swapped[2] = swapped[2], swapped[1]
+    ok, message = _validate("ENTRY_15_LEFT_RIGHT_3_BALL", swapped)
+    assert ok is False
+    assert "1 号球" in message and "推荐区域" in message
+
+
+def test_entry_left_right_three_ball_uses_shared_guided_sequence_rules() -> None:
+    positions = {0: (150, 400), 1: (275, 230), 2: (725, 230), 3: (500, 310)}
+    session = _session("ENTRY_15_LEFT_RIGHT_3_BALL", positions)
+
+    warning = _confirm_pot(
+        session,
+        2,
+        2,
+        {0: positions[0], 1: positions[1], 3: positions[3]},
+    )
+    assert warning.phase == "running"
+    assert warning.expected_numbers == [1]
+    assert warning.error_count == 1
+
+    state = warning
+    for index, ball in enumerate((1, 2, 3)):
+        remaining = {
+            number: point
+            for number, point in positions.items()
+            if number == 0 or number in (1, 2, 3)[index + 1 :]
+        }
+        state = _confirm_pot(session, ball, 4 + index * 2, remaining)
+    assert state.phase == "passed"
 
 
 def test_shared_rule_seam_contains_all_guided_and_strict_behavior_differences() -> None:

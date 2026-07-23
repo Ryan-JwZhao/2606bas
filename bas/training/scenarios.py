@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Sequence
 
 from ..schemas import TrackObservation
@@ -114,6 +115,74 @@ BEGINNER_SCENARIOS: tuple[TrainingScenario, ...] = (
     ),
 )
 
+
+_BEGINNER_BY_ID = {scenario.scenario_id: scenario for scenario in BEGINNER_SCENARIOS}
+
+
+def _entry_variant(
+    source_id: str,
+    *,
+    scenario_id: str,
+    display_number: int,
+    description: str,
+) -> TrainingScenario:
+    """Reuse a beginner drill definition while exposing it in the entry catalog."""
+
+    return replace(
+        _BEGINNER_BY_ID[source_id],
+        scenario_id=scenario_id,
+        group="entry",
+        display_number=display_number,
+        description=description,
+    )
+
+
+ENTRY_SCENARIOS: tuple[TrainingScenario, ...] = (
+    _entry_variant(
+        "BEGINNER_1_TO_3_LINE",
+        scenario_id="ENTRY_12_1_TO_3_LINE",
+        display_number=12,
+        description="认识目标球并练习 1→2→3 的简单连续击球。",
+    ),
+    _entry_variant(
+        "BEGINNER_1_TO_3_POINTS",
+        scenario_id="ENTRY_13_1_TO_3_POINTS",
+        display_number=13,
+        description="练习在三个容易进球的位置之间切换击球方向。",
+    ),
+    _entry_variant(
+        "BEGINNER_3_BALL_FREE",
+        scenario_id="ENTRY_14_3_BALL_FREE",
+        display_number=14,
+        description="观察台面并自主选择 1、2、3 号球的处理顺序。",
+    ),
+    TrainingScenario(
+        scenario_id="ENTRY_15_LEFT_RIGHT_3_BALL",
+        title="左右换边三球",
+        description="练习大方向走位，以及目标球在球台左右两侧之间的切换。",
+        setup_instructions="将 1 号球放在左侧、2 号球放在右侧、3 号球放在中部推荐区域；按 1→2→3 进球。",
+        required_balls=(1, 2, 3),
+        stages=((1,), (2,), (3,)),
+        layout="zones",
+        group="entry",
+        display_number=15,
+        zones=(
+            BallTargetZone(1, (0.25, 0.45), (0.14, 0.28)),
+            BallTargetZone(2, (0.75, 0.45), (0.14, 0.28)),
+            BallTargetZone(3, (0.50, 0.65), (0.11, 0.22)),
+        ),
+        constraints=_BEGINNER_SAFETY,
+        rule_set_id="guided",
+    ),
+    _entry_variant(
+        "BEGINNER_5_BALL_FREE",
+        scenario_id="ENTRY_16_5_BALL_FREE",
+        display_number=16,
+        description="第一次体验由 1–5 号球组成的小型自由清台。",
+    ),
+)
+
+
 ADVANCED_SCENARIOS: tuple[TrainingScenario, ...] = (
     TrainingScenario(
         scenario_id="ordered_line_1_7",
@@ -183,7 +252,7 @@ ADVANCED_SCENARIOS: tuple[TrainingScenario, ...] = (
     ),
 )
 
-SCENARIOS = BEGINNER_SCENARIOS + ADVANCED_SCENARIOS
+SCENARIOS = BEGINNER_SCENARIOS + ENTRY_SCENARIOS + ADVANCED_SCENARIOS
 _BY_ID = {scenario.scenario_id: scenario for scenario in SCENARIOS}
 _DEFAULT_SCENARIO = _BY_ID["ordered_line_1_7"]
 
