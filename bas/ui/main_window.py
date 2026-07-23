@@ -1573,8 +1573,15 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.training_section = self._section("编号球训练")
         training_layout = self.training_section.contentLayout()
         self.training_scenario_combo = QtWidgets.QComboBox()
+        current_group = None
         for scenario in list_training_scenarios():
-            self.training_scenario_combo.addItem(scenario.title, scenario.scenario_id)
+            if scenario.group_title != current_group:
+                current_group = scenario.group_title
+                self.training_scenario_combo.addItem(f"── {current_group} ──", None)
+                header_item = self.training_scenario_combo.model().item(self.training_scenario_combo.count() - 1)
+                if header_item is not None:
+                    header_item.setEnabled(False)
+            self.training_scenario_combo.addItem(scenario.display_title, scenario.scenario_id)
         self.training_scenario_combo.currentIndexChanged.connect(self._training_scenario_changed)
         self.training_instruction_label = QtWidgets.QLabel()
         self.training_instruction_label.setObjectName("muted")
@@ -2169,8 +2176,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.runtime_mode_combo.blockSignals(False)
         scenario_index = self.training_scenario_combo.findData(self.config.training.scenario_id)
         if scenario_index < 0:
-            scenario_index = 0
-            self.config.training.scenario_id = str(self.training_scenario_combo.itemData(0))
+            scenario_index = self.training_scenario_combo.findData("ordered_line_1_7")
+            self.config.training.scenario_id = "ordered_line_1_7"
         self.training_scenario_combo.blockSignals(True)
         self.training_scenario_combo.setCurrentIndex(scenario_index)
         self.training_scenario_combo.blockSignals(False)
@@ -2483,7 +2490,13 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.training_start_btn.setText("开始验证")
             return
         self.training_status_label.setText(
-            f"{state.message}\n进度 {state.progress_current}/{state.progress_total} · 用时 {state.elapsed_s:.1f}s"
+            f"{state.message}\n{state.mode_hint} · 进度 {state.progress_current}/{state.progress_total}"
+            f" · 错误 {state.error_count} · 用时 {state.elapsed_s:.1f}s"
+            + (
+                "\n剩余球：" + "、".join(str(number) for number in state.remaining_numbers)
+                if state.remaining_numbers
+                else ""
+            )
         )
         self.training_start_btn.setText("重新开始" if state.phase in {"passed", "failed"} else "开始验证")
 

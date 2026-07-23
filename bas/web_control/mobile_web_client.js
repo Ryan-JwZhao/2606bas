@@ -114,12 +114,20 @@ function renderTraining(state) {
   const currentScenarioId = state.training?.scenario_id || '';
   const knownOptions = new Set(Array.from(elements.trainingScenario.options).map((option) => option.value));
   if (knownOptions.size !== scenarios.length || scenarios.some((scenario) => !knownOptions.has(scenario.scenario_id))) {
-    elements.trainingScenario.replaceChildren(...scenarios.map((scenario) => {
+    const groups = new Map();
+    scenarios.forEach((scenario) => {
+      const groupTitle = scenario.group_title || '训练模式';
+      if (!groups.has(groupTitle)) {
+        const optgroup = document.createElement('optgroup');
+        optgroup.label = groupTitle;
+        groups.set(groupTitle, optgroup);
+      }
       const option = document.createElement('option');
       option.value = scenario.scenario_id;
       option.textContent = scenario.title;
-      return option;
-    }));
+      groups.get(groupTitle).appendChild(option);
+    });
+    elements.trainingScenario.replaceChildren(...groups.values());
   }
   if (currentScenarioId) elements.trainingScenario.value = currentScenarioId;
   const selected = scenarios.find((scenario) => scenario.scenario_id === elements.trainingScenario.value);
@@ -130,7 +138,13 @@ function renderTraining(state) {
   const total = Number(training?.progress_total || 0);
   elements.trainingProgress.max = Math.max(1, total);
   elements.trainingProgress.value = Math.min(current, Math.max(1, total));
-  elements.trainingProgressText.textContent = `${current}/${total}${training?.elapsed_s ? ` · ${Number(training.elapsed_s).toFixed(1)}s` : ''}`;
+  const remaining = Array.isArray(training?.remaining_numbers) ? training.remaining_numbers.join('、') : '';
+  const details = [
+    training?.mode_hint,
+    remaining ? `剩余 ${remaining}` : '',
+    `错误 ${Number(training?.error_count || 0)}`,
+  ].filter(Boolean).join(' · ');
+  elements.trainingProgressText.textContent = `${current}/${total}${details ? ` · ${details}` : ''}${training?.elapsed_s ? ` · ${Number(training.elapsed_s).toFixed(1)}s` : ''}`;
   elements.trainingStart.textContent = ['passed', 'failed'].includes(training?.phase) ? '重新开始' : '开始验证';
 }
 

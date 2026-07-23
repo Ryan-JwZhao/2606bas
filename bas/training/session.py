@@ -27,8 +27,13 @@ class TrainingSession:
         self._pocket_judge = TrainingPocketJudge(state_config or StateConfig(engine="modern"))
         self._latest_tracks: list[TrackObservation] = []
         self._potted: list[int] = []
+        self._error_count = 0
+        self._respot_required: set[int] = set()
+        self._cue_respot_required = False
         self._attempt = 0
         self._started_ts_ns = 0
+        self._ball_center_reachable_polygon_mm: list[tuple[float, float]] = []
+        self._pockets_mm: list[tuple[float, float]] = []
         self._state = self._new_state(0, 0)
 
     @property
@@ -44,6 +49,9 @@ class TrainingSession:
         frame_id = self._state.frame_id
         ts_cam_ns = self._state.ts_cam_ns
         self._potted.clear()
+        self._error_count = 0
+        self._respot_required.clear()
+        self._cue_respot_required = False
         self._started_ts_ns = 0
         self._pocket_judge.reset()
         self._state = self._new_state(frame_id, ts_cam_ns)
@@ -77,6 +85,9 @@ class TrainingSession:
         )
         self._attempt += 1
         self._potted.clear()
+        self._error_count = 0
+        self._respot_required.clear()
+        self._cue_respot_required = False
         self._started_ts_ns = int(self._state.ts_cam_ns)
         self._state = replace(
             self._state,
@@ -89,6 +100,10 @@ class TrainingSession:
             attempt=self._attempt,
             elapsed_s=0.0,
             failure_reason=None,
+            error_count=0,
+            remaining_numbers=list(self.scenario.required_balls),
+            mode_hint=self._mode_hint(),
+            respot_required_numbers=[],
             events=[],
         )
         return True, self._state
@@ -105,6 +120,14 @@ class TrainingSession:
     ) -> None:
         if ball_diameter_mm is not None:
             self.ball_diameter_mm = float(ball_diameter_mm)
+        if ball_center_reachable_polygon_mm is not None:
+            self._ball_center_reachable_polygon_mm = [
+                (float(x), float(y)) for x, y in ball_center_reachable_polygon_mm
+            ]
+        elif inner_polygon_mm is not None and not self._ball_center_reachable_polygon_mm:
+            self._ball_center_reachable_polygon_mm = [(float(x), float(y)) for x, y in inner_polygon_mm]
+        if pockets_mm is not None:
+            self._pockets_mm = [(float(x), float(y)) for x, y in pockets_mm]
         self._pocket_judge.set_table_context(
             inner_polygon_mm=inner_polygon_mm,
             table_edge_polygon_mm=table_edge_polygon_mm,
@@ -142,6 +165,9 @@ class TrainingSession:
             return self._state
 
         visible = set(self._visible_numbers(self._latest_tracks))
+        if self._cue_respot_required and 0 in visible:
+            self._cue_respot_required = False
+        self._respot_required.difference_update(visible)
         if not self._pocket_judge.has_table_context:
             events = [
                 self._event(
@@ -165,13 +191,60 @@ class TrainingSession:
         confirmed = [number for number in pocket_judgment.detected_numbers if number in watched]
 
         events: list[Event] = []
+        object_confirmed = [number for number in confirmed if number != 0]
         if 0 in confirmed:
+            if self.scenario.cue_ball_pocketed_policy == "respot_continue":
+                self._error_count += 1
+                self._cue_respot_required = True
+                self._respot_required.update(object_confirmed)
+                events.append(
+                    self._event(
+                        "TRAINING_WARNING",
+                        frame_id,
+                        ts_cam_ns,
+                        reason="cue_ball_pocketed",
+                        action="respot_continue",
+                    )
+                )
+                self._prime_pocket_judge(tracks_frame)
+                message = "白球落袋：请重新放置白球后继续，已完成进度会保留"
+                if object_confirmed:
+                    message += "；同时入袋的目标球也请重摆：" + "、".join(map(str, object_confirmed))
+                self._state = self._running_state(
+                    frame_id,
+                    ts_cam_ns,
+                    visible,
+                    events,
+                    message=message,
+                )
+                return self._state
             events.append(self._event("TRAINING_FAILED", frame_id, ts_cam_ns, reason="cue_ball_pocketed"))
             self._state = self._failed(frame_id, ts_cam_ns, "白球落袋，本次训练失败", "cue_ball_pocketed", visible, events)
             return self._state
 
-        object_confirmed = [number for number in confirmed if number != 0]
         if len(object_confirmed) > 1:
+            if self.scenario.is_beginner:
+                self._error_count += 1
+                self._respot_required.update(object_confirmed)
+                events.append(
+                    self._event(
+                        "TRAINING_WARNING",
+                        frame_id,
+                        ts_cam_ns,
+                        reason="ambiguous_multiple_pots",
+                        balls=object_confirmed,
+                        action="respot_continue",
+                    )
+                )
+                self._prime_pocket_judge(tracks_frame)
+                self._state = self._running_state(
+                    frame_id,
+                    ts_cam_ns,
+                    visible,
+                    events,
+                    message="同时检测到多颗球入袋，请将这些球重摆后继续：" + "、".join(map(str, object_confirmed)),
+                )
+                return self._state
             events.append(self._event("TRAINING_FAILED", frame_id, ts_cam_ns, reason="ambiguous_multiple_pots", balls=object_confirmed))
             self._state = self._failed(frame_id, ts_cam_ns, "多颗球同时消失，无法确认进球顺序", "ambiguous_multiple_pots", visible, events)
             return self._state
@@ -179,6 +252,27 @@ class TrainingSession:
             number = object_confirmed[0]
             expected = set(self._expected_numbers())
             if number not in expected:
+                if self.scenario.wrong_ball_policy == "warn_continue":
+                    self._error_count += 1
+                    self._respot_required.add(number)
+                    events.append(
+                        self._event(
+                            "TRAINING_WARNING",
+                            frame_id,
+                            ts_cam_ns,
+                            reason="wrong_ball",
+                            ball=number,
+                            expected=sorted(expected),
+                            action="respot_continue",
+                        )
+                    )
+                    self._prime_pocket_judge(tracks_frame)
+                    message = (
+                        f"误进 {number} 号球；请重摆该球后继续，当前目标仍为 "
+                        + " / ".join(str(value) for value in sorted(expected))
+                    )
+                    self._state = self._running_state(frame_id, ts_cam_ns, visible, events, message=message)
+                    return self._state
                 events.append(self._event("TRAINING_FAILED", frame_id, ts_cam_ns, reason="wrong_ball", ball=number, expected=sorted(expected)))
                 message = f"误进 {number} 号球；当前应进 " + " / ".join(str(value) for value in sorted(expected))
                 self._state = self._failed(frame_id, ts_cam_ns, message, "wrong_ball", visible, events)
@@ -205,33 +299,31 @@ class TrainingSession:
             )
             if len(self._potted) == len(self.scenario.required_balls):
                 events.append(self._event("TRAINING_PASSED", frame_id, ts_cam_ns, scenario=self.scenario.scenario_id))
+                completion_message = (
+                    "训练完成，全部目标球已清台"
+                    if self._mode_hint() == "自由选择模式"
+                    else "训练完成，全部目标球顺序正确"
+                )
                 self._state = replace(
                     self._state,
                     frame_id=frame_id,
                     ts_cam_ns=ts_cam_ns,
                     phase="passed",
-                    message="训练完成，全部目标球顺序正确",
+                    message=completion_message,
                     expected_numbers=[],
                     visible_numbers=sorted(visible),
                     potted_numbers=list(self._potted),
                     progress_current=len(self._potted),
                     elapsed_s=self._elapsed_s(ts_cam_ns),
+                    error_count=self._error_count,
+                    remaining_numbers=[],
+                    mode_hint=self._mode_hint(),
+                    respot_required_numbers=[],
                     events=events,
                 )
                 return self._state
 
-        self._state = replace(
-            self._state,
-            frame_id=frame_id,
-            ts_cam_ns=ts_cam_ns,
-            message=self._running_message(),
-            expected_numbers=list(self._expected_numbers()),
-            visible_numbers=sorted(visible),
-            potted_numbers=list(self._potted),
-            progress_current=len(self._potted),
-            elapsed_s=self._elapsed_s(ts_cam_ns),
-            events=events,
-        )
+        self._state = self._running_state(frame_id, ts_cam_ns, visible, events)
         return self._state
 
     def _new_state(self, frame_id: int, ts_cam_ns: int) -> TrainingStateFrame:
@@ -239,10 +331,12 @@ class TrainingSession:
             frame_id=frame_id,
             ts_cam_ns=ts_cam_ns,
             scenario_id=self.scenario.scenario_id,
-            scenario_title=self.scenario.title,
+            scenario_title=self.scenario.display_title,
             required_numbers=list(self.scenario.required_balls),
             progress_total=len(self.scenario.required_balls),
             attempt=self._attempt,
+            remaining_numbers=list(self.scenario.required_balls),
+            mode_hint=self._mode_hint(),
         )
 
     def _setup_state(self, frame_id: int, ts_cam_ns: int, tracks: Sequence[TrackObservation]) -> TrainingStateFrame:
@@ -251,7 +345,7 @@ class TrainingSession:
             frame_id=frame_id,
             ts_cam_ns=ts_cam_ns,
             scenario_id=self.scenario.scenario_id,
-            scenario_title=self.scenario.title,
+            scenario_title=self.scenario.display_title,
             phase="ready" if ready else "setup",
             message=message,
             setup_ready=ready,
@@ -261,6 +355,9 @@ class TrainingSession:
             potted_numbers=[],
             progress_total=len(self.scenario.required_balls),
             attempt=self._attempt,
+            error_count=0,
+            remaining_numbers=list(self.scenario.required_balls),
+            mode_hint=self._mode_hint(),
         )
 
     def pocket_observer_tracks(self, tracks_frame: TracksFrame) -> TracksFrame:
@@ -281,6 +378,8 @@ class TrainingSession:
             self.scenario,
             tracks,
             ball_diameter_mm=self.ball_diameter_mm,
+            ball_center_reachable_polygon_mm=self._ball_center_reachable_polygon_mm,
+            pockets_mm=self._pockets_mm,
         )
 
     def _expected_numbers(self) -> tuple[int, ...]:
@@ -292,12 +391,58 @@ class TrainingSession:
         return ()
 
     def _running_message(self) -> str:
+        if self._cue_respot_required:
+            return "请重新放置白球后继续，已完成进度会保留"
+        if self._respot_required:
+            return "请重摆误进球后继续：" + "、".join(str(number) for number in sorted(self._respot_required))
         expected = self._expected_numbers()
         if not expected:
             return "正在确认训练结果"
         if len(expected) == 1:
             return f"当前目标：{expected[0]} 号球"
         return "当前可进：" + "、".join(str(number) for number in expected)
+
+    def _running_state(
+        self,
+        frame_id: int,
+        ts_cam_ns: int,
+        visible: set[int],
+        events: list[Event],
+        *,
+        message: str | None = None,
+    ) -> TrainingStateFrame:
+        remaining = [number for number in self.scenario.required_balls if number not in self._potted]
+        respot = sorted(self._respot_required | ({0} if self._cue_respot_required else set()))
+        return replace(
+            self._state,
+            frame_id=frame_id,
+            ts_cam_ns=ts_cam_ns,
+            phase="running",
+            message=message or self._running_message(),
+            expected_numbers=list(self._expected_numbers()),
+            visible_numbers=sorted(visible),
+            potted_numbers=list(self._potted),
+            progress_current=len(self._potted),
+            elapsed_s=self._elapsed_s(ts_cam_ns),
+            failure_reason=None,
+            error_count=self._error_count,
+            remaining_numbers=remaining,
+            mode_hint=self._mode_hint(),
+            respot_required_numbers=respot,
+            events=events,
+        )
+
+    def _prime_pocket_judge(self, tracks_frame: TracksFrame) -> None:
+        self._pocket_judge.reset()
+        self._pocket_judge.update(
+            self.pocket_observer_tracks(tracks_frame),
+            active=False,
+        )
+
+    def _mode_hint(self) -> str:
+        if self.scenario.is_beginner and len(self.scenario.stages) == 1 and len(self.scenario.stages[0]) > 1:
+            return "自由选择模式"
+        return "固定目标模式"
 
     def _failed(
         self,
@@ -319,6 +464,10 @@ class TrainingSession:
             progress_current=len(self._potted),
             elapsed_s=self._elapsed_s(ts_cam_ns),
             failure_reason=reason,
+            error_count=self._error_count,
+            remaining_numbers=[number for number in self.scenario.required_balls if number not in self._potted],
+            mode_hint=self._mode_hint(),
+            respot_required_numbers=sorted(self._respot_required | ({0} if self._cue_respot_required else set())),
             events=events,
         )
 

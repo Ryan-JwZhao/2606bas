@@ -16,6 +16,22 @@ def normalize_operating_mode(value: str | None) -> str:
 
 
 @dataclass(frozen=True)
+class BallTargetZone:
+    ball: int
+    center: tuple[float, float]
+    tolerance: tuple[float, float] = (0.18, 0.18)
+
+
+@dataclass(frozen=True)
+class LayoutConstraints:
+    line_tolerance_ball_diameters: float = 1.35
+    max_span_ball_diameters: float | None = None
+    min_spacing_ball_diameters: float = 0.0
+    edge_margin_ball_diameters: float = 0.0
+    pocket_clearance_ball_diameters: float = 0.0
+
+
+@dataclass(frozen=True)
 class TrainingScenario:
     scenario_id: str
     title: str
@@ -26,10 +42,29 @@ class TrainingScenario:
     layout: str = "free"
     require_cue_ball: bool = True
     allow_extra_object_balls: bool = False
+    group: str = "advanced"
+    display_number: int = 0
+    zones: Tuple[BallTargetZone, ...] = ()
+    constraints: LayoutConstraints = LayoutConstraints()
+    wrong_ball_policy: str = "fail"
+    cue_ball_pocketed_policy: str = "fail"
 
     @property
     def ordered_numbers(self) -> Tuple[int, ...]:
         return tuple(number for stage in self.stages for number in stage)
+
+    @property
+    def group_title(self) -> str:
+        return "新手训练模式" if self.group == "beginner" else "进阶训练模式"
+
+    @property
+    def display_title(self) -> str:
+        prefix = "新手训练" if self.group == "beginner" else "进阶训练"
+        return f"{prefix}{self.display_number}：{self.title}" if self.display_number > 0 else self.title
+
+    @property
+    def is_beginner(self) -> bool:
+        return self.group == "beginner"
 
 
 @dataclass
@@ -50,6 +85,10 @@ class TrainingStateFrame:
     attempt: int = 0
     elapsed_s: float = 0.0
     failure_reason: str | None = None
+    error_count: int = 0
+    remaining_numbers: list[int] = field(default_factory=list)
+    mode_hint: str = ""
+    respot_required_numbers: list[int] = field(default_factory=list)
     events: list[Event] = field(default_factory=list)
 
     @property

@@ -280,7 +280,11 @@ class WebControlOperatorMixin:
         scenarios = [
             {
                 "scenario_id": scenario.scenario_id,
-                "title": scenario.title,
+                "title": scenario.display_title,
+                "name": scenario.title,
+                "group": scenario.group,
+                "group_title": scenario.group_title,
+                "display_number": scenario.display_number,
                 "description": scenario.description,
                 "setup_instructions": scenario.setup_instructions,
             }

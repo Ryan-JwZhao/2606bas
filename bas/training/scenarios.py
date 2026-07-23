@@ -1,15 +1,126 @@
 from __future__ import annotations
 
-from typing import Iterable, Sequence
-
-import numpy as np
+from typing import Sequence
 
 from ..schemas import TrackObservation
-from .models import TrainingScenario
-from .numbered_tracker import ball_number_from_track
+from .layout_validation import validate_scenario_setup as _validate_scenario_setup
+from .models import BallTargetZone, LayoutConstraints, TrainingScenario
 
 
-SCENARIOS: tuple[TrainingScenario, ...] = (
+_BEGINNER_SAFETY = LayoutConstraints(
+    min_spacing_ball_diameters=1.35,
+    edge_margin_ball_diameters=0.35,
+    pocket_clearance_ball_diameters=1.35,
+)
+
+BEGINNER_SCENARIOS: tuple[TrainingScenario, ...] = (
+    TrainingScenario(
+        scenario_id="BEGINNER_SINGLE_FREE",
+        title="单球自由入袋",
+        description="只练习把 1 号球打入任意球袋，白球落袋后重摆继续。",
+        setup_instructions="仅摆放白球和 1 号球，两颗球放在有效击球区域内并避开库边和袋口。",
+        required_balls=(1,),
+        stages=((1,),),
+        group="beginner",
+        display_number=1,
+        constraints=_BEGINNER_SAFETY,
+        wrong_ball_policy="warn_continue",
+        cue_ball_pocketed_policy="respot_continue",
+    ),
+    TrainingScenario(
+        scenario_id="BEGINNER_SINGLE_STRAIGHT",
+        title="单球直线入袋",
+        description="练习白球、目标球和袋口方向大致共线的基础直球。",
+        setup_instructions="仅摆放白球和 1 号球，使白球、1 号球与任一可用袋口方向大致成直线。",
+        required_balls=(1,),
+        stages=((1,),),
+        layout="straight_shot",
+        group="beginner",
+        display_number=2,
+        constraints=LayoutConstraints(
+            line_tolerance_ball_diameters=2.0,
+            max_span_ball_diameters=8.0,
+            min_spacing_ball_diameters=1.35,
+            edge_margin_ball_diameters=0.25,
+            pocket_clearance_ball_diameters=1.1,
+        ),
+        wrong_ball_policy="warn_continue",
+        cue_ball_pocketed_policy="respot_continue",
+    ),
+    TrainingScenario(
+        scenario_id="BEGINNER_1_TO_3_LINE",
+        title="1–3 顺序短线",
+        description="以较短的一字线练习 1→2→3 连续进球。",
+        setup_instructions="将 1、2、3 号球按顺序摆成较短直线，白球自由摆放；按 1→2→3 进球。",
+        required_balls=(1, 2, 3),
+        stages=((1,), (2,), (3,)),
+        layout="line",
+        group="beginner",
+        display_number=3,
+        constraints=LayoutConstraints(
+            line_tolerance_ball_diameters=2.0,
+            max_span_ball_diameters=9.0,
+            min_spacing_ball_diameters=1.25,
+            edge_margin_ball_diameters=0.25,
+            pocket_clearance_ball_diameters=1.1,
+        ),
+        wrong_ball_policy="warn_continue",
+        cue_ball_pocketed_policy="respot_continue",
+    ),
+    TrainingScenario(
+        scenario_id="BEGINNER_1_TO_3_POINTS",
+        title="1–3 三点顺序",
+        description="练习在三个不同方向之间切换，并按 1→2→3 完成。",
+        setup_instructions="将 1、2、3 分别放入三个宽松推荐区域；三球无需共线，按 1→2→3 进球。",
+        required_balls=(1, 2, 3),
+        stages=((1,), (2,), (3,)),
+        layout="zones",
+        group="beginner",
+        display_number=4,
+        zones=(
+            BallTargetZone(1, (0.28, 0.30), (0.20, 0.22)),
+            BallTargetZone(2, (0.72, 0.35), (0.20, 0.22)),
+            BallTargetZone(3, (0.52, 0.70), (0.22, 0.20)),
+        ),
+        constraints=_BEGINNER_SAFETY,
+        wrong_ball_policy="warn_continue",
+        cue_ball_pocketed_policy="respot_continue",
+    ),
+    TrainingScenario(
+        scenario_id="BEGINNER_3_BALL_FREE",
+        title="三球自由清台",
+        description="1、2、3 可按任意顺序入袋，练习自主选择简单路线。",
+        setup_instructions="仅摆放白球和 1、2、3 号球，分散在容易处理的位置；进球顺序自由。",
+        required_balls=(1, 2, 3),
+        stages=((1, 2, 3),),
+        layout="zones",
+        group="beginner",
+        display_number=5,
+        zones=(
+            BallTargetZone(1, (0.28, 0.30), (0.22, 0.23)),
+            BallTargetZone(2, (0.72, 0.35), (0.22, 0.23)),
+            BallTargetZone(3, (0.52, 0.70), (0.24, 0.22)),
+        ),
+        constraints=_BEGINNER_SAFETY,
+        wrong_ball_policy="warn_continue",
+        cue_ball_pocketed_policy="respot_continue",
+    ),
+    TrainingScenario(
+        scenario_id="BEGINNER_5_BALL_FREE",
+        title="五球自由清台",
+        description="1–5 可按任意顺序入袋，完成基础自由清台。",
+        setup_instructions="仅摆放白球和 1–5 号球，在有效区域内自由分散并避开贴库、贴球和袋口。",
+        required_balls=(1, 2, 3, 4, 5),
+        stages=((1, 2, 3, 4, 5),),
+        group="beginner",
+        display_number=6,
+        constraints=_BEGINNER_SAFETY,
+        wrong_ball_policy="warn_continue",
+        cue_ball_pocketed_policy="respot_continue",
+    ),
+)
+
+ADVANCED_SCENARIOS: tuple[TrainingScenario, ...] = (
     TrainingScenario(
         scenario_id="ordered_line_1_7",
         title="1–7 顺序一字线",
@@ -18,6 +129,7 @@ SCENARIOS: tuple[TrainingScenario, ...] = (
         required_balls=tuple(range(1, 8)),
         stages=tuple((number,) for number in range(1, 8)),
         layout="line",
+        display_number=1,
     ),
     TrainingScenario(
         scenario_id="snake_1_15",
@@ -27,6 +139,7 @@ SCENARIOS: tuple[TrainingScenario, ...] = (
         required_balls=tuple(range(1, 16)),
         stages=tuple((number,) for number in range(1, 16)),
         layout="line",
+        display_number=2,
     ),
     TrainingScenario(
         scenario_id="rotation_1_9",
@@ -35,7 +148,7 @@ SCENARIOS: tuple[TrainingScenario, ...] = (
         setup_instructions="将 1–9 号球分散摆放且彼此不贴球，白球自由摆放；按 1→9 依次进球。",
         required_balls=tuple(range(1, 10)),
         stages=tuple((number,) for number in range(1, 10)),
-        layout="free",
+        display_number=3,
     ),
     TrainingScenario(
         scenario_id="odd_even_double_row",
@@ -45,6 +158,7 @@ SCENARIOS: tuple[TrainingScenario, ...] = (
         required_balls=tuple(range(1, 10)),
         stages=tuple((number,) for number in (1, 3, 5, 7, 9, 2, 4, 6, 8)),
         layout="double_row",
+        display_number=4,
     ),
     TrainingScenario(
         scenario_id="solids_then_black",
@@ -53,7 +167,7 @@ SCENARIOS: tuple[TrainingScenario, ...] = (
         setup_instructions="分散摆放 1–7 号球和 8 号球；先以任意顺序清掉 1–7，最后进 8 号球。",
         required_balls=tuple(range(1, 9)),
         stages=(tuple(range(1, 8)), (8,)),
-        layout="free",
+        display_number=5,
     ),
     TrainingScenario(
         scenario_id="stripes_then_black",
@@ -62,7 +176,7 @@ SCENARIOS: tuple[TrainingScenario, ...] = (
         setup_instructions="分散摆放 9–15 号球和 8 号球；先以任意顺序清掉 9–15，最后进 8 号球。",
         required_balls=tuple(range(8, 16)),
         stages=(tuple(range(9, 16)), (8,)),
-        layout="free",
+        display_number=6,
     ),
     TrainingScenario(
         scenario_id="finish_6_7_8",
@@ -71,11 +185,13 @@ SCENARIOS: tuple[TrainingScenario, ...] = (
         setup_instructions="分散摆放 6、7、8 号球，白球自由摆放；按 6→7→8 完成。",
         required_balls=(6, 7, 8),
         stages=((6,), (7,), (8,)),
-        layout="free",
+        display_number=7,
     ),
 )
 
+SCENARIOS = BEGINNER_SCENARIOS + ADVANCED_SCENARIOS
 _BY_ID = {scenario.scenario_id: scenario for scenario in SCENARIOS}
+_DEFAULT_SCENARIO = _BY_ID["ordered_line_1_7"]
 
 
 def list_training_scenarios() -> tuple[TrainingScenario, ...]:
@@ -83,7 +199,7 @@ def list_training_scenarios() -> tuple[TrainingScenario, ...]:
 
 
 def get_training_scenario(scenario_id: str | None) -> TrainingScenario:
-    return _BY_ID.get(str(scenario_id or "").strip(), SCENARIOS[0])
+    return _BY_ID.get(str(scenario_id or "").strip(), _DEFAULT_SCENARIO)
 
 
 def validate_scenario_setup(
@@ -91,82 +207,13 @@ def validate_scenario_setup(
     tracks: Sequence[TrackObservation],
     *,
     ball_diameter_mm: float = 57.15,
+    ball_center_reachable_polygon_mm: Sequence[tuple[float, float]] | None = None,
+    pockets_mm: Sequence[tuple[float, float]] | None = None,
 ) -> tuple[bool, str]:
-    visible = [track for track in tracks if track.visibility == "visible"]
-    numbered = {number: track for track in visible if (number := ball_number_from_track(track)) is not None}
-    visible_objects = {number for number in numbered if number != 0}
-    required = set(scenario.required_balls)
-
-    if scenario.require_cue_ball and 0 not in numbered:
-        return False, "未识别到白球（0 号）"
-    missing = sorted(required - visible_objects)
-    if missing:
-        return False, "缺少目标球：" + "、".join(str(number) for number in missing)
-    if not scenario.allow_extra_object_balls:
-        extras = sorted(visible_objects - required)
-        if extras:
-            return False, "请移走本项目外的球：" + "、".join(str(number) for number in extras)
-
-    layout_tracks = [numbered[number] for number in scenario.required_balls]
-    if scenario.layout == "line":
-        return _validate_line(layout_tracks, scenario.required_balls, ball_diameter_mm)
-    if scenario.layout == "double_row":
-        return _validate_double_row(numbered, ball_diameter_mm)
-    return True, "摆球已通过，可开始训练"
-
-
-def _track_points(tracks: Iterable[TrackObservation]) -> tuple[np.ndarray, float]:
-    items = list(tracks)
-    use_mm = bool(items) and all(track.center_mm is not None for track in items)
-    if use_mm:
-        points = np.asarray([track.center_mm for track in items], dtype=np.float32)
-        scale = 57.15
-    else:
-        points = np.asarray([track.center_px for track in items], dtype=np.float32)
-        radii = [max(2.0, float(track.radius_px)) for track in items]
-        scale = 2.0 * float(np.median(radii)) if radii else 24.0
-    return points.reshape((-1, 2)), scale
-
-
-def _validate_line(
-    tracks: Sequence[TrackObservation],
-    expected_order: Sequence[int],
-    ball_diameter_mm: float,
-) -> tuple[bool, str]:
-    if len(tracks) < 3:
-        return True, "摆球已通过，可开始训练"
-    points, observed_scale = _track_points(tracks)
-    if all(track.center_mm is not None for track in tracks):
-        observed_scale = max(1.0, float(ball_diameter_mm))
-    centered = points - np.mean(points, axis=0, keepdims=True)
-    _, _, axes = np.linalg.svd(centered, full_matrices=False)
-    main_axis = axes[0]
-    projections = centered @ main_axis
-    residual = centered - np.outer(projections, main_axis)
-    max_residual = float(np.max(np.linalg.norm(residual, axis=1)))
-    if max_residual > observed_scale * 1.35:
-        return False, "目标球未摆成一条直线"
-    sorted_indexes = np.argsort(projections)
-    actual = tuple(int(expected_order[index]) for index in sorted_indexes)
-    expected = tuple(int(number) for number in expected_order)
-    if actual not in {expected, tuple(reversed(expected))}:
-        return False, "直线中的球号顺序不正确"
-    return True, "摆球已通过，可开始训练"
-
-
-def _validate_double_row(
-    numbered: dict[int, TrackObservation],
-    ball_diameter_mm: float,
-) -> tuple[bool, str]:
-    odd_numbers = (1, 3, 5, 7, 9)
-    even_numbers = (2, 4, 6, 8)
-    for numbers in (odd_numbers, even_numbers):
-        ok, _ = _validate_line([numbered[number] for number in numbers], numbers, ball_diameter_mm)
-        if not ok:
-            return False, "单双号球需要分别摆成两条直线"
-    odd_points, odd_scale = _track_points([numbered[number] for number in odd_numbers])
-    even_points, even_scale = _track_points([numbered[number] for number in even_numbers])
-    scale = max(odd_scale, even_scale, float(ball_diameter_mm) if numbered[1].center_mm is not None else 1.0)
-    if float(np.linalg.norm(np.mean(odd_points, axis=0) - np.mean(even_points, axis=0))) < scale * 1.5:
-        return False, "单双号两排距离过近"
-    return True, "摆球已通过，可开始训练"
+    return _validate_scenario_setup(
+        scenario,
+        tracks,
+        ball_diameter_mm=ball_diameter_mm,
+        ball_center_reachable_polygon_mm=ball_center_reachable_polygon_mm,
+        pockets_mm=pockets_mm,
+    )

@@ -56,4 +56,7 @@ class TrainingOverlayBuilder:
         overlay.labels.append(
             ((36.0, 116.0), f"PROGRESS {state.progress_current}/{state.progress_total}  TIME {state.elapsed_s:.1f}s", status_color)
         )
+        if state.mode_hint == "自由选择模式":
+            remaining = " / ".join(str(number) for number in state.remaining_numbers) or "-"
+            overlay.labels.append(((36.0, 150.0), f"FREE ORDER · REMAINING {remaining} · ERRORS {state.error_count}", status_color))
         return overlay

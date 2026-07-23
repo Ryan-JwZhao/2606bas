@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from .models import RULES_MODE, TRAINING_MODE, TrainingScenario, TrainingStateFrame, normalize_operating_mode
+from .models import (
+    RULES_MODE,
+    TRAINING_MODE,
+    BallTargetZone,
+    LayoutConstraints,
+    TrainingScenario,
+    TrainingStateFrame,
+    normalize_operating_mode,
+)
 from .numbered_tracker import NumberedBallTracker, ball_number_from_track, numbered_ball_group, parse_ball_number
 from .overlay import TrainingOverlayBuilder
 from .pocket_judge import TrainingPocketJudge, TrainingPocketJudgment
@@ -10,6 +18,8 @@ from .session import TrainingSession
 __all__ = [
     "RULES_MODE",
     "TRAINING_MODE",
+    "BallTargetZone",
+    "LayoutConstraints",
     "TrainingScenario",
     "TrainingStateFrame",
     "normalize_operating_mode",
