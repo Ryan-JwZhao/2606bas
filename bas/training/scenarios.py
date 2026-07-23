@@ -24,8 +24,7 @@ BEGINNER_SCENARIOS: tuple[TrainingScenario, ...] = (
         group="beginner",
         display_number=1,
         constraints=_BEGINNER_SAFETY,
-        wrong_ball_policy="warn_continue",
-        cue_ball_pocketed_policy="respot_continue",
+        rule_set_id="guided",
     ),
     TrainingScenario(
         scenario_id="BEGINNER_SINGLE_STRAIGHT",
@@ -44,8 +43,7 @@ BEGINNER_SCENARIOS: tuple[TrainingScenario, ...] = (
             edge_margin_ball_diameters=0.25,
             pocket_clearance_ball_diameters=1.1,
         ),
-        wrong_ball_policy="warn_continue",
-        cue_ball_pocketed_policy="respot_continue",
+        rule_set_id="guided",
     ),
     TrainingScenario(
         scenario_id="BEGINNER_1_TO_3_LINE",
@@ -64,8 +62,7 @@ BEGINNER_SCENARIOS: tuple[TrainingScenario, ...] = (
             edge_margin_ball_diameters=0.25,
             pocket_clearance_ball_diameters=1.1,
         ),
-        wrong_ball_policy="warn_continue",
-        cue_ball_pocketed_policy="respot_continue",
+        rule_set_id="guided",
     ),
     TrainingScenario(
         scenario_id="BEGINNER_1_TO_3_POINTS",
@@ -83,8 +80,7 @@ BEGINNER_SCENARIOS: tuple[TrainingScenario, ...] = (
             BallTargetZone(3, (0.52, 0.70), (0.22, 0.20)),
         ),
         constraints=_BEGINNER_SAFETY,
-        wrong_ball_policy="warn_continue",
-        cue_ball_pocketed_policy="respot_continue",
+        rule_set_id="guided",
     ),
     TrainingScenario(
         scenario_id="BEGINNER_3_BALL_FREE",
@@ -102,8 +98,7 @@ BEGINNER_SCENARIOS: tuple[TrainingScenario, ...] = (
             BallTargetZone(3, (0.52, 0.70), (0.24, 0.22)),
         ),
         constraints=_BEGINNER_SAFETY,
-        wrong_ball_policy="warn_continue",
-        cue_ball_pocketed_policy="respot_continue",
+        rule_set_id="guided",
     ),
     TrainingScenario(
         scenario_id="BEGINNER_5_BALL_FREE",
@@ -115,8 +110,7 @@ BEGINNER_SCENARIOS: tuple[TrainingScenario, ...] = (
         group="beginner",
         display_number=6,
         constraints=_BEGINNER_SAFETY,
-        wrong_ball_policy="warn_continue",
-        cue_ball_pocketed_policy="respot_continue",
+        rule_set_id="guided",
     ),
 )
 

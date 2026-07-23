@@ -35,6 +35,9 @@ user_settings.json
 session_*/
 bas.log
 *.log
+*.pid
+*.dmp
+*.dump
 captures/
 snapshots/
 videos/

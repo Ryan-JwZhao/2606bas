@@ -8,11 +8,20 @@ from ..schemas import Event, PocketVisualObservationFrame, TrackObservation, Tra
 from .models import TrainingScenario, TrainingStateFrame
 from .numbered_tracker import ball_number_from_track
 from .pocket_judge import TrainingPocketJudge
+from .prompts import completion_message, mode_hint, rule_decision_message, running_message
+from .rules import (
+    ACTION_ACCEPT,
+    ACTION_FAIL,
+    ACTION_NONE,
+    ACTION_RESPOT_CONTINUE,
+    TrainingRuleDecision,
+    get_training_rule_set,
+)
 from .scenarios import get_training_scenario, validate_scenario_setup
 
 
 class TrainingSession:
-    version = "numbered_training_session_v2_shared_pocket_fsm"
+    version = "numbered_training_session_v3_rule_sets"
 
     def __init__(
         self,
@@ -24,6 +33,7 @@ class TrainingSession:
         self.config = config
         self.ball_diameter_mm = float(ball_diameter_mm)
         self.scenario: TrainingScenario = get_training_scenario(config.scenario_id)
+        self.rules = get_training_rule_set(self.scenario.rule_set_id)
         self._pocket_judge = TrainingPocketJudge(state_config or StateConfig(engine="modern"))
         self._latest_tracks: list[TrackObservation] = []
         self._potted: list[int] = []
@@ -42,6 +52,7 @@ class TrainingSession:
 
     def select_scenario(self, scenario_id: str) -> TrainingStateFrame:
         self.scenario = get_training_scenario(scenario_id)
+        self.rules = get_training_rule_set(self.scenario.rule_set_id)
         self.config.scenario_id = self.scenario.scenario_id
         return self.reset()
 
@@ -191,92 +202,49 @@ class TrainingSession:
         confirmed = [number for number in pocket_judgment.detected_numbers if number in watched]
 
         events: list[Event] = []
-        object_confirmed = [number for number in confirmed if number != 0]
-        if 0 in confirmed:
-            if self.scenario.cue_ball_pocketed_policy == "respot_continue":
-                self._error_count += 1
+        decision = self.rules.evaluate_pocket_result(confirmed, self._expected_numbers())
+        if decision.action == ACTION_RESPOT_CONTINUE:
+            self._error_count += 1
+            if decision.cue_ball_pocketed:
                 self._cue_respot_required = True
-                self._respot_required.update(object_confirmed)
-                events.append(
-                    self._event(
-                        "TRAINING_WARNING",
-                        frame_id,
-                        ts_cam_ns,
-                        reason="cue_ball_pocketed",
-                        action="respot_continue",
-                    )
-                )
-                self._prime_pocket_judge(tracks_frame)
-                message = "白球落袋：请重新放置白球后继续，已完成进度会保留"
-                if object_confirmed:
-                    message += "；同时入袋的目标球也请重摆：" + "、".join(map(str, object_confirmed))
-                self._state = self._running_state(
+            self._respot_required.update(decision.balls)
+            events.append(
+                self._event(
+                    "TRAINING_WARNING",
                     frame_id,
                     ts_cam_ns,
-                    visible,
-                    events,
-                    message=message,
+                    **self._decision_payload(decision),
                 )
-                return self._state
-            events.append(self._event("TRAINING_FAILED", frame_id, ts_cam_ns, reason="cue_ball_pocketed"))
-            self._state = self._failed(frame_id, ts_cam_ns, "白球落袋，本次训练失败", "cue_ball_pocketed", visible, events)
+            )
+            self._prime_pocket_judge(tracks_frame)
+            self._state = self._running_state(
+                frame_id,
+                ts_cam_ns,
+                visible,
+                events,
+                message=rule_decision_message(decision),
+            )
             return self._state
-
-        if len(object_confirmed) > 1:
-            if self.scenario.is_beginner:
-                self._error_count += 1
-                self._respot_required.update(object_confirmed)
-                events.append(
-                    self._event(
-                        "TRAINING_WARNING",
-                        frame_id,
-                        ts_cam_ns,
-                        reason="ambiguous_multiple_pots",
-                        balls=object_confirmed,
-                        action="respot_continue",
-                    )
-                )
-                self._prime_pocket_judge(tracks_frame)
-                self._state = self._running_state(
+        if decision.action == ACTION_FAIL:
+            events.append(
+                self._event(
+                    "TRAINING_FAILED",
                     frame_id,
                     ts_cam_ns,
-                    visible,
-                    events,
-                    message="同时检测到多颗球入袋，请将这些球重摆后继续：" + "、".join(map(str, object_confirmed)),
+                    **self._decision_payload(decision),
                 )
-                return self._state
-            events.append(self._event("TRAINING_FAILED", frame_id, ts_cam_ns, reason="ambiguous_multiple_pots", balls=object_confirmed))
-            self._state = self._failed(frame_id, ts_cam_ns, "多颗球同时消失，无法确认进球顺序", "ambiguous_multiple_pots", visible, events)
+            )
+            self._state = self._failed(
+                frame_id,
+                ts_cam_ns,
+                rule_decision_message(decision),
+                str(decision.reason or "rule_failed"),
+                visible,
+                events,
+            )
             return self._state
-        if object_confirmed:
-            number = object_confirmed[0]
-            expected = set(self._expected_numbers())
-            if number not in expected:
-                if self.scenario.wrong_ball_policy == "warn_continue":
-                    self._error_count += 1
-                    self._respot_required.add(number)
-                    events.append(
-                        self._event(
-                            "TRAINING_WARNING",
-                            frame_id,
-                            ts_cam_ns,
-                            reason="wrong_ball",
-                            ball=number,
-                            expected=sorted(expected),
-                            action="respot_continue",
-                        )
-                    )
-                    self._prime_pocket_judge(tracks_frame)
-                    message = (
-                        f"误进 {number} 号球；请重摆该球后继续，当前目标仍为 "
-                        + " / ".join(str(value) for value in sorted(expected))
-                    )
-                    self._state = self._running_state(frame_id, ts_cam_ns, visible, events, message=message)
-                    return self._state
-                events.append(self._event("TRAINING_FAILED", frame_id, ts_cam_ns, reason="wrong_ball", ball=number, expected=sorted(expected)))
-                message = f"误进 {number} 号球；当前应进 " + " / ".join(str(value) for value in sorted(expected))
-                self._state = self._failed(frame_id, ts_cam_ns, message, "wrong_ball", visible, events)
-                return self._state
+        if decision.action == ACTION_ACCEPT and decision.ball is not None:
+            number = int(decision.ball)
             self._potted.append(number)
             detected_event = next(
                 (
@@ -299,17 +267,12 @@ class TrainingSession:
             )
             if len(self._potted) == len(self.scenario.required_balls):
                 events.append(self._event("TRAINING_PASSED", frame_id, ts_cam_ns, scenario=self.scenario.scenario_id))
-                completion_message = (
-                    "训练完成，全部目标球已清台"
-                    if self._mode_hint() == "自由选择模式"
-                    else "训练完成，全部目标球顺序正确"
-                )
                 self._state = replace(
                     self._state,
                     frame_id=frame_id,
                     ts_cam_ns=ts_cam_ns,
                     phase="passed",
-                    message=completion_message,
+                    message=completion_message(self.scenario.stages),
                     expected_numbers=[],
                     visible_numbers=sorted(visible),
                     potted_numbers=list(self._potted),
@@ -322,6 +285,8 @@ class TrainingSession:
                     events=events,
                 )
                 return self._state
+        elif decision.action != ACTION_NONE:
+            raise RuntimeError(f"训练规则返回了无法处理的动作: {decision.action}")
 
         self._state = self._running_state(frame_id, ts_cam_ns, visible, events)
         return self._state
@@ -391,16 +356,11 @@ class TrainingSession:
         return ()
 
     def _running_message(self) -> str:
-        if self._cue_respot_required:
-            return "请重新放置白球后继续，已完成进度会保留"
-        if self._respot_required:
-            return "请重摆误进球后继续：" + "、".join(str(number) for number in sorted(self._respot_required))
-        expected = self._expected_numbers()
-        if not expected:
-            return "正在确认训练结果"
-        if len(expected) == 1:
-            return f"当前目标：{expected[0]} 号球"
-        return "当前可进：" + "、".join(str(number) for number in expected)
+        return running_message(
+            self._expected_numbers(),
+            cue_respot_required=self._cue_respot_required,
+            respot_required_numbers=self._respot_required,
+        )
 
     def _running_state(
         self,
@@ -440,9 +400,21 @@ class TrainingSession:
         )
 
     def _mode_hint(self) -> str:
-        if self.scenario.is_beginner and len(self.scenario.stages) == 1 and len(self.scenario.stages[0]) > 1:
-            return "自由选择模式"
-        return "固定目标模式"
+        return mode_hint(self.scenario.stages)
+
+    @staticmethod
+    def _decision_payload(decision: TrainingRuleDecision) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "reason": str(decision.reason or ""),
+            "action": decision.action,
+        }
+        if decision.ball is not None:
+            payload["ball"] = int(decision.ball)
+        if decision.balls:
+            payload["balls"] = list(decision.balls)
+        if decision.expected:
+            payload["expected"] = list(decision.expected)
+        return payload
 
     def _failed(
         self,

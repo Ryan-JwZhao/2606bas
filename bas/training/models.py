@@ -8,6 +8,10 @@ from ..schemas import Event
 
 RULES_MODE = "rules"
 TRAINING_MODE = "training"
+TRAINING_GROUP_TITLES = {
+    "beginner": ("新手训练模式", "新手训练"),
+    "advanced": ("进阶训练模式", "进阶训练"),
+}
 
 
 def normalize_operating_mode(value: str | None) -> str:
@@ -46,8 +50,7 @@ class TrainingScenario:
     display_number: int = 0
     zones: Tuple[BallTargetZone, ...] = ()
     constraints: LayoutConstraints = LayoutConstraints()
-    wrong_ball_policy: str = "fail"
-    cue_ball_pocketed_policy: str = "fail"
+    rule_set_id: str = "strict"
 
     @property
     def ordered_numbers(self) -> Tuple[int, ...]:
@@ -55,16 +58,12 @@ class TrainingScenario:
 
     @property
     def group_title(self) -> str:
-        return "新手训练模式" if self.group == "beginner" else "进阶训练模式"
+        return TRAINING_GROUP_TITLES.get(self.group, (self.group, self.group))[0]
 
     @property
     def display_title(self) -> str:
-        prefix = "新手训练" if self.group == "beginner" else "进阶训练"
+        prefix = TRAINING_GROUP_TITLES.get(self.group, (self.group, self.group))[1]
         return f"{prefix}{self.display_number}：{self.title}" if self.display_number > 0 else self.title
-
-    @property
-    def is_beginner(self) -> bool:
-        return self.group == "beginner"
 
 
 @dataclass

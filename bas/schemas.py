@@ -227,6 +227,17 @@ class OverlayCircle:
 
 
 @dataclass
+class OverlayText:
+    position: Point
+    text: str
+    color: Tuple[int, int, int] = (255, 255, 255)
+    font_size_px: float = 36.0
+    max_width_ratio: float = 0.9
+    outline_width_px: float = 2.0
+    background_alpha: int = 110
+
+
+@dataclass
 class ProjectionOverlay:
     overlay_id: str
     frame_id: int
@@ -234,6 +245,7 @@ class ProjectionOverlay:
     lines: List[OverlayLine] = field(default_factory=list)
     circles: List[OverlayCircle] = field(default_factory=list)
     labels: List[Tuple[Point, str, Tuple[int, int, int]]] = field(default_factory=list)
+    texts: List[OverlayText] = field(default_factory=list)
 
 
 def to_jsonable(value: Any) -> Any:

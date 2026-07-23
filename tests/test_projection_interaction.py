@@ -7,13 +7,41 @@ import numpy as np
 
 from bas.projection.interaction import ProjectionInteractionController
 from bas.projection.star_formula import StarFormulaConfig
-from bas.schemas import Event, MatchStateFrame, ProjectionOverlay, ShotPlan
+from bas.projection.overlay import render_overlay_image
+from bas.schemas import Event, MatchStateFrame, OverlayText, ProjectionOverlay, ShotPlan
 
 
 def _write_bgra_png(path: Path, frame: np.ndarray) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     ok = cv2.imwrite(str(path), frame)
     assert ok
+
+
+def test_unicode_overlay_text_is_rendered_in_final_projector_pixels() -> None:
+    text = OverlayText(
+        position=(160.0, 90.0),
+        text="当前目标：1 号球\n请准备击球",
+        font_size_px=28.0,
+    )
+    first = render_overlay_image(
+        ProjectionOverlay(
+            overlay_id="calibration_a",
+            frame_id=1,
+            projector_size=(320, 180),
+            texts=[text],
+        )
+    )
+    second = render_overlay_image(
+        ProjectionOverlay(
+            overlay_id="calibration_b",
+            frame_id=2,
+            projector_size=(320, 180),
+            texts=[text],
+        )
+    )
+
+    assert int(np.count_nonzero(first)) > 0
+    assert np.array_equal(first, second)
 
 
 def test_projection_interaction_blends_rgba_sequence_without_geometry_warp(tmp_path: Path) -> None:

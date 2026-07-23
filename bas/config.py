@@ -279,6 +279,10 @@ class ProjectionConfig:
     geometry_reference_enabled: bool = True
     auto_pocket_animation_enabled: bool = True
     auto_victory_animation_enabled: bool = True
+    training_prompt_enabled: bool = True
+    training_prompt_x_pct: float = 50.0
+    training_prompt_y_pct: float = 74.0
+    training_prompt_font_size_px: int = 36
 
 
 @dataclass
@@ -416,6 +420,19 @@ class AppConfig:
         self.training.operating_mode = "training" if mode in {"training", "train", "practice", "drill"} else "rules"
         self.training.scenario_id = str(self.training.scenario_id or "ordered_line_1_7").strip() or "ordered_line_1_7"
         self.training.pocket_proximity_mm = max(50.0, float(self.training.pocket_proximity_mm or 190.0))
+        self.projection.training_prompt_enabled = bool(self.projection.training_prompt_enabled)
+        self.projection.training_prompt_x_pct = max(
+            0.0,
+            min(100.0, float(self.projection.training_prompt_x_pct)),
+        )
+        self.projection.training_prompt_y_pct = max(
+            0.0,
+            min(100.0, float(self.projection.training_prompt_y_pct)),
+        )
+        self.projection.training_prompt_font_size_px = max(
+            12,
+            min(240, int(self.projection.training_prompt_font_size_px)),
+        )
         self.web_control.host = str(self.web_control.host or "0.0.0.0").strip() or "0.0.0.0"
         self.web_control.port = max(1, min(65535, int(self.web_control.port or 17070)))
         return self

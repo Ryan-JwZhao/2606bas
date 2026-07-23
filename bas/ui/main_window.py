@@ -275,6 +275,48 @@ class SettingsDialog(QtWidgets.QDialog):
         projection_effects_layout.addWidget(self.auto_pocket_animation_enabled)
         projection_effects_layout.addWidget(self.auto_victory_animation_enabled)
         projection_effects_layout.addStretch(1)
+        self.training_prompt_enabled = QtWidgets.QCheckBox("显示训练中文提示")
+        self.training_prompt_enabled.setChecked(bool(config.projection.training_prompt_enabled))
+        self.training_prompt_x_pct = self._dspin(
+            float(config.projection.training_prompt_x_pct),
+            0.0,
+            100.0,
+            1.0,
+        )
+        self.training_prompt_x_pct.setSuffix(" %")
+        self.training_prompt_y_pct = self._dspin(
+            float(config.projection.training_prompt_y_pct),
+            0.0,
+            100.0,
+            1.0,
+        )
+        self.training_prompt_y_pct.setSuffix(" %")
+        self.training_prompt_font_size = self._spin(
+            int(config.projection.training_prompt_font_size_px),
+            12,
+            240,
+        )
+        self.training_prompt_font_size.setSuffix(" px")
+        training_prompt_box = QtWidgets.QGroupBox("训练交互提示")
+        training_prompt_grid = QtWidgets.QGridLayout(training_prompt_box)
+        training_prompt_grid.addWidget(self.training_prompt_enabled, 0, 0, 1, 4)
+        self._grid_pair(
+            training_prompt_grid,
+            1,
+            "水平位置（左 0 / 右 100）",
+            self.training_prompt_x_pct,
+            "垂直位置（上 0 / 下 100）",
+            self.training_prompt_y_pct,
+        )
+        training_prompt_grid.addWidget(QtWidgets.QLabel("字号"), 2, 0)
+        training_prompt_grid.addWidget(self.training_prompt_font_size, 2, 1)
+        training_prompt_note = QtWidgets.QLabel(
+            "位置按最终投影画布百分比保存，默认位于中间偏下；文字在几何校准完成后绘制，不会随校准矩阵拉伸。"
+        )
+        training_prompt_note.setWordWrap(True)
+        training_prompt_grid.addWidget(training_prompt_note, 2, 2, 1, 2)
+        self.training_prompt_enabled.toggled.connect(self._sync_training_prompt_inputs)
+        self._sync_training_prompt_inputs()
         self.route_freeze_enabled = QtWidgets.QCheckBox("运动时冻结路线")
         self.route_freeze_enabled.setChecked(bool(config.planner.route_freeze_enabled))
         self.route_freeze_enter_frames = self._spin(int(config.planner.route_freeze_enter_frames), 1, 30)
@@ -486,6 +528,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 ("默认投影设备", self.proj_screen),
                 ("默认投影分辨率", proj_size),
                 ("自动投影动效", projection_effects_box),
+                ("训练中文提示", training_prompt_box),
             ],
         )
         self._add_widget_tab(tabs, "路线策略", [target_shot_box, target_lock_box, route_freeze_box, cue_sector_box])
@@ -709,6 +752,10 @@ class SettingsDialog(QtWidgets.QDialog):
         config.projection.projector_height = int(self.proj_h.value())
         config.projection.auto_pocket_animation_enabled = self.auto_pocket_animation_enabled.isChecked()
         config.projection.auto_victory_animation_enabled = self.auto_victory_animation_enabled.isChecked()
+        config.projection.training_prompt_enabled = self.training_prompt_enabled.isChecked()
+        config.projection.training_prompt_x_pct = float(self.training_prompt_x_pct.value())
+        config.projection.training_prompt_y_pct = float(self.training_prompt_y_pct.value())
+        config.projection.training_prompt_font_size_px = int(self.training_prompt_font_size.value())
         config.planner.route_freeze_enabled = self.route_freeze_enabled.isChecked()
         config.planner.route_freeze_enter_frames = int(self.route_freeze_enter_frames.value())
         config.planner.route_freeze_release_frames = int(self.route_freeze_release_frames.value())
@@ -759,6 +806,12 @@ class SettingsDialog(QtWidgets.QDialog):
         manual = not self.ball_comp_auto_ref.isChecked()
         self.ball_comp_ref_x.setEnabled(manual)
         self.ball_comp_ref_y.setEnabled(manual)
+
+    def _sync_training_prompt_inputs(self, *_args) -> None:
+        enabled = self.training_prompt_enabled.isChecked()
+        self.training_prompt_x_pct.setEnabled(enabled)
+        self.training_prompt_y_pct.setEnabled(enabled)
+        self.training_prompt_font_size.setEnabled(enabled)
 
     def _active_projection_path_for_mode(self, mode: str) -> Optional[str]:
         normalized = "engineered" if str(mode).strip().lower() == "engineered" else "legacy"
@@ -4292,6 +4345,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             lines=list(base.lines),
             circles=list(base.circles),
             labels=list(base.labels),
+            texts=list(base.texts),
         )
         self._append_projection_debug_overlay(overlay, out)
         return overlay

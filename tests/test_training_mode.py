@@ -774,6 +774,41 @@ def test_training_overlay_keeps_route_lines_and_adds_training_status() -> None:
 
     assert [line.label for line in overlay.lines] == ["aim"]
     assert any("TARGET 1" in text for _, text, _ in overlay.labels)
+    assert len(overlay.texts) == 1
+    assert "请完成摆球" in overlay.texts[0].text
+
+
+def test_training_projection_prompt_uses_configured_final_canvas_position_and_size() -> None:
+    from bas.config import ProjectionConfig
+    from bas.training.overlay import TrainingOverlayBuilder
+
+    config = ProjectionConfig(
+        projector_width=1000,
+        projector_height=500,
+        training_prompt_enabled=True,
+        training_prompt_x_pct=25.0,
+        training_prompt_y_pct=80.0,
+        training_prompt_font_size_px=44,
+    )
+    state = TrainingStateFrame(
+        frame_id=2,
+        ts_cam_ns=2,
+        scenario_id="ordered_line_1_7",
+        scenario_title="顺序训练",
+        phase="running",
+        message="当前目标：1 号球",
+        expected_numbers=[1],
+        progress_total=7,
+    )
+
+    overlay = TrainingOverlayBuilder(config, calibration=object()).build(
+        TracksFrame(frame_id=2, ts_cam_ns=2),
+        state,
+    )
+
+    assert overlay.texts[0].position == (250.0, 400.0)
+    assert overlay.texts[0].font_size_px == 44.0
+    assert "当前目标：1 号球" in overlay.texts[0].text
 
 
 def test_runtime_clears_pocket_observer_history_at_training_boundaries() -> None:

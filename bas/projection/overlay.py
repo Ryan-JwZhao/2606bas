@@ -13,6 +13,7 @@ from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_s
 from ..schemas import FreeRouteSuggestion, OverlayCircle, OverlayLine, ProjectionOverlay, ShotCandidate, ShotPlan
 from ..utils import unit, wall_time_id
 from .star_formula import StarFormulaConfig, draw_star_formula, star_formula_stroke_metrics
+from .text import draw_overlay_texts
 
 ROUTE_COLOR = (255, 255, 255)
 CUE_STICK_COLOR = ROUTE_COLOR
@@ -307,6 +308,7 @@ def render_overlay_image(overlay: ProjectionOverlay, background: Optional[np.nda
             1,
             cv2.LINE_AA,
         )
+    draw_overlay_texts(img, overlay.texts)
     return img
 
 

@@ -177,6 +177,11 @@ projection:
   fullscreen: true
   auto_pocket_animation_enabled: true
   auto_victory_animation_enabled: true
+  # 训练交互提示直接绘制在最终投影像素画布上，不经过几何校准变换。
+  training_prompt_enabled: true
+  training_prompt_x_pct: 50.0
+  training_prompt_y_pct: 74.0
+  training_prompt_font_size_px: 36
 
 replay:
   enabled: true

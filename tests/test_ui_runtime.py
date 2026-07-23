@@ -508,6 +508,25 @@ def test_settings_dialog_groups_controls_into_clear_tabs() -> None:
     app.processEvents()
 
 
+def test_settings_dialog_applies_desktop_only_training_prompt_controls() -> None:
+    app = _app()
+    config = AppConfig()
+    dialog = main_window.SettingsDialog(config, main_window.StarFormulaConfig())
+    dialog.training_prompt_enabled.setChecked(False)
+    dialog.training_prompt_x_pct.setValue(31.0)
+    dialog.training_prompt_y_pct.setValue(79.0)
+    dialog.training_prompt_font_size.setValue(48)
+
+    dialog.apply_to_config(config)
+
+    assert config.projection.training_prompt_enabled is False
+    assert config.projection.training_prompt_x_pct == 31.0
+    assert config.projection.training_prompt_y_pct == 79.0
+    assert config.projection.training_prompt_font_size_px == 48
+    dialog.close()
+    app.processEvents()
+
+
 def test_set_running_updates_capture_action_states() -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())

@@ -10,7 +10,6 @@ from .numbered_tracker import ball_number_from_track
 
 
 READY_MESSAGE = "摆球已通过，可开始训练"
-BEGINNER_READY_MESSAGE = "摆球基本正确，可以开始"
 
 
 def validate_scenario_setup(
@@ -72,17 +71,15 @@ def validate_scenario_setup(
         if not ok:
             return ok, message
 
-    if scenario.is_beginner:
-        ok, message = _validate_beginner_safety(
-            scenario,
-            numbered,
-            ball_diameter_mm,
-            ball_center_reachable_polygon_mm or (),
-            pockets_mm or (),
-        )
-        if not ok:
-            return ok, message
-        return True, BEGINNER_READY_MESSAGE
+    ok, message = _validate_safety(
+        scenario,
+        numbered,
+        ball_diameter_mm,
+        ball_center_reachable_polygon_mm or (),
+        pockets_mm or (),
+    )
+    if not ok:
+        return ok, message
     return True, READY_MESSAGE
 
 
@@ -160,7 +157,7 @@ def _validate_straight_shot(
     max_span: float | None,
 ) -> tuple[bool, str]:
     if cue.center_mm is None or target.center_mm is None or not pockets_mm:
-        return True, BEGINNER_READY_MESSAGE
+        return True, READY_MESSAGE
     cue_point = np.asarray(cue.center_mm, dtype=np.float32)
     target_point = np.asarray(target.center_mm, dtype=np.float32)
     shot = target_point - cue_point
@@ -180,7 +177,7 @@ def _validate_straight_shot(
         best_error = min(best_error, lateral)
     if best_error > float(ball_diameter_mm) * float(tolerance):
         return False, "白球、1 号球与可用袋口方向明显不共线"
-    return True, BEGINNER_READY_MESSAGE
+    return True, READY_MESSAGE
 
 
 def _validate_zones(
@@ -202,19 +199,26 @@ def _validate_zones(
         tolerance = np.maximum(np.asarray(zone.tolerance, dtype=np.float32), 1e-4)
         if float(np.sum((delta / tolerance) ** 2)) > 1.0:
             return False, f"{zone.ball} 号球未放在对应的推荐区域"
-    return True, BEGINNER_READY_MESSAGE
+    return True, READY_MESSAGE
 
 
-def _validate_beginner_safety(
+def _validate_safety(
     scenario: TrainingScenario,
     numbered: dict[int, TrackObservation],
     ball_diameter_mm: float,
     reachable_polygon: Sequence[tuple[float, float]],
     pockets_mm: Sequence[tuple[float, float]],
 ) -> tuple[bool, str]:
+    constraints = scenario.constraints
+    if (
+        float(constraints.min_spacing_ball_diameters) <= 0
+        and float(constraints.edge_margin_ball_diameters) <= 0
+        and float(constraints.pocket_clearance_ball_diameters) <= 0
+    ):
+        return True, READY_MESSAGE
     relevant = [numbered[number] for number in ((0,) + scenario.required_balls) if number in numbered]
     if not relevant or not all(track.center_mm is not None for track in relevant):
-        return True, BEGINNER_READY_MESSAGE
+        return True, READY_MESSAGE
     points = np.asarray([track.center_mm for track in relevant], dtype=np.float32)
     numbers = [ball_number_from_track(track) for track in relevant]
     polygon = np.asarray(reachable_polygon, dtype=np.float32).reshape((-1, 2)) if len(reachable_polygon) >= 3 else None
@@ -237,7 +241,7 @@ def _validate_beginner_safety(
             for right in range(left + 1, len(points)):
                 if float(np.linalg.norm(points[left] - points[right])) < spacing:
                     return False, f"{numbers[left]} 号球与 {numbers[right]} 号球距离过近"
-    return True, BEGINNER_READY_MESSAGE
+    return True, READY_MESSAGE
 
 
 def _point_in_polygon(point: np.ndarray, polygon: np.ndarray) -> bool:

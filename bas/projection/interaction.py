@@ -11,9 +11,10 @@ import numpy as np
 
 from ..calibration.service import CalibrationService
 from ..paths import PROJECT_ROOT
-from ..schemas import MatchStateFrame, ProjectionOverlay, ShotPlan
+from ..schemas import MatchStateFrame, OverlayText, ProjectionOverlay, ShotPlan
 from .overlay import render_overlay_with_star
 from .star_formula import StarFormulaConfig
+from .text import draw_overlay_texts
 
 DEFAULT_NOTICE_DURATION_S = 3.0
 DEFAULT_ANIMATION_FPS = 12.0
@@ -327,25 +328,15 @@ def _alpha_blend_fullscreen(base_bgr: np.ndarray, overlay_bgra: np.ndarray) -> n
 def _draw_notices(image: np.ndarray, notices: list[str], anchor: tuple[int, int]) -> None:
     x, y = [int(v) for v in anchor]
     line_gap = 22
-    for index, text in enumerate(notices):
-        baseline = (x, y + index * line_gap)
-        cv2.putText(
-            image,
-            text,
-            baseline,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
-            (0, 0, 0),
-            2,
-            cv2.LINE_AA,
+    items = [
+        OverlayText(
+            position=(float(x + 120), float(y + index * line_gap)),
+            text=text,
+            font_size_px=16.0,
+            max_width_ratio=0.35,
+            outline_width_px=1.0,
+            background_alpha=0,
         )
-        cv2.putText(
-            image,
-            text,
-            baseline,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
+        for index, text in enumerate(notices)
+    ]
+    draw_overlay_texts(image, items)

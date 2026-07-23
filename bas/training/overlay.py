@@ -4,9 +4,10 @@ import numpy as np
 
 from ..calibration import CalibrationService
 from ..config import ProjectionConfig
-from ..schemas import OverlayCircle, ProjectionOverlay, TracksFrame
+from ..schemas import OverlayCircle, OverlayText, ProjectionOverlay, TracksFrame
 from .models import TrainingStateFrame
 from .numbered_tracker import ball_number_from_track
+from .prompts import projection_prompt_for_state
 
 
 class TrainingOverlayBuilder:
@@ -28,6 +29,7 @@ class TrainingOverlayBuilder:
             lines=list(route_overlay.lines) if route_overlay is not None else [],
             circles=list(route_overlay.circles) if route_overlay is not None else [],
             labels=list(route_overlay.labels) if route_overlay is not None else [],
+            texts=list(route_overlay.texts) if route_overlay is not None else [],
         )
         expected = set(state.expected_numbers)
         for track in tracks.tracks:
@@ -59,4 +61,21 @@ class TrainingOverlayBuilder:
         if state.mode_hint == "自由选择模式":
             remaining = " / ".join(str(number) for number in state.remaining_numbers) or "-"
             overlay.labels.append(((36.0, 150.0), f"FREE ORDER · REMAINING {remaining} · ERRORS {state.error_count}", status_color))
+        if self.config.training_prompt_enabled:
+            prompt = projection_prompt_for_state(state)
+            width, height = overlay.projector_size
+            overlay.texts.append(
+                OverlayText(
+                    position=(
+                        float(width) * float(self.config.training_prompt_x_pct) / 100.0,
+                        float(height) * float(self.config.training_prompt_y_pct) / 100.0,
+                    ),
+                    text=prompt.text,
+                    color=prompt.color,
+                    font_size_px=float(self.config.training_prompt_font_size_px),
+                    max_width_ratio=0.9,
+                    outline_width_px=max(1.0, float(self.config.training_prompt_font_size_px) / 18.0),
+                    background_alpha=105,
+                )
+            )
         return overlay

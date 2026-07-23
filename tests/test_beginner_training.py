@@ -4,7 +4,13 @@ import pytest
 
 from bas.config import TrainingConfig
 from bas.schemas import PocketVisualObservation, PocketVisualObservationFrame, TrackObservation, TracksFrame
-from bas.training import TrainingSession, get_training_scenario, list_training_scenarios, validate_scenario_setup
+from bas.training import (
+    TrainingSession,
+    get_training_rule_set,
+    get_training_scenario,
+    list_training_scenarios,
+    validate_scenario_setup,
+)
 
 
 TABLE_POLYGON = [(50.0, 50.0), (950.0, 50.0), (950.0, 450.0), (50.0, 450.0)]
@@ -119,6 +125,21 @@ def test_catalog_groups_six_beginner_and_seven_advanced_modes_without_changing_i
         "stripes_then_black",
         "finish_6_7_8",
     ]
+    assert {scenario.rule_set_id for scenario in beginner} == {"guided"}
+    assert {scenario.rule_set_id for scenario in advanced} == {"strict"}
+
+
+def test_shared_rule_seam_contains_all_guided_and_strict_behavior_differences() -> None:
+    guided = get_training_rule_set("guided")
+    strict = get_training_rule_set("strict")
+
+    assert guided.evaluate_pocket_result([0, 2], [1]).action == "respot_continue"
+    assert guided.evaluate_pocket_result([2], [1]).action == "respot_continue"
+    assert guided.evaluate_pocket_result([1, 2], [1]).action == "respot_continue"
+    assert strict.evaluate_pocket_result([0, 2], [1]).action == "fail"
+    assert strict.evaluate_pocket_result([2], [1]).action == "fail"
+    assert strict.evaluate_pocket_result([1, 2], [1]).action == "fail"
+    assert strict.evaluate_pocket_result([1], [1]).action == "accept"
 
 
 def test_single_free_layout_requires_exactly_cue_and_one_ball() -> None:

@@ -387,3 +387,30 @@ def test_user_settings_exports_projection_interaction_toggles() -> None:
 
     assert settings.projection_auto_pocket_animation_enabled is False
     assert settings.projection_auto_victory_animation_enabled is False
+
+
+def test_user_settings_round_trips_training_projection_prompt_controls(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "projection_training_prompt_enabled": False,
+                "projection_training_prompt_x_pct": 27.5,
+                "projection_training_prompt_y_pct": 82.0,
+                "projection_training_prompt_font_size_px": 52,
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = UserSettings.load(path).apply_to_config(AppConfig())
+
+    assert cfg.projection.training_prompt_enabled is False
+    assert cfg.projection.training_prompt_x_pct == 27.5
+    assert cfg.projection.training_prompt_y_pct == 82.0
+    assert cfg.projection.training_prompt_font_size_px == 52
+
+    exported = UserSettings.from_config(cfg)
+    assert exported.projection_training_prompt_enabled is False
+    assert exported.projection_training_prompt_x_pct == 27.5
+    assert exported.projection_training_prompt_y_pct == 82.0
+    assert exported.projection_training_prompt_font_size_px == 52
