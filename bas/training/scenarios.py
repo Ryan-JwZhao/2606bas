@@ -140,24 +140,24 @@ def _entry_variant(
 ENTRY_SCENARIOS: tuple[TrainingScenario, ...] = (
     _entry_variant(
         "BEGINNER_1_TO_3_LINE",
-        scenario_id="ENTRY_12_1_TO_3_LINE",
-        display_number=12,
+        scenario_id="ENTRY_1_1_TO_3_LINE",
+        display_number=1,
         description="认识目标球并练习 1→2→3 的简单连续击球。",
     ),
     _entry_variant(
         "BEGINNER_1_TO_3_POINTS",
-        scenario_id="ENTRY_13_1_TO_3_POINTS",
-        display_number=13,
+        scenario_id="ENTRY_2_1_TO_3_POINTS",
+        display_number=2,
         description="练习在三个容易进球的位置之间切换击球方向。",
     ),
     _entry_variant(
         "BEGINNER_3_BALL_FREE",
-        scenario_id="ENTRY_14_3_BALL_FREE",
-        display_number=14,
+        scenario_id="ENTRY_3_3_BALL_FREE",
+        display_number=3,
         description="观察台面并自主选择 1、2、3 号球的处理顺序。",
     ),
     TrainingScenario(
-        scenario_id="ENTRY_15_LEFT_RIGHT_3_BALL",
+        scenario_id="ENTRY_4_LEFT_RIGHT_3_BALL",
         title="左右换边三球",
         description="练习大方向走位，以及目标球在球台左右两侧之间的切换。",
         setup_instructions="将 1 号球放在左侧、2 号球放在右侧、3 号球放在中部推荐区域；按 1→2→3 进球。",
@@ -165,7 +165,7 @@ ENTRY_SCENARIOS: tuple[TrainingScenario, ...] = (
         stages=((1,), (2,), (3,)),
         layout="zones",
         group="entry",
-        display_number=15,
+        display_number=4,
         zones=(
             BallTargetZone(1, (0.25, 0.45), (0.14, 0.28)),
             BallTargetZone(2, (0.75, 0.45), (0.14, 0.28)),
@@ -176,8 +176,8 @@ ENTRY_SCENARIOS: tuple[TrainingScenario, ...] = (
     ),
     _entry_variant(
         "BEGINNER_5_BALL_FREE",
-        scenario_id="ENTRY_16_5_BALL_FREE",
-        display_number=16,
+        scenario_id="ENTRY_5_5_BALL_FREE",
+        display_number=5,
         description="第一次体验由 1–5 号球组成的小型自由清台。",
     ),
 )

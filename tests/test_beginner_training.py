@@ -117,15 +117,15 @@ def test_catalog_orders_all_training_groups_without_changing_existing_ids() -> N
     advanced = [scenario for scenario in scenarios if scenario.group == "advanced"]
 
     assert [scenario.display_number for scenario in beginner] == list(range(1, 7))
-    assert [scenario.display_number for scenario in entry] == list(range(12, 17))
+    assert [scenario.display_number for scenario in entry] == list(range(1, 6))
     assert [scenario.display_number for scenario in cue_control] == list(range(1, 5))
     assert [scenario.display_number for scenario in advanced] == list(range(1, 8))
     assert [scenario.scenario_id for scenario in entry] == [
-        "ENTRY_12_1_TO_3_LINE",
-        "ENTRY_13_1_TO_3_POINTS",
-        "ENTRY_14_3_BALL_FREE",
-        "ENTRY_15_LEFT_RIGHT_3_BALL",
-        "ENTRY_16_5_BALL_FREE",
+        "ENTRY_1_1_TO_3_LINE",
+        "ENTRY_2_1_TO_3_POINTS",
+        "ENTRY_3_3_BALL_FREE",
+        "ENTRY_4_LEFT_RIGHT_3_BALL",
+        "ENTRY_5_5_BALL_FREE",
     ]
     assert [scenario.scenario_id for scenario in advanced] == [
         "ordered_line_1_7",
@@ -151,10 +151,10 @@ def test_catalog_orders_all_training_groups_without_changing_existing_ids() -> N
 @pytest.mark.parametrize(
     ("entry_id", "beginner_id"),
     [
-        ("ENTRY_12_1_TO_3_LINE", "BEGINNER_1_TO_3_LINE"),
-        ("ENTRY_13_1_TO_3_POINTS", "BEGINNER_1_TO_3_POINTS"),
-        ("ENTRY_14_3_BALL_FREE", "BEGINNER_3_BALL_FREE"),
-        ("ENTRY_16_5_BALL_FREE", "BEGINNER_5_BALL_FREE"),
+        ("ENTRY_1_1_TO_3_LINE", "BEGINNER_1_TO_3_LINE"),
+        ("ENTRY_2_1_TO_3_POINTS", "BEGINNER_1_TO_3_POINTS"),
+        ("ENTRY_3_3_BALL_FREE", "BEGINNER_3_BALL_FREE"),
+        ("ENTRY_5_5_BALL_FREE", "BEGINNER_5_BALL_FREE"),
     ],
 )
 def test_entry_catalog_reuses_existing_drill_layout_and_rules(entry_id: str, beginner_id: str) -> None:
@@ -171,18 +171,18 @@ def test_entry_catalog_reuses_existing_drill_layout_and_rules(entry_id: str, beg
 
 def test_entry_left_right_three_ball_layout_requires_left_right_and_center_zones() -> None:
     valid = {0: (150, 400), 1: (275, 230), 2: (725, 230), 3: (500, 310)}
-    assert _validate("ENTRY_15_LEFT_RIGHT_3_BALL", valid)[0] is True
+    assert _validate("ENTRY_4_LEFT_RIGHT_3_BALL", valid)[0] is True
 
     swapped = dict(valid)
     swapped[1], swapped[2] = swapped[2], swapped[1]
-    ok, message = _validate("ENTRY_15_LEFT_RIGHT_3_BALL", swapped)
+    ok, message = _validate("ENTRY_4_LEFT_RIGHT_3_BALL", swapped)
     assert ok is False
     assert "1 号球" in message and "推荐区域" in message
 
 
 def test_entry_left_right_three_ball_uses_shared_guided_sequence_rules() -> None:
     positions = {0: (150, 400), 1: (275, 230), 2: (725, 230), 3: (500, 310)}
-    session = _session("ENTRY_15_LEFT_RIGHT_3_BALL", positions)
+    session = _session("ENTRY_4_LEFT_RIGHT_3_BALL", positions)
 
     warning = _confirm_pot(
         session,
