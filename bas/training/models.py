@@ -29,6 +29,12 @@ class BallTargetZone:
 
 
 @dataclass(frozen=True)
+class SetupTargetZoneGuide:
+    ball: int
+    polygon_mm: Tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
 class LayoutConstraints:
     line_tolerance_ball_diameters: float = 1.35
     max_span_ball_diameters: float | None = None
@@ -108,6 +114,7 @@ class TrainingStateFrame:
     cue_ball_goal_radius_mm: float | None = None
     cue_ball_goal_polygon_mm: list[tuple[float, float]] = field(default_factory=list)
     cue_ball_goal_result: str | None = None
+    setup_target_zones: list[SetupTargetZoneGuide] = field(default_factory=list)
     events: list[Event] = field(default_factory=list)
 
     @property

@@ -235,6 +235,7 @@ class OverlayText:
     max_width_ratio: float = 0.9
     outline_width_px: float = 2.0
     background_alpha: int = 110
+    rotation_deg: float = 0.0
 
 
 @dataclass

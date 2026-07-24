@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from ..calibration import CalibrationService
 from ..config import ProjectionConfig
 from ..schemas import OverlayCircle, OverlayLine, OverlayText, ProjectionOverlay, TracksFrame
-from .models import TrainingStateFrame
+from .models import SetupTargetZoneGuide, TrainingStateFrame
 from .numbered_tracker import ball_number_from_track
 from .prompts import projection_prompt_for_state
 
@@ -31,6 +33,8 @@ class TrainingOverlayBuilder:
             labels=list(route_overlay.labels) if route_overlay is not None else [],
             texts=list(route_overlay.texts) if route_overlay is not None else [],
         )
+        if state.phase in {"setup", "ready"}:
+            self._append_setup_target_zone_guides(overlay, state.setup_target_zones)
         if state.cue_ball_goal_polygon_mm:
             try:
                 goal_points = self.calibration.table_mm_to_projector_px(
@@ -88,18 +92,114 @@ class TrainingOverlayBuilder:
         if self.config.training_prompt_enabled:
             prompt = projection_prompt_for_state(state)
             width, height = overlay.projector_size
+            prompt_position = (
+                float(width) * float(self.config.training_prompt_x_pct) / 100.0,
+                float(height) * float(self.config.training_prompt_y_pct) / 100.0,
+            )
             overlay.texts.append(
                 OverlayText(
-                    position=(
-                        float(width) * float(self.config.training_prompt_x_pct) / 100.0,
-                        float(height) * float(self.config.training_prompt_y_pct) / 100.0,
-                    ),
+                    position=prompt_position,
                     text=prompt.text,
                     color=prompt.color,
                     font_size_px=float(self.config.training_prompt_font_size_px),
                     max_width_ratio=0.9,
                     outline_width_px=max(1.0, float(self.config.training_prompt_font_size_px) / 18.0),
                     background_alpha=105,
+                    rotation_deg=self._table_axis_rotation_deg(projector_anchor=prompt_position),
                 )
             )
         return overlay
+
+    def _append_setup_target_zone_guides(
+        self,
+        overlay: ProjectionOverlay,
+        guides: list[SetupTargetZoneGuide],
+    ) -> None:
+        palette = (
+            (0, 220, 255),
+            (255, 170, 0),
+            (180, 80, 255),
+            (0, 220, 120),
+            (255, 120, 160),
+        )
+        for guide in guides:
+            try:
+                points = self.calibration.table_mm_to_projector_px(
+                    np.asarray(guide.polygon_mm, dtype=np.float32)
+                )
+            except Exception:
+                continue
+            if points.shape[0] < 4:
+                continue
+            projected = [(float(x), float(y)) for x, y in points]
+            color = (255, 255, 255) if guide.ball == 0 else palette[(guide.ball - 1) % len(palette)]
+            overlay.lines.append(
+                OverlayLine(
+                    points=projected,
+                    color=color,
+                    width=4,
+                    label=f"setup_target_zone_{guide.ball}",
+                    style="dashed",
+                )
+            )
+            center_mm = np.mean(np.asarray(guide.polygon_mm[:-1], dtype=np.float32), axis=0)
+            center = np.mean(points[:-1], axis=0)
+            font_size = max(
+                18.0,
+                min(32.0, float(self.config.training_prompt_font_size_px) * 0.65),
+            )
+            overlay.texts.append(
+                OverlayText(
+                    position=(float(center[0]), float(center[1])),
+                    text=f"摆放 {guide.ball} 号球",
+                    color=color,
+                    font_size_px=font_size,
+                    max_width_ratio=0.32,
+                    outline_width_px=max(1.0, font_size / 18.0),
+                    background_alpha=75,
+                    rotation_deg=self._table_axis_rotation_deg(table_anchor=center_mm),
+                )
+            )
+
+    def _table_axis_rotation_deg(
+        self,
+        *,
+        projector_anchor: tuple[float, float] | None = None,
+        table_anchor: np.ndarray | tuple[float, float] | None = None,
+    ) -> float:
+        try:
+            if table_anchor is None:
+                if projector_anchor is None:
+                    return 0.0
+                table_anchor = self.calibration.projector_px_to_table_mm(
+                    np.asarray([projector_anchor], dtype=np.float32)
+                )[0]
+            anchor = np.asarray(table_anchor, dtype=np.float32).reshape((2,))
+            table = getattr(self.calibration, "table", None)
+            reference_mm = max(
+                100.0,
+                2.0 * float(getattr(table, "ball_diameter_mm", 57.15)),
+            )
+            projected = self.calibration.table_mm_to_projector_px(
+                np.asarray(
+                    [
+                        anchor,
+                        anchor + np.asarray([reference_mm, 0.0], dtype=np.float32),
+                    ],
+                    dtype=np.float32,
+                )
+            )
+            direction = np.asarray(projected[1], dtype=np.float32) - np.asarray(
+                projected[0],
+                dtype=np.float32,
+            )
+            if not np.all(np.isfinite(direction)) or float(np.linalg.norm(direction)) < 1e-4:
+                return 0.0
+            angle = math.degrees(math.atan2(float(direction[1]), float(direction[0])))
+            while angle >= 90.0:
+                angle -= 180.0
+            while angle < -90.0:
+                angle += 180.0
+            return float(angle)
+        except Exception:
+            return 0.0

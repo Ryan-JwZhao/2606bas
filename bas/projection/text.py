@@ -27,15 +27,14 @@ def draw_overlay_texts(image_bgr: np.ndarray, texts: list[OverlayText]) -> None:
     height, width = image_bgr.shape[:2]
     base = Image.fromarray(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)).convert("RGBA")
     layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(layer)
     for item in texts:
-        _draw_text_item(draw, width, height, item)
+        _draw_text_item(layer, width, height, item)
     composed = Image.alpha_composite(base, layer).convert("RGB")
     image_bgr[:] = cv2.cvtColor(np.asarray(composed), cv2.COLOR_RGB2BGR)
 
 
 def _draw_text_item(
-    draw: ImageDraw.ImageDraw,
+    layer: Image.Image,
     canvas_width: int,
     canvas_height: int,
     item: OverlayText,
@@ -43,10 +42,11 @@ def _draw_text_item(
     font_size = max(8, int(round(item.font_size_px)))
     font = _font(font_size)
     max_width = max(40, int(round(canvas_width * max(0.1, min(1.0, item.max_width_ratio)))))
-    wrapped = _wrap_text(draw, str(item.text), font, max_width)
+    measure = ImageDraw.Draw(Image.new("L", (1, 1), 0))
+    wrapped = _wrap_text(measure, str(item.text), font, max_width)
     spacing = max(2, int(round(font_size * 0.18)))
     stroke = max(0, int(round(item.outline_width_px)))
-    bbox = draw.multiline_textbbox(
+    bbox = measure.multiline_textbbox(
         (0, 0),
         wrapped,
         font=font,
@@ -56,28 +56,24 @@ def _draw_text_item(
     )
     text_width = max(1, int(bbox[2] - bbox[0]))
     text_height = max(1, int(bbox[3] - bbox[1]))
-    center_x = int(round(item.position[0]))
-    center_y = int(round(item.position[1]))
-    left = max(4, min(canvas_width - text_width - 4, center_x - text_width // 2))
-    top = max(4, min(canvas_height - text_height - 4, center_y - text_height // 2))
-
     padding_x = max(8, font_size // 3)
     padding_y = max(5, font_size // 5)
+    patch = Image.new(
+        "RGBA",
+        (text_width + 2 * padding_x, text_height + 2 * padding_y),
+        (0, 0, 0, 0),
+    )
+    draw = ImageDraw.Draw(patch)
     if item.background_alpha > 0:
         draw.rounded_rectangle(
-            (
-                max(0, left - padding_x),
-                max(0, top - padding_y),
-                min(canvas_width - 1, left + text_width + padding_x),
-                min(canvas_height - 1, top + text_height + padding_y),
-            ),
+            (0, 0, patch.width - 1, patch.height - 1),
             radius=max(4, font_size // 4),
             fill=(0, 0, 0, max(0, min(255, int(item.background_alpha)))),
         )
 
     blue, green, red = (int(value) for value in item.color)
     draw.multiline_text(
-        (left - bbox[0], top - bbox[1]),
+        (padding_x - bbox[0], padding_y - bbox[1]),
         wrapped,
         font=font,
         fill=(red, green, blue, 255),
@@ -86,6 +82,41 @@ def _draw_text_item(
         stroke_width=stroke,
         stroke_fill=(0, 0, 0, 235),
     )
+    rotation_deg = float(item.rotation_deg)
+    if abs(rotation_deg) > 1e-4:
+        patch = patch.rotate(
+            -rotation_deg,
+            resample=Image.Resampling.BICUBIC,
+            expand=True,
+        )
+    _alpha_composite_centered(
+        layer,
+        patch,
+        center=(int(round(item.position[0])), int(round(item.position[1]))),
+        canvas_size=(canvas_width, canvas_height),
+    )
+
+
+def _alpha_composite_centered(
+    layer: Image.Image,
+    patch: Image.Image,
+    *,
+    center: tuple[int, int],
+    canvas_size: tuple[int, int],
+) -> None:
+    canvas_width, canvas_height = canvas_size
+    left = int(center[0] - patch.width // 2)
+    top = int(center[1] - patch.height // 2)
+    source_left = max(0, -left)
+    source_top = max(0, -top)
+    destination_left = max(0, left)
+    destination_top = max(0, top)
+    source_right = min(patch.width, canvas_width - destination_left + source_left)
+    source_bottom = min(patch.height, canvas_height - destination_top + source_top)
+    if source_right <= source_left or source_bottom <= source_top:
+        return
+    visible = patch.crop((source_left, source_top, source_right, source_bottom))
+    layer.alpha_composite(visible, (destination_left, destination_top))
 
 
 def _wrap_text(

@@ -778,6 +778,54 @@ def test_training_overlay_keeps_route_lines_and_adds_training_status() -> None:
     assert "请完成摆球" in overlay.texts[0].text
 
 
+def test_training_overlay_guides_every_configured_setup_zone() -> None:
+    from bas.config import ProjectionConfig
+    from bas.training.overlay import TrainingOverlayBuilder
+
+    class _Calibration:
+        @staticmethod
+        def table_mm_to_projector_px(points):
+            return np.asarray(points, dtype=np.float32)
+
+    reachable_polygon = [
+        (100.0, 50.0),
+        (900.0, 50.0),
+        (900.0, 450.0),
+        (100.0, 450.0),
+    ]
+    zone_scenarios = [scenario for scenario in list_training_scenarios() if scenario.zones]
+    assert zone_scenarios
+
+    for scenario in zone_scenarios:
+        session = TrainingSession(TrainingConfig(scenario_id=scenario.scenario_id))
+        session.set_table_context(
+            ball_center_reachable_polygon_mm=reachable_polygon,
+            pockets_mm=[(100.0, 50.0)],
+        )
+        state = session.update(TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[]))
+
+        overlay = TrainingOverlayBuilder(ProjectionConfig(), _Calibration()).build(
+            TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[]),
+            state,
+        )
+
+        guides = {
+            line.label: line
+            for line in overlay.lines
+            if line.label.startswith("setup_target_zone_")
+        }
+        assert set(guides) == {
+            f"setup_target_zone_{zone.ball}"
+            for zone in scenario.zones
+        }, scenario.scenario_id
+        assert all(guide.points[0] == guide.points[-1] for guide in guides.values())
+        assert {
+            text.text
+            for text in overlay.texts
+            if text.text.startswith("摆放 ")
+        } == {f"摆放 {zone.ball} 号球" for zone in scenario.zones}
+
+
 def test_training_projection_prompt_uses_configured_final_canvas_position_and_size() -> None:
     from bas.config import ProjectionConfig
     from bas.training.overlay import TrainingOverlayBuilder
@@ -809,6 +857,64 @@ def test_training_projection_prompt_uses_configured_final_canvas_position_and_si
     assert overlay.texts[0].position == (250.0, 400.0)
     assert overlay.texts[0].font_size_px == 44.0
     assert "当前目标：1 号球" in overlay.texts[0].text
+
+
+def test_training_projection_text_uses_local_calibrated_table_axis() -> None:
+    from bas.config import ProjectionConfig
+    from bas.training import SetupTargetZoneGuide
+    from bas.training.overlay import TrainingOverlayBuilder
+
+    angle_deg = -6.5
+    angle_rad = np.deg2rad(angle_deg)
+    matrix = np.asarray(
+        [
+            [np.cos(angle_rad), -np.sin(angle_rad)],
+            [np.sin(angle_rad), np.cos(angle_rad)],
+        ],
+        dtype=np.float32,
+    )
+
+    class _RotatedCalibration:
+        @staticmethod
+        def table_mm_to_projector_px(points):
+            return np.asarray(points, dtype=np.float32) @ matrix.T
+
+        @staticmethod
+        def projector_px_to_table_mm(points):
+            return np.asarray(points, dtype=np.float32) @ matrix
+
+    state = TrainingStateFrame(
+        frame_id=4,
+        ts_cam_ns=4,
+        scenario_id="BEGINNER_1_TO_3_POINTS",
+        scenario_title="三点顺序",
+        phase="setup",
+        message="请按投影区域摆球",
+        setup_target_zones=[
+            SetupTargetZoneGuide(
+                ball=1,
+                polygon_mm=(
+                    (100.0, 100.0),
+                    (200.0, 100.0),
+                    (200.0, 200.0),
+                    (100.0, 200.0),
+                    (100.0, 100.0),
+                ),
+            )
+        ],
+    )
+    overlay = TrainingOverlayBuilder(
+        ProjectionConfig(projector_width=1000, projector_height=500),
+        _RotatedCalibration(),
+    ).build(
+        TracksFrame(frame_id=4, ts_cam_ns=4),
+        state,
+    )
+
+    prompt = next(text for text in overlay.texts if text.text.startswith("请完成摆球"))
+    placement = next(text for text in overlay.texts if text.text == "摆放 1 号球")
+    assert abs(prompt.rotation_deg - angle_deg) <= 0.01
+    assert abs(placement.rotation_deg - angle_deg) <= 0.01
 
 
 def test_training_overlay_projects_cue_ball_goal_region_and_result_color() -> None:

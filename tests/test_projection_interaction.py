@@ -44,6 +44,42 @@ def test_unicode_overlay_text_is_rendered_in_final_projector_pixels() -> None:
     assert np.array_equal(first, second)
 
 
+def test_unicode_overlay_text_supports_table_aligned_rotation() -> None:
+    straight = render_overlay_image(
+        ProjectionOverlay(
+            overlay_id="straight_text",
+            frame_id=1,
+            projector_size=(420, 180),
+            texts=[
+                OverlayText(
+                    position=(210.0, 90.0),
+                    text="摆放 1 号球",
+                    font_size_px=34.0,
+                    rotation_deg=0.0,
+                )
+            ],
+        )
+    )
+    rotated = render_overlay_image(
+        ProjectionOverlay(
+            overlay_id="rotated_text",
+            frame_id=2,
+            projector_size=(420, 180),
+            texts=[
+                OverlayText(
+                    position=(210.0, 90.0),
+                    text="摆放 1 号球",
+                    font_size_px=34.0,
+                    rotation_deg=-8.0,
+                )
+            ],
+        )
+    )
+
+    assert int(np.count_nonzero(rotated)) > 0
+    assert not np.array_equal(straight, rotated)
+
+
 def test_projection_interaction_blends_rgba_sequence_without_geometry_warp(tmp_path: Path) -> None:
     pocket_dir = tmp_path / "Goal" / "pocket0"
     frame = np.zeros((2, 2, 4), dtype=np.uint8)

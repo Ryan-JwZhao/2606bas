@@ -24,10 +24,11 @@ from .rules import (
     get_training_rule_set,
 )
 from .scenarios import get_training_scenario, validate_scenario_setup
+from .setup_guidance import build_setup_target_zone_guides
 
 
 class TrainingSession:
-    version = "numbered_training_session_v4_cue_ball_control"
+    version = "numbered_training_session_v5_setup_zone_guidance"
 
     def __init__(
         self,
@@ -416,6 +417,10 @@ class TrainingSession:
             error_count=0,
             remaining_numbers=list(self.scenario.required_balls),
             mode_hint=self._mode_hint(),
+            setup_target_zones=build_setup_target_zone_guides(
+                self.scenario,
+                self._ball_center_reachable_polygon_mm,
+            ),
         )
 
     def pocket_observer_tracks(self, tracks_frame: TracksFrame) -> TracksFrame:

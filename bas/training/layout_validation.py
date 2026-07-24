@@ -7,6 +7,7 @@ import numpy as np
 from ..schemas import TrackObservation
 from .models import TrainingScenario
 from .numbered_tracker import ball_number_from_track
+from .setup_guidance import target_zone_contains_point
 
 
 READY_MESSAGE = "摆球已通过，可开始训练"
@@ -187,17 +188,11 @@ def _validate_zones(
 ) -> tuple[bool, str]:
     if len(reachable_polygon) < 3:
         return False, "缺少球心可达区域标定，无法校验三点摆球"
-    polygon = np.asarray(reachable_polygon, dtype=np.float32).reshape((-1, 2))
-    low = np.min(polygon, axis=0)
-    span = np.maximum(np.ptp(polygon, axis=0), 1.0)
     for zone in scenario.zones:
         track = numbered[zone.ball]
         if track.center_mm is None:
             return False, f"无法取得 {zone.ball} 号球的球桌坐标"
-        normalized = (np.asarray(track.center_mm, dtype=np.float32) - low) / span
-        delta = np.abs(normalized - np.asarray(zone.center, dtype=np.float32))
-        tolerance = np.maximum(np.asarray(zone.tolerance, dtype=np.float32), 1e-4)
-        if float(np.sum((delta / tolerance) ** 2)) > 1.0:
+        if not target_zone_contains_point(zone, track.center_mm, reachable_polygon):
             return False, f"{zone.ball} 号球未放在对应的推荐区域"
     return True, READY_MESSAGE
 
