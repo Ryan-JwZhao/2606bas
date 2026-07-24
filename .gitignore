@@ -5,15 +5,22 @@ __pycache__/
 .pytest_cache/
 .tmp/
 pytest_tmp*/
+python_tmp*/
 pytest_cache_local/
 .mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
 .coverage
 .coverage.*
 htmlcov/
 *.prof
 *.trace
 *.jsonl
+*.bak
+*.orig
+*.temp
+*~
 
 # Virtual environments
 .venv/
