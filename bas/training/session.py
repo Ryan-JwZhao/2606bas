@@ -98,6 +98,29 @@ class TrainingSession:
         return self._state
 
     def start(self) -> tuple[bool, TrainingStateFrame]:
+        if self.scenario.projection_only:
+            self._attempt += 1
+            self._started_ts_ns = int(self._state.ts_cam_ns)
+            self._state = replace(
+                self._state,
+                phase="running",
+                setup_ready=True,
+                message="出杆检测投影已启动",
+                expected_numbers=[],
+                visible_numbers=[],
+                potted_numbers=[],
+                progress_current=0,
+                progress_total=0,
+                attempt=self._attempt,
+                elapsed_s=0.0,
+                failure_reason=None,
+                error_count=0,
+                remaining_numbers=[],
+                mode_hint="纯投影训练",
+                respot_required_numbers=[],
+                events=[],
+            )
+            return True, self._state
         ready, message = self._validate_setup(self._latest_tracks)
         if not ready:
             self._state = replace(self._state, phase="setup", setup_ready=False, message=message, failure_reason=None)
@@ -198,6 +221,26 @@ class TrainingSession:
         self._latest_tracks = list(tracks_frame.tracks)
         frame_id = int(tracks_frame.frame_id)
         ts_cam_ns = int(tracks_frame.ts_cam_ns)
+        if self.scenario.projection_only:
+            running = self._state.phase == "running"
+            self._state = replace(
+                self._state,
+                frame_id=frame_id,
+                ts_cam_ns=ts_cam_ns,
+                phase="running" if running else "ready",
+                message=(
+                    "出杆检测投影已启动"
+                    if running
+                    else "无需相机，可直接开始投影"
+                ),
+                setup_ready=True,
+                expected_numbers=[],
+                visible_numbers=[],
+                elapsed_s=self._elapsed_s(ts_cam_ns) if running else 0.0,
+                mode_hint="纯投影训练",
+                events=[],
+            )
+            return self._state
         cue_stop = (
             self._cue_stop_observer.update(tracks_frame)
             if self.scenario.require_cue_ball_settle_after_pot and self._state.phase == "running"
@@ -399,6 +442,19 @@ class TrainingSession:
         )
 
     def _setup_state(self, frame_id: int, ts_cam_ns: int, tracks: Sequence[TrackObservation]) -> TrainingStateFrame:
+        if self.scenario.projection_only:
+            return TrainingStateFrame(
+                frame_id=frame_id,
+                ts_cam_ns=ts_cam_ns,
+                scenario_id=self.scenario.scenario_id,
+                scenario_title=self.scenario.display_title,
+                phase="ready",
+                message="无需相机，可直接开始投影",
+                setup_ready=True,
+                progress_total=0,
+                attempt=self._attempt,
+                mode_hint="纯投影训练",
+            )
         ready, message = self._validate_setup(tracks)
         return TrainingStateFrame(
             frame_id=frame_id,
@@ -424,6 +480,8 @@ class TrainingSession:
         )
 
     def pocket_observer_tracks(self, tracks_frame: TracksFrame) -> TracksFrame:
+        if self.scenario.projection_only:
+            return replace(tracks_frame, tracks=[])
         allowed = set(self.scenario.required_balls)
         if self.scenario.require_cue_ball:
             allowed.add(0)
@@ -435,6 +493,8 @@ class TrainingSession:
         return replace(tracks_frame, tracks=tracks)
 
     def _validate_setup(self, tracks: Sequence[TrackObservation]) -> tuple[bool, str]:
+        if self.scenario.projection_only:
+            return True, "无需相机，可直接开始投影"
         if not self._pocket_judge.has_table_context:
             return False, "袋口标定不可用，无法开始训练"
         return validate_scenario_setup(

@@ -247,6 +247,7 @@ class ProjectionOverlay:
     circles: List[OverlayCircle] = field(default_factory=list)
     labels: List[Tuple[Point, str, Tuple[int, int, int]]] = field(default_factory=list)
     texts: List[OverlayText] = field(default_factory=list)
+    suppress_star_formula: bool = False
 
 
 def to_jsonable(value: Any) -> Any:

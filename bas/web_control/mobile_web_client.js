@@ -131,9 +131,10 @@ function renderTraining(state) {
   }
   if (currentScenarioId) elements.trainingScenario.value = currentScenarioId;
   const selected = scenarios.find((scenario) => scenario.scenario_id === elements.trainingScenario.value);
+  const projectionOnly = Boolean(selected?.projection_only);
   elements.trainingDescription.textContent = selected?.setup_instructions || selected?.description || '请选择训练项目';
   const training = state.training;
-  elements.trainingStatus.textContent = training?.message || '请开始采集并按说明摆球';
+  elements.trainingStatus.textContent = training?.message || (projectionOnly ? '无需工业相机，可直接开始投影' : '请开始采集并按说明摆球');
   const current = Number(training?.progress_current || 0);
   const total = Number(training?.progress_total || 0);
   elements.trainingProgress.max = Math.max(1, total);
@@ -145,7 +146,7 @@ function renderTraining(state) {
     `错误 ${Number(training?.error_count || 0)}`,
   ].filter(Boolean).join(' · ');
   elements.trainingProgressText.textContent = `${current}/${total}${details ? ` · ${details}` : ''}${training?.elapsed_s ? ` · ${Number(training.elapsed_s).toFixed(1)}s` : ''}`;
-  elements.trainingStart.textContent = ['passed', 'failed'].includes(training?.phase) ? '重新开始' : '开始验证';
+  elements.trainingStart.textContent = projectionOnly ? '开始投影' : (['passed', 'failed'].includes(training?.phase) ? '重新开始' : '开始验证');
 }
 
 function renderState(state) {

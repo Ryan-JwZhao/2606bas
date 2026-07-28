@@ -314,7 +314,8 @@ def render_overlay_image(overlay: ProjectionOverlay, background: Optional[np.nda
 
 def render_overlay_with_star(overlay: ProjectionOverlay, star_formula: StarFormulaConfig) -> np.ndarray:
     img = render_overlay_image(overlay)
-    draw_star_formula(img, star_formula)
+    if not overlay.suppress_star_formula:
+        draw_star_formula(img, star_formula)
     return img
 
 

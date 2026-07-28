@@ -346,7 +346,34 @@ ADVANCED_SCENARIOS: tuple[TrainingScenario, ...] = (
     ),
 )
 
-SCENARIOS = BEGINNER_SCENARIOS + ENTRY_SCENARIOS + CUE_CONTROL_SCENARIOS + ADVANCED_SCENARIOS
+OTHER_SCENARIOS: tuple[TrainingScenario, ...] = (
+    TrainingScenario(
+        scenario_id="OTHER_STROKE_CHECK",
+        title="出杆检测",
+        description="投影等比例出杆检查工具，用于观察球杆是否沿击球方向稳定直线运动。",
+        setup_instructions=(
+            "无需启动工业相机。打开投影后，将白球放入圆圈，沿粗线方向出杆；"
+            "三条横线中心间距均为 3 英寸。"
+        ),
+        required_balls=(),
+        stages=(),
+        require_cue_ball=False,
+        allow_extra_object_balls=True,
+        group="other",
+        display_number=1,
+        rule_set_id="strict",
+        projection_only=True,
+        projection_renderer_id="stroke_check",
+    ),
+)
+
+SCENARIOS = (
+    BEGINNER_SCENARIOS
+    + ENTRY_SCENARIOS
+    + CUE_CONTROL_SCENARIOS
+    + ADVANCED_SCENARIOS
+    + OTHER_SCENARIOS
+)
 _BY_ID = {scenario.scenario_id: scenario for scenario in SCENARIOS}
 _DEFAULT_SCENARIO = _BY_ID["ordered_line_1_7"]
 

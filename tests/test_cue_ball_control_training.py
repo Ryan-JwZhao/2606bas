@@ -145,7 +145,7 @@ def test_cue_control_catalog_is_third_and_contains_four_projects() -> None:
     groups = list(dict.fromkeys(scenario.group for scenario in scenarios))
     cue_control = [scenario for scenario in scenarios if scenario.group == "cue_control"]
 
-    assert groups == ["beginner", "entry", "cue_control", "advanced"]
+    assert groups == ["beginner", "entry", "cue_control", "advanced", "other"]
     assert [scenario.scenario_id for scenario in cue_control] == [
         "CUE_CONTROL_TWO_BALL_LINK",
         "CUE_CONTROL_STOP_ZONE",

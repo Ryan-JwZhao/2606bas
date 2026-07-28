@@ -16,8 +16,14 @@ from ..user_settings import UserSettings
 try:
     _active_config = UserSettings.load().apply_to_config(AppConfig.load()).resolve_paths()
     prepare_runtime_environment()
+    projection_only_training = (
+        _active_config.training.operating_mode == "training"
+        and _active_config.training.scenario_id == "OTHER_STROKE_CHECK"
+    )
     active_detector_backend = (
-        _active_config.training_detector.backend
+        "disabled"
+        if projection_only_training
+        else _active_config.training_detector.backend
         if _active_config.training.operating_mode == "training"
         else _active_config.detector.backend
     )
@@ -60,7 +66,14 @@ from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_s
 from ..schemas import MatchPhase, OverlayCircle, OverlayLine, ProjectionOverlay, to_jsonable
 from ..state import normalize_state_machine_engine
 from ..state_debug import StateDebugSession, StateDebugSessionResult
-from ..training import RULES_MODE, TRAINING_MODE, get_training_scenario, list_training_scenarios, normalize_operating_mode
+from ..training import (
+    RULES_MODE,
+    TRAINING_MODE,
+    build_projection_drill_overlay,
+    get_training_scenario,
+    list_training_scenarios,
+    normalize_operating_mode,
+)
 from ..utils import unit
 from ..web_control import PocketNoticeTracker, WebControlServer
 from .cue_sector_preview import draw_cue_sector_candidate_box
@@ -2494,6 +2507,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.pipeline.select_training_scenario(scenario.scenario_id)
         self._save_user_settings()
         self._refresh_training_controls()
+        self._refresh_projection()
         self._append_log(f"训练项目已切换为 {scenario.title} ({source})")
         return True
 
@@ -2501,6 +2515,17 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
     def start_training_validation(self) -> bool:
         if not self._set_operating_mode(TRAINING_MODE, source="ui"):
             return False
+        scenario = get_training_scenario(self.config.training.scenario_id)
+        if scenario.projection_only:
+            self._projection_calibration_mode = False
+            self._ensure_projection_window()
+            self._refresh_projection()
+            self.training_status_label.setText(
+                "出杆检测投影已启动\n纯投影训练 · 无需工业相机"
+            )
+            self.training_start_btn.setText("刷新投影")
+            self._append_log("出杆检测投影已启动，无需工业相机")
+            return True
         if self.pipeline is None:
             self.start_pipeline()
         if self.pipeline is None:
@@ -2515,6 +2540,14 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot()
     def reset_training_validation(self) -> bool:
+        scenario = get_training_scenario(self.config.training.scenario_id)
+        if scenario.projection_only:
+            self._refresh_projection()
+            self.training_status_label.setText(
+                "出杆检测投影已恢复初始位置\n纯投影训练 · 无需工业相机"
+            )
+            self._append_log("出杆检测投影已恢复初始位置")
+            return True
         if self.pipeline is None:
             self._refresh_training_controls()
             return False
@@ -2535,6 +2568,14 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
     def _refresh_training_controls(self, state=None) -> None:
         scenario = get_training_scenario(self.config.training.scenario_id)
         self.training_instruction_label.setText(scenario.setup_instructions)
+        if scenario.projection_only:
+            self.training_status_label.setText(
+                "纯投影训练：无需启动工业相机，点击“开始投影”即可显示"
+            )
+            self.training_start_btn.setText("开始投影")
+            self.training_reset_btn.setText("恢复初始位置")
+            return
+        self.training_reset_btn.setText("重置本次")
         training_session = getattr(self.pipeline, "training_session", None) if self.pipeline is not None else None
         if state is None and training_session is not None:
             state = training_session.state
@@ -4318,7 +4359,37 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             return
         if self._projection_calibration_mode:
             return
-        if self.last_output is not None:
+        config = self.__dict__.get("config")
+        scenario = (
+            get_training_scenario(config.training.scenario_id)
+            if config is not None
+            else None
+        )
+        projection_only = (
+            config is not None
+            and scenario is not None
+            and normalize_operating_mode(config.training.operating_mode)
+            == TRAINING_MODE
+            and scenario.projection_only
+        )
+        if projection_only:
+            calibration = (
+                self.pipeline.calibration
+                if self.pipeline is not None
+                else create_calibration_service(config.calibration)
+            )
+            frame_id = (
+                int(self.last_output.frame.frame_id)
+                if self.last_output is not None
+                else 0
+            )
+            overlay = build_projection_drill_overlay(
+                scenario,
+                config.projection,
+                calibration,
+                frame_id=frame_id,
+            )
+        elif self.last_output is not None:
             overlay = self._projection_overlay_for_output(self.last_output)
         else:
             overlay = ProjectionOverlay(
@@ -4346,6 +4417,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             circles=list(base.circles),
             labels=list(base.labels),
             texts=list(base.texts),
+            suppress_star_formula=base.suppress_star_formula,
         )
         self._append_projection_debug_overlay(overlay, out)
         return overlay

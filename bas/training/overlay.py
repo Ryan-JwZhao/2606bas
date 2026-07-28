@@ -9,7 +9,9 @@ from ..config import ProjectionConfig
 from ..schemas import OverlayCircle, OverlayLine, OverlayText, ProjectionOverlay, TracksFrame
 from .models import SetupTargetZoneGuide, TrainingStateFrame
 from .numbered_tracker import ball_number_from_track
+from .projection_drills import build_projection_drill_overlay
 from .prompts import projection_prompt_for_state
+from .scenarios import get_training_scenario
 
 
 class TrainingOverlayBuilder:
@@ -24,6 +26,14 @@ class TrainingOverlayBuilder:
         *,
         route_overlay: ProjectionOverlay | None = None,
     ) -> ProjectionOverlay:
+        scenario = get_training_scenario(state.scenario_id)
+        if scenario.projection_only:
+            return build_projection_drill_overlay(
+                scenario,
+                self.config,
+                self.calibration,
+                frame_id=state.frame_id,
+            )
         overlay = ProjectionOverlay(
             overlay_id=f"training_{state.scenario_id}_{state.frame_id}",
             frame_id=state.frame_id,

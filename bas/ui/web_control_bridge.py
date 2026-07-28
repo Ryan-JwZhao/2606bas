@@ -5,7 +5,13 @@ from PyQt5 import QtCore, QtWidgets
 
 from ..operator_controls import normalize_shot_mode
 from ..schemas import to_jsonable
-from ..training import RULES_MODE, TRAINING_MODE, list_training_scenarios, normalize_operating_mode
+from ..training import (
+    RULES_MODE,
+    TRAINING_MODE,
+    get_training_scenario,
+    list_training_scenarios,
+    normalize_operating_mode,
+)
 from ..web_control.pocket_notice import PocketNoticeTracker
 
 
@@ -107,6 +113,14 @@ class WebControlOperatorMixin:
         if action == "training_start":
             if not self._set_operating_mode(TRAINING_MODE, source="web"):
                 return self._web_result(False, "无法切换到训练模式")
+            scenario = get_training_scenario(self.config.training.scenario_id)
+            if scenario.projection_only:
+                self._projection_calibration_mode = False
+                self._ensure_projection_window()
+                self._refresh_projection()
+                self._refresh_training_controls()
+                self._append_log("出杆检测投影已启动，无需工业相机 (web)")
+                return self._web_result(True, "出杆检测投影已启动")
             if self.pipeline is None:
                 self.start_pipeline()
             if self.pipeline is None:
@@ -116,6 +130,10 @@ class WebControlOperatorMixin:
             self._append_log(training_state.message)
             return self._web_result(ok, training_state.message)
         if action == "training_reset":
+            scenario = get_training_scenario(self.config.training.scenario_id)
+            if scenario.projection_only:
+                self._refresh_projection()
+                return self._web_result(True, "出杆检测投影已恢复初始位置")
             if self.pipeline is None:
                 return self._web_result(False, "请先开始采集")
             training_state = self.pipeline.reset_training()
@@ -287,6 +305,7 @@ class WebControlOperatorMixin:
                 "display_number": scenario.display_number,
                 "description": scenario.description,
                 "setup_instructions": scenario.setup_instructions,
+                "projection_only": scenario.projection_only,
             }
             for scenario in list_training_scenarios()
         ]

@@ -15,6 +15,7 @@ from .models import (
 from .numbered_tracker import NumberedBallTracker, ball_number_from_track, numbered_ball_group, parse_ball_number
 from .overlay import TrainingOverlayBuilder
 from .pocket_judge import TrainingPocketJudge, TrainingPocketJudgment
+from .projection_drills import build_projection_drill_overlay
 from .rules import (
     GUIDED_RULES,
     STRICT_RULES,
@@ -24,6 +25,13 @@ from .rules import (
 )
 from .scenarios import get_training_scenario, list_training_scenarios, validate_scenario_setup
 from .session import TrainingSession
+from .stroke_check import (
+    STROKE_CHECK_RENDERER_ID,
+    STROKE_CHECK_SCENARIO_ID,
+    StrokeCheckDimensions,
+    StrokeCheckOverlayBuilder,
+    build_stroke_check_overlay,
+)
 
 __all__ = [
     "RULES_MODE",
@@ -54,4 +62,10 @@ __all__ = [
     "list_training_scenarios",
     "validate_scenario_setup",
     "TrainingSession",
+    "STROKE_CHECK_RENDERER_ID",
+    "STROKE_CHECK_SCENARIO_ID",
+    "StrokeCheckDimensions",
+    "StrokeCheckOverlayBuilder",
+    "build_stroke_check_overlay",
+    "build_projection_drill_overlay",
 ]

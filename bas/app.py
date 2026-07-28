@@ -117,6 +117,10 @@ class RuntimePipeline:
         total_start = time.perf_counter()
         stage_start = total_start
         self._refresh_geometry_if_needed()
+        projection_only_training = (
+            getattr(self, "operating_mode", RULES_MODE) == TRAINING_MODE
+            and self.training_session.scenario.projection_only
+        )
         frame = self.capture.read()
         capture_ms = (time.perf_counter() - stage_start) * 1000.0
         if frame is None:
@@ -127,16 +131,43 @@ class RuntimePipeline:
             return None
         frame.calib_version = self.calibration.calib_version
         stage_start = time.perf_counter()
-        self._update_table_geometry_for_frame(frame)
-        detection_regions = self._camera_detection_regions(frame)
+        if projection_only_training:
+            detection_regions = None
+        else:
+            self._update_table_geometry_for_frame(frame)
+            detection_regions = self._camera_detection_regions(frame)
         mask = detection_regions.global_polygon if detection_regions is not None else None
         geometry_ms = (time.perf_counter() - stage_start) * 1000.0
         stage_start = time.perf_counter()
-        detections = self.detector.process(frame, mask_polygon=mask, detection_regions=detection_regions)
+        if projection_only_training:
+            detections = DetectionsFrame(
+                frame_id=frame.frame_id,
+                ts_cam_ns=frame.ts_cam_ns,
+                detections=[],
+                detector_version="projection_only",
+                latency_ms=0.0,
+            )
+        else:
+            detections = self.detector.process(
+                frame,
+                mask_polygon=mask,
+                detection_regions=detection_regions,
+            )
         detect_ms = (time.perf_counter() - stage_start) * 1000.0
-        cached = detections.detector_version.endswith(":cached")
+        cached = (
+            not projection_only_training
+            and detections.detector_version.endswith(":cached")
+        )
         stage_start = time.perf_counter()
-        if cached and self._last_tracks is not None:
+        if projection_only_training:
+            tracks = TracksFrame(
+                frame_id=frame.frame_id,
+                ts_cam_ns=frame.ts_cam_ns,
+                tracks=[],
+                tracker_version="projection_only",
+                latency_ms=0.0,
+            )
+        elif cached and self._last_tracks is not None:
             tracks = replace(self._last_tracks, frame_id=frame.frame_id, ts_cam_ns=frame.ts_cam_ns, latency_ms=0.0)
         else:
             tracks = self._enrich_tracks_with_table_units(self.tracker.update(detections))
@@ -149,6 +180,7 @@ class RuntimePipeline:
                 getattr(self, "operating_mode", RULES_MODE) == TRAINING_MODE
                 or bool(getattr(self.state_machine, "supports_pocket_observations", False))
             )
+            and not projection_only_training
             and detection_regions is not None
             and detection_regions.ball_guard_regions
         ):
@@ -178,26 +210,43 @@ class RuntimePipeline:
                 ts_cam_ns=frame.ts_cam_ns,
                 phase=f"TRAINING_{training_state.phase.upper()}",
                 events=list(training_state.events),
-                layout=list(tracks.tracks),
+                layout=[] if projection_only_training else list(tracks.tracks),
                 confidence=1.0 if training_state.setup_ready or training_state.phase in {"running", "passed", "failed"} else 0.5,
                 state_version=self.training_session.version,
             )
-            expected_numbers = [int(number) for number in training_state.expected_numbers]
-            explicit_target = len(expected_numbers) == 1
-            target_groups = {
-                "solid" if 1 <= number <= 7 else "black" if number == 8 else "stripe" if 9 <= number <= 15 else "other"
-                for number in expected_numbers
-            }
-            forced_target_group = next(iter(target_groups)) if len(target_groups) == 1 else None
-            plan = self.planner.plan(
-                state,
-                frame_bgr=frame.image,
-                forced_shot_mode="hook" if explicit_target else "rule",
-                forced_turn_target_group=forced_target_group,
-                forced_target_track_ids=expected_numbers,
-            )
-            route_overlay = self.overlay_builder.from_plan(plan)
-            overlay = self.training_overlay_builder.build(tracks, training_state, route_overlay=route_overlay)
+            if projection_only_training:
+                plan = ShotPlan(
+                    plan_id=f"projection_training_{frame.frame_id}",
+                    frame_id=frame.frame_id,
+                    ts_cam_ns=frame.ts_cam_ns,
+                    planner_version="projection_only_v1",
+                )
+                overlay = self.training_overlay_builder.build(
+                    tracks,
+                    training_state,
+                    route_overlay=None,
+                )
+            else:
+                expected_numbers = [int(number) for number in training_state.expected_numbers]
+                explicit_target = len(expected_numbers) == 1
+                target_groups = {
+                    "solid" if 1 <= number <= 7 else "black" if number == 8 else "stripe" if 9 <= number <= 15 else "other"
+                    for number in expected_numbers
+                }
+                forced_target_group = next(iter(target_groups)) if len(target_groups) == 1 else None
+                plan = self.planner.plan(
+                    state,
+                    frame_bgr=frame.image,
+                    forced_shot_mode="hook" if explicit_target else "rule",
+                    forced_turn_target_group=forced_target_group,
+                    forced_target_track_ids=expected_numbers,
+                )
+                route_overlay = self.overlay_builder.from_plan(plan)
+                overlay = self.training_overlay_builder.build(
+                    tracks,
+                    training_state,
+                    route_overlay=route_overlay,
+                )
         else:
             # Cached detections still need fresh state transitions so sample collection
             # and turn resolution are not throttled down to detector refresh cadence.
@@ -275,7 +324,11 @@ class RuntimePipeline:
         normalized = normalize_operating_mode(mode)
         if normalized == self.operating_mode:
             return normalized
-        self.detector.activate(normalized)
+        if not (
+            normalized == TRAINING_MODE
+            and self.training_session.scenario.projection_only
+        ):
+            self.detector.activate(normalized)
         self.operating_mode = normalized
         self.config.training.operating_mode = normalized
         self.tracker = self.training_tracker if normalized == TRAINING_MODE else self.rule_tracker
@@ -296,6 +349,12 @@ class RuntimePipeline:
 
     def select_training_scenario(self, scenario_id: str) -> TrainingStateFrame:
         state = self.training_session.select_scenario(scenario_id)
+        if (
+            self.operating_mode == TRAINING_MODE
+            and not self.training_session.scenario.projection_only
+            and self.detector.mode != TRAINING_MODE
+        ):
+            self.detector.activate(TRAINING_MODE)
         self.pocket_observer.reset()
         return state
 

@@ -13,6 +13,7 @@ TRAINING_GROUP_TITLES = {
     "entry": ("入门训练模式", "入门训练"),
     "cue_control": ("白球控制训练模式", "白球控制训练"),
     "advanced": ("进阶训练模式", "进阶训练"),
+    "other": ("其它训练", "其它训练"),
 }
 
 
@@ -71,6 +72,8 @@ class TrainingScenario:
     cue_ball_goals: Tuple[CueBallControlGoal, ...] = ()
     require_cue_ball_settle_after_pot: bool = False
     success_message: str | None = None
+    projection_only: bool = False
+    projection_renderer_id: str | None = None
 
     @property
     def ordered_numbers(self) -> Tuple[int, ...]:

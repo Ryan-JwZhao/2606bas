@@ -66,6 +66,12 @@ class _SeekableStubVideoCapture(_StubVideoCapture):
         return self.timeline_state()
 
 
+class _StubOpenCVCapture(_StubVideoCapture):
+    def __init__(self, *args, **kwargs) -> None:
+        self.args = args
+        self.kwargs = kwargs
+
+
 def test_create_capture_service_applies_nori_white_balance_controls(monkeypatch) -> None:
     controller = _StubController()
     nori = _StubNoriCapture(controller)
@@ -89,6 +95,30 @@ def test_create_capture_service_applies_nori_white_balance_controls(monkeypatch)
         ("white_balance_auto", 3, False),
         ("white_balance_value", 3, 5200),
     ]
+
+
+def test_create_capture_service_applies_exposure_to_opencv_fallback(monkeypatch) -> None:
+    source = _StubOpenCVCapture()
+
+    def open_stub(*args, **kwargs):
+        source.args = args
+        source.kwargs = kwargs
+        return source
+
+    monkeypatch.setattr(capture_service, "OpenCVCapture", open_stub)
+    config = CameraConfig(
+        backend="opencv",
+        device_index=2,
+        exposure_auto=False,
+        exposure_level=-8,
+        distortion_correction_enabled=False,
+    )
+
+    service = capture_service.create_capture_service(config)
+
+    assert service.source is source
+    assert source.kwargs["exposure_auto"] is False
+    assert source.kwargs["exposure_level"] == -8
 
 
 def test_capture_frames_are_distortion_corrected_treats_video_backend_as_precorrected(monkeypatch) -> None:

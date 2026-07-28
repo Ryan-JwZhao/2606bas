@@ -201,7 +201,15 @@ def create_capture_service(config: CameraConfig) -> CaptureService:
         if backend == "nori":
             raise RuntimeError("Nori camera requested but no MJPG SDK stream could be opened.")
         LOGGER.info("Nori SDK stream unavailable; falling back to OpenCV capture.")
-    source = OpenCVCapture(config.device_index, config.width, config.height, config.fps, camera_id=config.camera_id)
+    source = OpenCVCapture(
+        config.device_index,
+        config.width,
+        config.height,
+        config.fps,
+        camera_id=config.camera_id,
+        exposure_auto=config.exposure_auto,
+        exposure_level=config.exposure_level,
+    )
     return finish(source)
 
 

@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from .base import CaptureInfo, VideoTimelineState
+from .uvc_controls import UvcExposureState, apply_uvc_exposure
 
 LOGGER = logging.getLogger(__name__)
 
@@ -51,7 +52,16 @@ def probe_cameras(max_index: int = 12) -> List[Tuple[int, int, int, float]]:
 
 
 class OpenCVCapture:
-    def __init__(self, device_index: int, width: int, height: int, fps: int, camera_id: str = "opencv"):
+    def __init__(
+        self,
+        device_index: int,
+        width: int,
+        height: int,
+        fps: int,
+        camera_id: str = "opencv",
+        exposure_auto: Optional[bool] = None,
+        exposure_level: Optional[int] = None,
+    ):
         cap = _open_device(int(device_index))
         if cap is None or not cap.isOpened():
             raise RuntimeError(f"Cannot open OpenCV camera index {device_index}")
@@ -67,6 +77,11 @@ class OpenCVCapture:
             self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         except Exception:
             pass
+        self._exposure_state: UvcExposureState = apply_uvc_exposure(
+            self._cap,
+            exposure_auto=exposure_auto,
+            exposure_level=exposure_level,
+        )
 
     def is_opened(self) -> bool:
         return bool(self._cap is not None and self._cap.isOpened())
@@ -78,6 +93,7 @@ class OpenCVCapture:
             "device_index": self._device_index,
             "fourcc": int(self._cap.get(cv2.CAP_PROP_FOURCC) or 0),
         }
+        meta.update(self._exposure_state.as_metadata())
         return bool(ok), frame if ok else None, meta
 
     def release(self) -> None:
@@ -91,7 +107,10 @@ class OpenCVCapture:
             width=int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH) or self._requested[0]),
             height=int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or self._requested[1]),
             fps=float(self._cap.get(cv2.CAP_PROP_FPS) or self._requested[2]),
-            metadata={"device_index": self._device_index},
+            metadata={
+                "device_index": self._device_index,
+                **self._exposure_state.as_metadata(),
+            },
         )
 
 

@@ -115,11 +115,13 @@ def test_catalog_orders_all_training_groups_without_changing_existing_ids() -> N
     entry = [scenario for scenario in scenarios if scenario.group == "entry"]
     cue_control = [scenario for scenario in scenarios if scenario.group == "cue_control"]
     advanced = [scenario for scenario in scenarios if scenario.group == "advanced"]
+    other = [scenario for scenario in scenarios if scenario.group == "other"]
 
     assert [scenario.display_number for scenario in beginner] == list(range(1, 7))
     assert [scenario.display_number for scenario in entry] == list(range(1, 6))
     assert [scenario.display_number for scenario in cue_control] == list(range(1, 5))
     assert [scenario.display_number for scenario in advanced] == list(range(1, 8))
+    assert [scenario.display_number for scenario in other] == [1]
     assert [scenario.scenario_id for scenario in entry] == [
         "ENTRY_1_1_TO_3_LINE",
         "ENTRY_2_1_TO_3_POINTS",
@@ -145,6 +147,7 @@ def test_catalog_orders_all_training_groups_without_changing_existing_ids() -> N
         *(["entry"] * 5),
         *(["cue_control"] * 4),
         *(["advanced"] * 7),
+        "other",
     ]
 
 
