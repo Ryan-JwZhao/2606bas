@@ -1412,7 +1412,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
     BASE_WIDTH = 1420
     BASE_HEIGHT = 860
     RAW_PHOTO_LABEL = "抓拍原图"
-    RAW_PHOTO_TOOLTIP = "抓取当前无画线校正照片"
+    RAW_PHOTO_TOOLTIP = "抓取当前相机原始画面，不含画线且不做额外畸变校正"
     INSTANT_REPLAY_LABEL = "导出纯净回放"
     INSTANT_REPLAY_TOOLTIP = "导出前 60 秒纯净视频回放"
     RAW_VIDEO_START_LABEL = "开始原始录制"
@@ -3092,18 +3092,18 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot()
     def capture_raw_photo(self) -> None:
-        frame = self._current_recording_frame()
+        frame = self._current_raw_frame()
         if frame is None:
-            self._append_log(self._recording_frame_error())
+            self._append_log("当前没有可用的相机原始画面")
             return
         out_dir = self._capture_output_dir()
         frame_id = self.last_output.frame.frame_id if self.last_output is not None else 0
         path = out_dir / f"no_line_photo_{time.strftime('%Y%m%d_%H%M%S')}_f{frame_id:06d}.jpg"
         ok = cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
         if not ok:
-            self._append_log(f"无画线照片保存失败: {path}")
+            self._append_log(f"相机原始照片保存失败: {path}")
             return
-        self._append_log(f"无画线照片已保存: {path}")
+        self._append_log(f"相机原始照片已保存: {path}")
 
     @QtCore.pyqtSlot()
     def trigger_instant_replay_export(self) -> None:

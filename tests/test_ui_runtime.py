@@ -265,6 +265,30 @@ def test_operator_window_scene_capture_buttons_keep_tooltips_after_shortening_la
     app.processEvents()
 
 
+def test_capture_raw_photo_saves_the_unmodified_camera_frame(monkeypatch, tmp_path) -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    raw_frame = np.full((6, 8, 3), 17, dtype=np.uint8)
+    recording_frame = np.full((6, 8, 3), 99, dtype=np.uint8)
+    saved_frames: list[np.ndarray] = []
+
+    window.last_output = SimpleNamespace(frame=SimpleNamespace(frame_id=42))
+    window._current_raw_frame = lambda: raw_frame
+    window._current_recording_frame = lambda: recording_frame
+    window._capture_output_dir = lambda: tmp_path
+    window._append_log = lambda _message: None
+    monkeypatch.setattr(
+        main_window.cv2,
+        "imwrite",
+        lambda _path, frame, _params: saved_frames.append(frame.copy()) or True,
+    )
+
+    main_window.OperatorWindow.capture_raw_photo(window)
+
+    assert len(saved_frames) == 1
+    assert np.array_equal(saved_frames[0], raw_frame)
+    assert np.array_equal(saved_frames[0], recording_frame) is False
+
+
 def test_operator_window_exposes_explicit_review_controls() -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())
