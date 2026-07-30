@@ -45,6 +45,7 @@ class CalibrationService:
     projection: ProjectionCalibration
     table: TableModel
     frame_undistorted: bool = False
+    distortion_correction_enabled: bool = True
     projection_mode: str = "legacy"
     ball_compensation_model: BallCompensationModel = field(default_factory=BallCompensationModel)
     ball_center_compensation: BallCenterCompensation = field(default_factory=BallCenterCompensation)
@@ -58,10 +59,17 @@ class CalibrationService:
         return str(self.projection_mode).strip().lower() == "engineered"
 
     def undistort_frame(self, frame: np.ndarray) -> np.ndarray:
+        if not self.distortion_correction_enabled:
+            return frame
         return self.camera.undistort(frame)
 
     def camera_px_to_projector_px(self, points: np.ndarray) -> np.ndarray:
-        undistorted = self.camera.undistort_points(points) if self.camera.is_valid and not self.frame_undistorted else ensure_numpy_points(points)
+        should_undistort_points = (
+            self.distortion_correction_enabled
+            and self.camera.is_valid
+            and not self.frame_undistorted
+        )
+        undistorted = self.camera.undistort_points(points) if should_undistort_points else ensure_numpy_points(points)
         return self.projection.camera_to_projector_points(undistorted)
 
     def compensate_ball_image_points(self, points: np.ndarray) -> np.ndarray:
@@ -216,9 +224,19 @@ class CalibrationService:
         return self.compensate_ball_image_points(pts)
 
 
-def create_calibration_service(config: CalibrationConfig, frame_undistorted: bool = False) -> CalibrationService:
+def create_calibration_service(
+    config: CalibrationConfig,
+    frame_undistorted: bool = False,
+    *,
+    distortion_correction_enabled: bool,
+) -> CalibrationService:
     config.sync_projection_file_alias()
-    camera = CameraCalibration.load_opencv_yaml(config.camera_file)
+    correction_enabled = bool(distortion_correction_enabled)
+    camera = (
+        CameraCalibration.load_opencv_yaml(config.camera_file)
+        if correction_enabled
+        else CameraCalibration(metadata={"disabled": True})
+    )
     projection = ProjectionCalibration.load_json(config.active_projection_file())
     projection_mode = config.normalized_projection_mode()
     ball_compensation_model = BallCompensationModel.load_json(
@@ -239,6 +257,7 @@ def create_calibration_service(config: CalibrationConfig, frame_undistorted: boo
         projection=projection,
         table=table,
         frame_undistorted=bool(frame_undistorted),
+        distortion_correction_enabled=correction_enabled,
         projection_mode=projection_mode,
         ball_compensation_model=ball_compensation_model,
         ball_center_compensation=BallCenterCompensation(

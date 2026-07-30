@@ -241,6 +241,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             calibration = create_calibration_service(
                 self.operator.config.calibration,
                 frame_undistorted=bool(capture.frame_distortion_corrected),
+                distortion_correction_enabled=True,
             )
             if not calibration.projection.is_valid:
                 plane_path = self.operator.config.calibration.engineered_plane_projection_file or self.operator.config.calibration.active_projection_file()

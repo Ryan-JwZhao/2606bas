@@ -289,6 +289,60 @@ def test_capture_raw_photo_saves_the_unmodified_camera_frame(monkeypatch, tmp_pa
     assert np.array_equal(saved_frames[0], recording_frame) is False
 
 
+def test_recording_base_frame_uses_the_authoritative_pipeline_frame_for_both_switch_states() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    raw_frame = np.full((6, 8, 3), 23, dtype=np.uint8)
+    window.config = SimpleNamespace(camera=SimpleNamespace(distortion_correction_enabled=False))
+    window.pipeline = SimpleNamespace(capture=SimpleNamespace(frame_distortion_corrected=False))
+    out = SimpleNamespace(frame=SimpleNamespace(image=raw_frame))
+
+    disabled_frame = main_window.OperatorWindow._recording_base_frame(window, out)
+    window.config.camera.distortion_correction_enabled = True
+    enabled_frame = main_window.OperatorWindow._recording_base_frame(window, out)
+
+    assert disabled_frame is raw_frame
+    assert enabled_frame is raw_frame
+
+
+def test_raw_and_route_video_recorders_share_the_authoritative_pipeline_frame() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    base_frame = np.full((6, 8, 3), 31, dtype=np.uint8)
+    route_frame = np.full((6, 8, 3), 47, dtype=np.uint8)
+    writes: list[tuple[bool, np.ndarray]] = []
+    window.config = SimpleNamespace(instant_replay=SimpleNamespace(enabled=False))
+    window._recording_fps_estimator = SimpleNamespace(observe=lambda _ts: None)
+    window._recording_base_frame = lambda _out: base_frame
+    window._instant_replay_start_failed = False
+    window._raw_video_recorder = object()
+    window._route_video_recorder = object()
+    window._write_video_frame = lambda *, route, frame: writes.append((route, frame))
+    window._route_capture_frame = lambda _out, *, base_frame: route_frame
+    window._flush_instant_replay_events = lambda: None
+    out = SimpleNamespace(frame=SimpleNamespace(ts_cam_ns=123, image=base_frame))
+
+    main_window.OperatorWindow._record_media_frames(window, out)
+
+    assert writes == [(False, base_frame), (True, route_frame)]
+
+
+def test_runtime_and_calibration_workflow_use_explicit_correction_policies(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_create(_config, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(main_window, "create_calibration_service", fake_create)
+    config = AppConfig()
+    config.camera.distortion_correction_enabled = False
+
+    main_window._create_runtime_calibration_service(config)
+    main_window._create_calibration_workflow_service(config)
+
+    assert calls[0]["distortion_correction_enabled"] is False
+    assert calls[1]["distortion_correction_enabled"] is True
+
+
 def test_operator_window_exposes_explicit_review_controls() -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())

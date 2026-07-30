@@ -15,6 +15,22 @@ from bas.calibration.verification import format_holdout_report, verify_holdout_s
 from bas.schemas import TableModel
 
 
+def test_create_calibration_service_does_not_load_camera_file_when_correction_is_disabled(monkeypatch) -> None:
+    def unexpected_load(_path):
+        raise AssertionError("disabled correction must not load camera calibration")
+
+    monkeypatch.setattr(CameraCalibration, "load_opencv_yaml", unexpected_load)
+
+    service = create_calibration_service(
+        CalibrationConfig(camera_file="must_not_load.yaml"),
+        distortion_correction_enabled=False,
+    )
+
+    frame = np.ones((4, 6, 3), dtype=np.uint8)
+    assert service.camera.is_valid is False
+    assert service.undistort_frame(frame) is frame
+
+
 def test_projection_residual_maps_control_points_exactly() -> None:
     cam = np.array([[0, 0], [10, 0], [10, 10], [0, 10], [5, 5], [8, 3], [2, 7], [6, 9], [3, 4], [9, 8], [1, 3], [7, 1]], dtype=np.float64)
     proj = cam * 2.0 + np.array([100.0, 50.0])
@@ -256,7 +272,7 @@ def test_engineered_calibration_service_loads_plane_and_ball_compensation(tmp_pa
         ball_diameter_mm=57.15,
     )
 
-    service = create_calibration_service(cfg)
+    service = create_calibration_service(cfg, distortion_correction_enabled=True)
     out = service.ball_camera_px_to_table_mm(np.array([[100.0, 200.0]], dtype=np.float32))
 
     assert service.projection_mode == "engineered"

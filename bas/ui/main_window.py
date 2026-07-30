@@ -58,7 +58,6 @@ from ..projection.interaction import ProjectionInteractionController
 from ..projection.overlay import projection_route_stroke_style
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
-from ..recording_frame import RecordingFrameCorrector
 from ..recording_fps import RecordingFpsEstimator
 from ..remote_control import RemoteCommand, RemoteCommandQueue
 from ..route_freeze import MotionRouteFreezeController
@@ -130,6 +129,29 @@ def _configured_frame_undistorted(config: AppConfig, pipeline: Optional[RuntimeP
     if pipeline is not None:
         return bool(getattr(pipeline.capture, "frame_distortion_corrected", False))
     return bool(capture_frames_are_distortion_corrected(config.camera))
+
+
+def _create_runtime_calibration_service(
+    config: AppConfig,
+    pipeline: Optional[RuntimePipeline] = None,
+):
+    return create_calibration_service(
+        config.calibration,
+        frame_undistorted=_configured_frame_undistorted(config, pipeline),
+        distortion_correction_enabled=bool(config.camera.distortion_correction_enabled),
+    )
+
+
+def _create_calibration_workflow_service(
+    config: AppConfig,
+    pipeline: Optional[RuntimePipeline] = None,
+):
+    """Load camera calibration for an explicitly requested calibration workflow."""
+    return create_calibration_service(
+        config.calibration,
+        frame_undistorted=_configured_frame_undistorted(config, pipeline),
+        distortion_correction_enabled=True,
+    )
 
 
 class SettingsDialog(QtWidgets.QDialog):
@@ -1135,9 +1157,9 @@ class ProjectorCalibrationDialog(QtWidgets.QDialog):
         self.operator.config.calibration.sync_projection_file_alias()
         self.operator._save_user_settings()
         self.projection_file_edit.setText(str(path))
-        self.calibration = create_calibration_service(
-            self.operator.config.calibration,
-            frame_undistorted=_configured_frame_undistorted(self.operator.config, self.operator.pipeline),
+        self.calibration = _create_calibration_workflow_service(
+            self.operator.config,
+            self.operator.pipeline,
         )
         self.result.setText(self._summary_text())
         self.operator._append_log(f"已切换投影校正配置文件: {path}")
@@ -1275,10 +1297,7 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
                 self.operator.config.geometry.inline_path,
                 self.operator.config.geometry.pocket_path,
             )
-            calibration = create_calibration_service(
-                self.operator.config.calibration,
-                frame_undistorted=_configured_frame_undistorted(self.operator.config),
-            )
+            calibration = _create_calibration_workflow_service(self.operator.config)
             capture = create_capture_service(self.operator.config.camera)
             patterns = build_linked_patterns(
                 geometry,
@@ -1389,9 +1408,9 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
 
     @QtCore.pyqtSlot()
     def show_result(self, calibration=None) -> None:
-        calibration = calibration or create_calibration_service(
-            self.operator.config.calibration,
-            frame_undistorted=_configured_frame_undistorted(self.operator.config, self.operator.pipeline),
+        calibration = calibration or _create_calibration_workflow_service(
+            self.operator.config,
+            self.operator.pipeline,
         )
         self.operator.show_projector_calibration_result(calibration)
         self.operator.show_projector_residual_overlay(calibration)
@@ -1402,9 +1421,9 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
         self.operator.config.calibration.sync_projection_file_alias()
         self.operator._sync_controls_from_config()
         self.operator._save_user_settings()
-        return create_calibration_service(
-            self.operator.config.calibration,
-            frame_undistorted=_configured_frame_undistorted(self.operator.config, self.operator.pipeline),
+        return _create_calibration_workflow_service(
+            self.operator.config,
+            self.operator.pipeline,
         )
 
 
@@ -1417,10 +1436,10 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
     INSTANT_REPLAY_TOOLTIP = "导出前 60 秒纯净视频回放"
     RAW_VIDEO_START_LABEL = "开始原始录制"
     RAW_VIDEO_STOP_LABEL = "停止原始录制"
-    RAW_VIDEO_TOOLTIP = "录制无画线视频"
+    RAW_VIDEO_TOOLTIP = "录制无画线视频，画面统一遵循工业相机畸变校正开关"
     ROUTE_VIDEO_START_LABEL = "开始路线录制"
     ROUTE_VIDEO_STOP_LABEL = "停止路线录制"
-    ROUTE_VIDEO_TOOLTIP = "录制进洞路线画线视频"
+    ROUTE_VIDEO_TOOLTIP = "录制进洞路线画线视频，底图统一遵循工业相机畸变校正开关"
 
     def __init__(self, config: AppConfig):
         super().__init__()
@@ -1466,7 +1485,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         )
         self.control_state = RuntimeControlState()
         self._route_freeze = MotionRouteFreezeController(self.config.planner)
-        self._recording_frame_corrector = RecordingFrameCorrector(self._recording_calibration_paths())
         self._recording_fps_estimator = RecordingFpsEstimator()
         self._pending_turn_target_group: Optional[str] = None
         self._remote_command_queue = RemoteCommandQueue()
@@ -2352,10 +2370,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._append_log("鐞冩潌鐭╁舰鍊欓€夋宸插紑鍚?" if checked else "鐞冩潌鐭╁舰鍊欓€夋宸插叧闂?")
 
     def _apply_projection_tuning_preview(self) -> None:
-        calibration = create_calibration_service(
-            self.config.calibration,
-            frame_undistorted=_configured_frame_undistorted(self.config, self.pipeline),
-        )
+        calibration = _create_runtime_calibration_service(self.config, self.pipeline)
         if self.pipeline is not None:
             self.pipeline.calibration = calibration
             self.pipeline.planner.calibration = calibration
@@ -3169,32 +3184,12 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             if "已导出" in str(message):
                 self._queue_projection_notice("精彩时刻已导出")
 
-    def _recording_calibration_paths(self) -> tuple[str, ...]:
-        paths: list[str] = []
-        for raw in (self.config.camera.distortion_correction_file, self.config.calibration.camera_file):
-            value = str(raw or "").strip()
-            if value and value not in paths:
-                paths.append(value)
-        return tuple(paths)
-
-    def _refresh_recording_frame_corrector(self) -> None:
-        self._recording_frame_corrector.update_calibration_paths(self._recording_calibration_paths())
-        self._recording_frame_corrector.invalidate()
-
     def _recording_base_frame(self, out: PipelineOutput) -> Optional[np.ndarray]:
         frame = out.frame.image
-        if frame is None:
-            return None
-        already_corrected = bool(self.pipeline is not None and getattr(self.pipeline.capture, "frame_distortion_corrected", False))
-        return self._recording_frame_corrector.corrected_frame(frame, already_corrected=already_corrected)
+        return frame if frame is not None else None
 
     def _recording_frame_error(self) -> str:
-        if self.last_output is None or self.last_output.frame.image is None:
-            return "当前没有可用于录制的画面"
-        already_corrected = bool(self.pipeline is not None and getattr(self.pipeline.capture, "frame_distortion_corrected", False))
-        if already_corrected or self._recording_frame_corrector.has_usable_calibration():
-            return "当前没有可用于录制的 OpenCV 校正画面"
-        return "录制需要 OpenCV 畸变校正画面，但当前未加载有效的标定文件"
+        return "当前没有可用于录制的画面"
 
     def _observed_recording_fps(self, *, require_ready: bool) -> Optional[float]:
         fps = self._recording_fps_estimator.estimate(require_ready=require_ready)
@@ -3824,10 +3819,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
 
     def show_projector_calibration_result(self, calibration=None) -> None:
         self.ensure_projection_window_for_operator()
-        calibration = calibration or create_calibration_service(
-            self.config.calibration,
-            frame_undistorted=_configured_frame_undistorted(self.config, self.pipeline),
-        )
+        calibration = calibration or _create_calibration_workflow_service(self.config, self.pipeline)
         overlay = self._projector_calibration_overlay(calibration)
         if self.projection_window is not None:
             self.projection_window.set_overlay(overlay)
@@ -3843,10 +3835,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
 
     def show_projector_residual_overlay(self, calibration=None) -> None:
         self.ensure_projection_window_for_operator()
-        calibration = calibration or create_calibration_service(
-            self.config.calibration,
-            frame_undistorted=_configured_frame_undistorted(self.config, self.pipeline),
-        )
+        calibration = calibration or _create_calibration_workflow_service(self.config, self.pipeline)
         overlay = self._projector_calibration_overlay(calibration)
         controls = np.asarray(calibration.projection.residual_field.control_points_cam, dtype=np.float32).reshape((-1, 2))
         offsets = np.asarray(calibration.projection.residual_field.offsets_proj, dtype=np.float32).reshape((-1, 2))
@@ -3991,10 +3980,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._save_user_settings()
         self._append_log("正在初始化图形图像模块")
         try:
-            calibration = create_calibration_service(
-                self.config.calibration,
-                frame_undistorted=_configured_frame_undistorted(self.config, self.pipeline),
-            )
+            calibration = _create_runtime_calibration_service(self.config, self.pipeline)
             geometry = TableGeometryLoader.load_optional(
                 self.config.geometry.outline_path,
                 self.config.geometry.inline_path,
@@ -4029,10 +4015,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._save_user_settings()
         self._append_log("正在打开投影仪校正向导")
         try:
-            calibration = create_calibration_service(
-                self.config.calibration,
-                frame_undistorted=_configured_frame_undistorted(self.config, self.pipeline),
-            )
+            calibration = _create_calibration_workflow_service(self.config, self.pipeline)
             if calibration.projection.is_valid:
                 self.show_projector_calibration_result(calibration)
             else:
@@ -4230,7 +4213,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.pipeline = pipeline
         if self._manual_web_target_id is not None:
             self.pipeline.planner.set_manual_target(self._manual_web_target_id)
-        self._refresh_recording_frame_corrector()
         self._recording_fps_estimator.reset()
         self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
         self._instant_replay_start_failed = False
@@ -4295,7 +4277,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         dialog.apply_to_config(self.config)
         self._route_freeze.reset()
         self.star_formula = dialog.star_formula_config()
-        self._refresh_recording_frame_corrector()
         self._sync_controls_from_config()
         self._save_user_settings()
         pipeline_changed = pipeline_signature_before != self._pipeline_restart_signature()
@@ -4393,7 +4374,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             calibration = (
                 self.pipeline.calibration
                 if self.pipeline is not None
-                else create_calibration_service(config.calibration)
+                else _create_runtime_calibration_service(config)
             )
             frame_id = (
                 int(self.last_output.frame.frame_id)

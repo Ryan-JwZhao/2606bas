@@ -68,6 +68,7 @@ class RuntimePipeline:
         self.calibration: CalibrationService = create_calibration_service(
             config.calibration,
             frame_undistorted=self.capture.frame_distortion_corrected,
+            distortion_correction_enabled=config.camera.distortion_correction_enabled,
         )
         self.geometry_reloader = RuntimeGeometryReloader()
         self.geometry, _ = self.geometry_reloader.refresh(

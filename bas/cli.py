@@ -113,6 +113,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             service = create_calibration_service(
                 cfg.calibration,
                 frame_undistorted=capture_frames_are_distortion_corrected(cfg.camera),
+                distortion_correction_enabled=True,
             )
             summary = {
                 "calib_version": service.calib_version,
@@ -142,6 +143,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             service = create_calibration_service(
                 cfg.calibration,
                 frame_undistorted=capture_frames_are_distortion_corrected(cfg.camera),
+                distortion_correction_enabled=True,
             )
             report = verify_holdout_file(args.holdout_json, service)
             print(format_holdout_report(report))

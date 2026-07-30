@@ -125,9 +125,6 @@ class DistortionCorrectedCapture:
 
 
 def _distortion_correction_state(config: CameraConfig) -> _DistortionCorrectionState:
-    backend = str(config.backend or "auto").lower()
-    if backend == "video":
-        return _DistortionCorrectionState(frames_are_corrected=True, should_wrap_source=False)
     if not bool(config.distortion_correction_enabled):
         return _DistortionCorrectionState(frames_are_corrected=False, should_wrap_source=False)
     calibration = CameraCalibration.load_opencv_yaml(config.distortion_correction_file)
@@ -158,8 +155,6 @@ def create_capture_service(config: CameraConfig) -> CaptureService:
         state = _distortion_correction_state(config)
         if state.should_wrap_source and state.calibration is not None:
             src = DistortionCorrectedCapture(src, state.calibration)
-        elif backend == "video" and bool(config.distortion_correction_enabled):
-            LOGGER.info("Skipping OpenCV distortion correction for video input; frames are treated as pre-corrected.")
         elif bool(config.distortion_correction_enabled):
             LOGGER.warning(
                 "Camera distortion correction requested but calibration is invalid or missing: %s",

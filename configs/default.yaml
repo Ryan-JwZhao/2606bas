@@ -13,7 +13,7 @@ camera:
   exposure_level: -5
   white_balance_auto: true
   white_balance_value: 4600
-  distortion_correction_enabled: true  # video backend 会跳过这里的二次 OpenCV 去畸变
+  distortion_correction_enabled: true  # 所有实时/视频输入及其下游输出统一遵循此开关
   distortion_correction_file: C:/CodeProject/2606BAS/calib/intrinsics_opencv.yaml
 
 detector:
