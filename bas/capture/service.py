@@ -224,10 +224,21 @@ def create_capture_service(config: CameraConfig) -> CaptureService:
     return finish(source)
 
 
-def probe_cameras(max_index: int = 12, nori_sdk_root: str | None = None) -> List[Tuple[str, int, int, int, float]]:
+def probe_cameras(
+    max_index: int = 12,
+    nori_sdk_root: str | None = None,
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 30,
+) -> List[Tuple[str, int, int, int, float]]:
     rows: List[Tuple[str, int, int, int, float]] = []
-    for idx, width, height, fps in _probe_opencv(max_index=max_index):
-        rows.append(("opencv", idx, width, height, fps))
+    for idx, actual_width, actual_height, actual_fps in _probe_opencv(
+        max_index=max_index,
+        width=width,
+        height=height,
+        fps=fps,
+    ):
+        rows.append(("opencv_mjpg", idx, actual_width, actual_height, actual_fps))
     try:
         controller = NoriProtocolController(sdk_root=nori_sdk_root)
         for dev in controller.list_devices(max_scan=max_index):

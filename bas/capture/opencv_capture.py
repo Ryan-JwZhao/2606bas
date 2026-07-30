@@ -8,10 +8,12 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from ..utils import fourcc_to_str
 from .base import CaptureInfo, VideoTimelineState
 from .uvc_controls import UvcExposureState, apply_uvc_exposure
 
 LOGGER = logging.getLogger(__name__)
+MJPG_FOURCC = cv2.VideoWriter_fourcc(*"MJPG")
 
 
 def camera_api_candidates() -> List[int]:
@@ -24,29 +26,73 @@ def camera_api_candidates() -> List[int]:
     return [cv2.CAP_ANY]
 
 
-def _open_device(index: int) -> Optional[cv2.VideoCapture]:
+def mjpg_open_params(width: int, height: int, fps: int) -> List[int]:
+    """Build one atomic OpenCV camera negotiation request.
+
+    Some Windows UVC drivers lock the media subtype when the device is opened.
+    Setting FOURCC afterwards can return success while the stream remains YUY2.
+    """
+    return [
+        cv2.CAP_PROP_FOURCC,
+        MJPG_FOURCC,
+        cv2.CAP_PROP_FRAME_WIDTH,
+        int(width),
+        cv2.CAP_PROP_FRAME_HEIGHT,
+        int(height),
+        cv2.CAP_PROP_FPS,
+        int(fps),
+    ]
+
+
+def _is_mjpg_capture(cap: cv2.VideoCapture) -> bool:
+    return fourcc_to_str(cap.get(cv2.CAP_PROP_FOURCC)).upper() == "MJPG"
+
+
+def _open_device(index: int, width: int = 1920, height: int = 1080, fps: int = 30) -> Optional[cv2.VideoCapture]:
+    params = mjpg_open_params(width, height, fps)
     for api in camera_api_candidates():
-        cap = cv2.VideoCapture(index, api) if api != cv2.CAP_ANY else cv2.VideoCapture(index)
-        if cap.isOpened():
+        try:
+            cap = cv2.VideoCapture(int(index), api, params)
+        except Exception as exc:
+            LOGGER.warning(
+                "Camera index %s via API %s could not negotiate MJPG: %s",
+                index,
+                api,
+                exc,
+            )
+            continue
+        if cap.isOpened() and _is_mjpg_capture(cap):
             return cap
+        if cap.isOpened():
+            LOGGER.warning(
+                "Rejected camera index %s via API %s: negotiated FOURCC=%s instead of MJPG.",
+                index,
+                api,
+                fourcc_to_str(cap.get(cv2.CAP_PROP_FOURCC)),
+            )
         cap.release()
     return None
 
 
-def probe_cameras(max_index: int = 12) -> List[Tuple[int, int, int, float]]:
+def probe_cameras(
+    max_index: int = 12,
+    width: int = 1920,
+    height: int = 1080,
+    fps: int = 30,
+) -> List[Tuple[int, int, int, float]]:
     found: List[Tuple[int, int, int, float]] = []
     for idx in range(max_index):
-        cap = _open_device(idx)
+        cap = _open_device(idx, width=width, height=height, fps=fps)
         if cap is None:
             continue
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-        if width <= 0 or height <= 0:
+        actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or width)
+        actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or height)
+        actual_fps = float(cap.get(cv2.CAP_PROP_FPS) or fps)
+        if actual_width <= 0 or actual_height <= 0:
             ok, frame = cap.read()
             if ok and frame is not None:
-                height, width = frame.shape[:2]
-        found.append((idx, width, height, fps))
+                actual_height, actual_width = frame.shape[:2]
+        found.append((idx, actual_width, actual_height, actual_fps))
         cap.release()
     return found
 
@@ -62,17 +108,16 @@ class OpenCVCapture:
         exposure_auto: Optional[bool] = None,
         exposure_level: Optional[int] = None,
     ):
-        cap = _open_device(int(device_index))
+        cap = _open_device(int(device_index), width=int(width), height=int(height), fps=int(fps))
         if cap is None or not cap.isOpened():
-            raise RuntimeError(f"Cannot open OpenCV camera index {device_index}")
+            raise RuntimeError(
+                f"Cannot open OpenCV camera index {device_index} as MJPG "
+                f"at {int(width)}x{int(height)}@{int(fps)}"
+            )
         self._cap = cap
         self._camera_id = camera_id
         self._device_index = int(device_index)
         self._requested = (int(width), int(height), int(fps))
-        self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, int(width))
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, int(height))
-        self._cap.set(cv2.CAP_PROP_FPS, int(fps))
         try:
             self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         except Exception:
@@ -82,6 +127,12 @@ class OpenCVCapture:
             exposure_auto=exposure_auto,
             exposure_level=exposure_level,
         )
+        if not _is_mjpg_capture(self._cap):
+            negotiated = fourcc_to_str(self._cap.get(cv2.CAP_PROP_FOURCC))
+            self._cap.release()
+            raise RuntimeError(
+                f"OpenCV camera index {device_index} changed to non-MJPG FOURCC={negotiated}"
+            )
 
     def is_opened(self) -> bool:
         return bool(self._cap is not None and self._cap.isOpened())
@@ -92,6 +143,7 @@ class OpenCVCapture:
             "backend": "opencv",
             "device_index": self._device_index,
             "fourcc": int(self._cap.get(cv2.CAP_PROP_FOURCC) or 0),
+            "media_type": "MJPG",
         }
         meta.update(self._exposure_state.as_metadata())
         return bool(ok), frame if ok else None, meta
@@ -109,6 +161,8 @@ class OpenCVCapture:
             fps=float(self._cap.get(cv2.CAP_PROP_FPS) or self._requested[2]),
             metadata={
                 "device_index": self._device_index,
+                "media_type": "MJPG",
+                "fourcc": int(self._cap.get(cv2.CAP_PROP_FOURCC) or 0),
                 **self._exposure_state.as_metadata(),
             },
         )

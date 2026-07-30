@@ -78,7 +78,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             from .logging_config import configure_logging
 
             configure_logging(cfg.logging.directory, cfg.logging.level)
-            rows = probe_cameras(max_index=args.max_index, nori_sdk_root=cfg.camera.nori_sdk_root)
+            rows = probe_cameras(
+                max_index=args.max_index,
+                nori_sdk_root=cfg.camera.nori_sdk_root,
+                width=cfg.camera.width,
+                height=cfg.camera.height,
+                fps=cfg.camera.fps,
+            )
             if not rows:
                 print("No cameras found.")
                 return 0

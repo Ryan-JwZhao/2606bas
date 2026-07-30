@@ -66,6 +66,25 @@ Start_BAS.cmd
 .\.venv\Scripts\python.exe -m bas probe-cameras
 ```
 
+### 摄像头采集格式与低帧率排查
+
+实时摄像头采集只允许使用 `MJPG`。OpenCV/UVC 模式会在打开设备时一次性协商
+FOURCC、分辨率和帧率，并在打开后读回 FOURCC；如果驱动返回 `YUY2`、`YUV2`
+或其它格式，该后端会被拒绝，不会静默降级继续采集。Decxin/Nori SDK 模式同样
+只枚举和打开 MJPG 视频格式。
+
+刷新摄像头或运行以下命令时，OpenCV 设备会以当前配置的分辨率和帧率进行 MJPG
+探测，结果中的 `opencv_mjpg` 或 `nori_mjpg` 表示已通过格式校验：
+
+```powershell
+.\.venv\Scripts\python.exe -m bas probe-cameras
+```
+
+如果 1920×1080 实时画面只有约 2 FPS，优先检查运行日志中的采集信息。
+`metadata` 应包含 `media_type: MJPG` 和 MJPG FOURCC 数值 `1196444237`。
+若设备不支持所选分辨率/帧率的 MJPG，程序会明确报错；此时请选择摄像头实际
+支持的 MJPG 分辨率或帧率，不要改回 YUY2/YUV2。
+
 ### 更换 UVC 工业相机与曝光控制
 
 当 Decxin/Nori SDK 无法识别新厂商相机，但 `probe-cameras` 能列出

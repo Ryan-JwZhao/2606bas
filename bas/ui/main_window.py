@@ -4327,7 +4327,13 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.nori_device_combo.clear()
         self.nori_device_combo.addItem("默认", None)
         try:
-            rows = probe_cameras(max_index=12, nori_sdk_root=self.config.camera.nori_sdk_root)
+            rows = probe_cameras(
+                max_index=12,
+                nori_sdk_root=self.config.camera.nori_sdk_root,
+                width=self.config.camera.width,
+                height=self.config.camera.height,
+                fps=self.config.camera.fps,
+            )
         except Exception as exc:
             self._append_log(f"探测失败: {exc}")
             return
