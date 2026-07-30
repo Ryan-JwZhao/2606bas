@@ -248,6 +248,52 @@ def test_refresh_preview_pixmap_scales_small_frame_to_preview_label() -> None:
     app.processEvents()
 
 
+def test_preview_zoom_controls_work_for_shared_live_and_video_viewport() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    window.resize(1920, 1080)
+    window.show()
+    app.processEvents()
+
+    fitted_size = window.preview_label.size()
+    assert window.preview_zoom_label.text() == "100%"
+    assert window.preview_fit_btn.isEnabled() is False
+
+    window.preview_zoom_in_btn.click()
+    app.processEvents()
+
+    assert window.preview_zoom_label.text() == "125%"
+    assert window.preview_label.width() > fitted_size.width()
+    assert window.preview_label.height() > fitted_size.height()
+    assert window.preview_fit_btn.isEnabled() is True
+
+    window.backend_combo.setCurrentText("video")
+    window.preview_zoom_out_btn.click()
+    window.preview_zoom_out_btn.click()
+    app.processEvents()
+
+    assert window.preview_zoom_label.text() == "80%"
+    assert window.preview_label.width() < fitted_size.width()
+    assert window.preview_label.height() < fitted_size.height()
+
+    window.preview_fit_btn.click()
+    app.processEvents()
+
+    assert window.preview_zoom_label.text() == "100%"
+    assert (
+        abs(window.preview_label.width() - window.preview_frame.width()) <= 2
+        or abs(window.preview_label.height() - window.preview_frame.height()) <= 2
+    )
+    assert abs(
+        (window.preview_label.width() / max(1, window.preview_label.height()))
+        - (16.0 / 9.0)
+    ) < 0.02
+    assert window.preview_fit_btn.isEnabled() is False
+
+    window.close()
+    app.processEvents()
+
+
 def test_operator_window_scene_capture_buttons_keep_tooltips_after_shortening_labels() -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())

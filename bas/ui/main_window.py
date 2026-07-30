@@ -1755,11 +1755,38 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.preview_panel = self._panel()
         self.preview_panel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.preview_layout = QtWidgets.QVBoxLayout(self.preview_panel)
+        self.preview_header_layout = QtWidgets.QHBoxLayout()
+        self.preview_header_layout.setContentsMargins(0, 0, 0, 0)
         self.preview_caption = QtWidgets.QLabel("实时预览")
         self.preview_caption.setObjectName("previewCaption")
-        self.preview_layout.addWidget(self.preview_caption)
+        self.preview_caption.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self.preview_caption.setSizePolicy(
+            QtWidgets.QSizePolicy.Preferred,
+            QtWidgets.QSizePolicy.Expanding,
+        )
+        self.preview_header_layout.addWidget(self.preview_caption)
+        self.preview_header_layout.addStretch(1)
+        self.preview_zoom_out_btn = self._button("缩小", variant="preview")
+        self.preview_fit_btn = self._button("适应", variant="preview")
+        self.preview_zoom_in_btn = self._button("放大", variant="preview")
+        self.preview_zoom_label = QtWidgets.QLabel("100%")
+        self.preview_zoom_label.setObjectName("previewZoomLabel")
+        self.preview_zoom_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.preview_zoom_out_btn.setToolTip("缩小播放画面")
+        self.preview_fit_btn.setToolTip("恢复为当前预览区域内不裁切的最大画面")
+        self.preview_zoom_in_btn.setToolTip("放大播放画面")
+        self.preview_header_layout.addWidget(self.preview_zoom_out_btn)
+        self.preview_header_layout.addWidget(self.preview_fit_btn)
+        self.preview_header_layout.addWidget(self.preview_zoom_in_btn)
+        self.preview_header_layout.addWidget(self.preview_zoom_label)
+        self.preview_layout.addLayout(self.preview_header_layout)
         self.preview_frame = AspectRatioPreviewFrame()
         self.preview_label = self.preview_frame.label()
+        self.preview_zoom_out_btn.clicked.connect(self.preview_frame.zoomOut)
+        self.preview_fit_btn.clicked.connect(self.preview_frame.fitToViewport)
+        self.preview_zoom_in_btn.clicked.connect(self.preview_frame.zoomIn)
+        self.preview_frame.zoomChanged.connect(self._update_preview_zoom_controls)
+        self._update_preview_zoom_controls(self.preview_frame.zoomFactor())
         self.preview_frame.viewportChanged.connect(self._refresh_preview_pixmap)
         self.preview_frame.viewportChanged.connect(self._position_desktop_pocket_notice)
         self.pocket_notice_label = QtWidgets.QLabel(self.preview_frame)
@@ -1827,6 +1854,16 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.candidates.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
         self.plan_layout.addWidget(self.candidates, 1)
         self.center_layout.addWidget(self.plan_panel, 0)
+
+    def _update_preview_zoom_controls(self, factor: float) -> None:
+        self.preview_zoom_label.setText(f"{int(round(float(factor) * 100.0))}%")
+        self.preview_zoom_out_btn.setEnabled(
+            factor > self.preview_frame.MIN_ZOOM_FACTOR + 1e-6
+        )
+        self.preview_zoom_in_btn.setEnabled(
+            factor < self.preview_frame.MAX_ZOOM_FACTOR - 1e-6
+        )
+        self.preview_fit_btn.setEnabled(abs(factor - 1.0) > 1e-6)
 
     def _show_desktop_pocket_notice(self, notices: list[dict[str, object]]) -> None:
         messages = [str(notice.get("message") or "").strip() for notice in notices]
@@ -2080,6 +2117,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.center_layout.setSpacing(px(12))
         self.preview_layout.setContentsMargins(px(4), px(3), px(4), px(4))
         self.preview_layout.setSpacing(px(3))
+        self.preview_header_layout.setSpacing(px(6))
+        self.preview_zoom_label.setMinimumWidth(px(44))
         self.video_timeline_layout.setSpacing(px(10))
         self.video_timeline_label.setMinimumWidth(px(104))
         self.plan_layout.setContentsMargins(px(12), px(12), px(12), px(12))
@@ -2213,6 +2252,13 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         QPushButton[variant="compact"] {{
             padding: {px(6)}px {px(8)}px;
             min-height: {px(30)}px;
+            font-weight: 600;
+        }}
+        QPushButton[variant="preview"] {{
+            padding: 0 {px(6)}px;
+            min-height: {px(14)}px;
+            max-height: {px(18)}px;
+            font-size: {px(11)}px;
             font-weight: 600;
         }}
         QComboBox, QSpinBox, QDoubleSpinBox {{

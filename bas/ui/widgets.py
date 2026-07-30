@@ -56,11 +56,17 @@ class CollapsibleSection(QtWidgets.QFrame):
 
 class AspectRatioPreviewFrame(QtWidgets.QFrame):
     viewportChanged = QtCore.pyqtSignal()
+    zoomChanged = QtCore.pyqtSignal(float)
+
+    MIN_ZOOM_FACTOR = 0.25
+    MAX_ZOOM_FACTOR = 3.0
+    ZOOM_STEP = 1.25
 
     def __init__(self, aspect_ratio: float = 16.0 / 9.0, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("previewViewport")
         self._aspect_ratio = max(0.1, float(aspect_ratio))
+        self._zoom_factor = 1.0
         width = 680
         self._preferred_size = QtCore.QSize(width, int(round(width / self._aspect_ratio)))
 
@@ -74,6 +80,27 @@ class AspectRatioPreviewFrame(QtWidgets.QFrame):
 
     def label(self) -> QtWidgets.QLabel:
         return self._label
+
+    def zoomFactor(self) -> float:
+        return self._zoom_factor
+
+    def setZoomFactor(self, factor: float) -> None:
+        factor = max(self.MIN_ZOOM_FACTOR, min(self.MAX_ZOOM_FACTOR, float(factor)))
+        if abs(factor - self._zoom_factor) < 1e-6:
+            return
+        self._zoom_factor = factor
+        self._layout_preview()
+        self.zoomChanged.emit(factor)
+        self.viewportChanged.emit()
+
+    def zoomIn(self) -> None:
+        self.setZoomFactor(self._zoom_factor * self.ZOOM_STEP)
+
+    def zoomOut(self) -> None:
+        self.setZoomFactor(self._zoom_factor / self.ZOOM_STEP)
+
+    def fitToViewport(self) -> None:
+        self.setZoomFactor(1.0)
 
     def setPreferredSize(self, width: int, height: int | None = None) -> None:
         preferred_height = int(height) if height is not None else self.heightForWidth(int(width))
@@ -93,22 +120,28 @@ class AspectRatioPreviewFrame(QtWidgets.QFrame):
         width = 320
         return QtCore.QSize(width, self.heightForWidth(width))
 
-    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+    def _layout_preview(self) -> None:
         rect = self.contentsRect()
         if rect.width() <= 0 or rect.height() <= 0:
             self._label.setGeometry(rect)
-            super().resizeEvent(event)
             return
 
-        target_width = rect.width()
-        target_height = self.heightForWidth(target_width)
-        if target_height > rect.height():
-            target_height = rect.height()
-            target_width = max(1, int(round(target_height * self._aspect_ratio)))
+        fitted_width = rect.width()
+        fitted_height = self.heightForWidth(fitted_width)
+        if fitted_height > rect.height():
+            fitted_height = rect.height()
+            fitted_width = max(1, int(round(fitted_height * self._aspect_ratio)))
 
-        x = rect.x() + (rect.width() - target_width) // 2
-        y = rect.y()
+        target_width = max(1, int(round(fitted_width * self._zoom_factor)))
+        target_height = max(1, int(round(fitted_height * self._zoom_factor)))
+        fitted_x = rect.x() + (rect.width() - fitted_width) // 2
+        fitted_y = rect.y()
+        x = fitted_x + (fitted_width - target_width) // 2
+        y = fitted_y + (fitted_height - target_height) // 2
         self._label.setGeometry(x, y, max(1, target_width), max(1, target_height))
+
+    def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
+        self._layout_preview()
         self.viewportChanged.emit()
         super().resizeEvent(event)
 
