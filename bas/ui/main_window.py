@@ -9,7 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-from ..config import AppConfig
+from ..config import AppConfig, normalize_exposure_control
 from ..runtime_env import prepare_runtime_environment, preload_torch_for_backend
 from ..user_settings import UserSettings
 
@@ -182,6 +182,14 @@ class SettingsDialog(QtWidgets.QDialog):
         distortion_layout.setContentsMargins(0, 0, 0, 0)
         distortion_layout.addWidget(self.distortion_enabled)
         distortion_layout.addWidget(self.distortion_file, 1)
+        self.exposure_control = QtWidgets.QComboBox()
+        self.exposure_control.addItem("自动选择", "auto")
+        self.exposure_control.addItem("Decxin SDK", "decxin")
+        self.exposure_control.addItem("UVC / DirectShow", "uvc")
+        exposure_control_index = self.exposure_control.findData(
+            normalize_exposure_control(config.camera.exposure_control)
+        )
+        self.exposure_control.setCurrentIndex(max(0, exposure_control_index))
         self.exposure_auto = QtWidgets.QCheckBox("自动曝光")
         self.exposure_auto.setChecked(bool(config.camera.exposure_auto))
         self.exposure_level = self._spin(int(config.camera.exposure_level if config.camera.exposure_level is not None else -5), -10, 0)
@@ -190,6 +198,7 @@ class SettingsDialog(QtWidgets.QDialog):
         exposure_box = QtWidgets.QWidget()
         exposure_layout = QtWidgets.QHBoxLayout(exposure_box)
         exposure_layout.setContentsMargins(0, 0, 0, 0)
+        exposure_layout.addWidget(self.exposure_control)
         exposure_layout.addWidget(self.exposure_auto)
         exposure_layout.addWidget(QtWidgets.QLabel("手动档位"))
         exposure_layout.addWidget(self.exposure_level)
@@ -739,6 +748,7 @@ class SettingsDialog(QtWidgets.QDialog):
         config.camera.nori_sdk_root = self.nori_sdk_root.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.camera.distortion_correction_enabled = self.distortion_enabled.isChecked()
         config.camera.distortion_correction_file = self.distortion_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        config.camera.exposure_control = normalize_exposure_control(self.exposure_control.currentData())
         config.camera.exposure_auto = self.exposure_auto.isChecked()
         config.camera.exposure_level = int(self.exposure_level.value())
         config.camera.white_balance_auto = self.white_balance_auto.isChecked()
@@ -2774,6 +2784,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
     def _pipeline_restart_signature(self) -> tuple:
         return (
             self.config.camera.backend,
+            self.config.camera.exposure_control,
             self.config.camera.device_index,
             self.config.camera.nori_device_id,
             self.config.camera.width,

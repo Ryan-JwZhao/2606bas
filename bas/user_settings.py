@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .config import AppConfig
+from .config import AppConfig, normalize_exposure_control
 from .paths import PROJECT_ROOT
 
 
@@ -15,6 +15,7 @@ SETTINGS_PATH = PROJECT_ROOT / "local_settings" / "user_settings.json"
 @dataclass
 class UserSettings:
     camera_backend: Optional[str] = None
+    exposure_control: Optional[str] = None
     camera_device_index: Optional[int] = None
     nori_device_id: Optional[int] = None
     width: Optional[int] = None
@@ -147,6 +148,8 @@ class UserSettings:
             config.web_control.port = max(1, min(65535, int(self.web_control_port)))
         if self._has("camera_backend") and self.camera_backend:
             config.camera.backend = self.camera_backend
+        if self._has("exposure_control"):
+            config.camera.exposure_control = normalize_exposure_control(self.exposure_control)
         if self.camera_device_index is not None:
             config.camera.device_index = int(self.camera_device_index)
         if self._has("nori_device_id"):
@@ -376,6 +379,7 @@ class UserSettings:
     def from_config(cls, config: AppConfig, star_formula: Optional[Dict[str, Any]] = None) -> "UserSettings":
         return cls(
             camera_backend=config.camera.backend,
+            exposure_control=normalize_exposure_control(config.camera.exposure_control),
             camera_device_index=config.camera.device_index,
             nori_device_id=config.camera.nori_device_id,
             width=config.camera.width,

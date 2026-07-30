@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 from ..calibration.camera import CameraCalibration
-from ..config import CameraConfig
+from ..config import CameraConfig, normalize_exposure_control
 from ..schemas import FramePacket
 from ..utils import monotonic_ns
 from .base import CaptureInfo, CaptureSource, VideoTimelineState
@@ -145,6 +145,13 @@ def capture_frames_are_distortion_corrected(config: CameraConfig) -> bool:
 
 def create_capture_service(config: CameraConfig) -> CaptureService:
     backend = str(config.backend or "auto").lower()
+    exposure_control = normalize_exposure_control(config.exposure_control)
+    effective_backend = backend
+    if backend in {"auto", "nori", "opencv"}:
+        if exposure_control == "decxin":
+            effective_backend = "nori"
+        elif exposure_control == "uvc":
+            effective_backend = "opencv"
     source: CaptureSource
 
     def finish(src: CaptureSource) -> CaptureService:
@@ -168,7 +175,7 @@ def create_capture_service(config: CameraConfig) -> CaptureService:
             raise ValueError("camera.video_path is required when camera.backend=video")
         source = VideoFileCapture(config.video_path, camera_id=config.camera_id)
         return finish(source)
-    if backend in {"auto", "nori"}:
+    if effective_backend in {"auto", "nori"}:
         nori = open_nori_capture(
             device_index=config.device_index,
             width=config.width,
@@ -198,7 +205,11 @@ def create_capture_service(config: CameraConfig) -> CaptureService:
                 except Exception as exc:
                     LOGGER.warning("Failed to apply Nori white balance settings: %s", exc)
             return finish(nori)
-        if backend == "nori":
+        if exposure_control == "decxin":
+            raise RuntimeError(
+                "Decxin exposure control was selected, but no Decxin/Nori SDK camera could be opened."
+            )
+        if effective_backend == "nori":
             raise RuntimeError("Nori camera requested but no MJPG SDK stream could be opened.")
         LOGGER.info("Nori SDK stream unavailable; falling back to OpenCV capture.")
     source = OpenCVCapture(
@@ -207,8 +218,8 @@ def create_capture_service(config: CameraConfig) -> CaptureService:
         config.height,
         config.fps,
         camera_id=config.camera_id,
-        exposure_auto=config.exposure_auto,
-        exposure_level=config.exposure_level,
+        exposure_auto=config.exposure_auto if exposure_control in {"auto", "uvc"} else None,
+        exposure_level=config.exposure_level if exposure_control in {"auto", "uvc"} else None,
     )
     return finish(source)
 

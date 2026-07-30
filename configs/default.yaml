@@ -1,5 +1,6 @@
 camera:
   backend: auto  # auto | nori | opencv | video | synthetic
+  exposure_control: auto  # auto | decxin | uvc
   camera_id: overhead_main
   device_index: 0
   width: 1920

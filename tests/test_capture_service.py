@@ -121,6 +121,79 @@ def test_create_capture_service_applies_exposure_to_opencv_fallback(monkeypatch)
     assert source.kwargs["exposure_level"] == -8
 
 
+def test_uvc_exposure_control_forces_opencv_when_capture_backend_is_auto(monkeypatch) -> None:
+    source = _StubOpenCVCapture()
+    nori_attempted = False
+
+    def unexpected_nori(**_kwargs):
+        nonlocal nori_attempted
+        nori_attempted = True
+        return _StubNoriCapture(_StubController())
+
+    monkeypatch.setattr(capture_service, "open_nori_capture", unexpected_nori)
+    monkeypatch.setattr(capture_service, "OpenCVCapture", lambda *args, **kwargs: source)
+    config = CameraConfig(
+        backend="auto",
+        exposure_control="uvc",
+        distortion_correction_enabled=False,
+    )
+
+    service = capture_service.create_capture_service(config)
+
+    assert service.source is source
+    assert nori_attempted is False
+
+
+def test_manual_exposure_control_overrides_conflicting_live_capture_backend(monkeypatch) -> None:
+    uvc_source = _StubOpenCVCapture()
+    nori_source = _StubNoriCapture(_StubController())
+    nori_attempts = 0
+
+    def open_nori(**_kwargs):
+        nonlocal nori_attempts
+        nori_attempts += 1
+        return nori_source
+
+    monkeypatch.setattr(capture_service, "open_nori_capture", open_nori)
+    monkeypatch.setattr(capture_service, "OpenCVCapture", lambda *args, **kwargs: uvc_source)
+
+    uvc_service = capture_service.create_capture_service(
+        CameraConfig(backend="nori", exposure_control="uvc", distortion_correction_enabled=False)
+    )
+    decxin_service = capture_service.create_capture_service(
+        CameraConfig(backend="opencv", exposure_control="decxin", distortion_correction_enabled=False)
+    )
+
+    assert uvc_service.source is uvc_source
+    assert decxin_service.source is nori_source
+    assert nori_attempts == 1
+
+
+def test_decxin_exposure_control_does_not_silently_fall_back_to_uvc(monkeypatch) -> None:
+    opencv_attempted = False
+
+    def unexpected_opencv(*_args, **_kwargs):
+        nonlocal opencv_attempted
+        opencv_attempted = True
+        return _StubOpenCVCapture()
+
+    monkeypatch.setattr(capture_service, "open_nori_capture", lambda **kwargs: None)
+    monkeypatch.setattr(capture_service, "OpenCVCapture", unexpected_opencv)
+    config = CameraConfig(
+        backend="auto",
+        exposure_control="decxin",
+        distortion_correction_enabled=False,
+    )
+
+    try:
+        capture_service.create_capture_service(config)
+    except RuntimeError as exc:
+        assert "Decxin" in str(exc)
+    else:
+        raise AssertionError("manual Decxin mode must fail instead of changing control systems")
+    assert opencv_attempted is False
+
+
 def test_capture_frames_are_distortion_corrected_treats_video_backend_as_precorrected(monkeypatch) -> None:
     def _unexpected_load(_path):
         raise AssertionError("video backend should not load OpenCV distortion calibration")

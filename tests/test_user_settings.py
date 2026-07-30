@@ -19,6 +19,27 @@ def test_web_control_settings_default_and_roundtrip(tmp_path) -> None:
     assert loaded.web_control.port == 18080
 
 
+def test_exposure_control_mode_roundtrips_through_user_settings(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    cfg = AppConfig()
+    cfg.camera.exposure_control = "uvc"
+
+    UserSettings.from_config(cfg).save(path)
+    restored = UserSettings.load(path).apply_to_config(AppConfig())
+
+    assert restored.camera.exposure_control == "uvc"
+    assert json.loads(path.read_text(encoding="utf-8"))["exposure_control"] == "uvc"
+
+
+def test_invalid_exposure_control_mode_falls_back_to_auto(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(json.dumps({"exposure_control": "unknown"}), encoding="utf-8")
+
+    restored = UserSettings.load(path).apply_to_config(AppConfig())
+
+    assert restored.camera.exposure_control == "auto"
+
+
 def test_user_settings_can_clear_default_paths_and_save_false_values(tmp_path) -> None:
     path = tmp_path / "user_settings.json"
     path.write_text(

@@ -14,6 +14,12 @@ DEFAULT_TARGET_SHOT_SWITCH_HOLD_MS = 1500
 DEFAULT_TARGET_SHOT_MISS_GRACE_MS = 200
 DEFAULT_TARGET_SHOT_RELEASE_CONFIRM_MS = 300
 LEGACY_TARGET_SHOT_FALLBACK_HZ = 30.0
+EXPOSURE_CONTROLS = ("auto", "decxin", "uvc")
+
+
+def normalize_exposure_control(value: Any) -> str:
+    mode = str(value or "auto").strip().lower()
+    return mode if mode in EXPOSURE_CONTROLS else "auto"
 
 
 def _positive_int_or_default(value: Any, default: int) -> int:
@@ -53,6 +59,7 @@ def _target_shot_activate_hold_ms(
 @dataclass
 class CameraConfig:
     backend: str = "auto"  # auto | nori | opencv | video | synthetic
+    exposure_control: str = "auto"  # auto | decxin | uvc
     device_index: int = 0
     camera_id: str = "overhead_main"
     width: int = 1920

@@ -527,6 +527,21 @@ def test_settings_dialog_applies_desktop_only_training_prompt_controls() -> None
     app.processEvents()
 
 
+def test_settings_dialog_applies_exposure_control_mode() -> None:
+    app = _app()
+    config = AppConfig()
+    config.camera.exposure_control = "decxin"
+    dialog = main_window.SettingsDialog(config, main_window.StarFormulaConfig())
+
+    assert dialog.exposure_control.currentData() == "decxin"
+    dialog.exposure_control.setCurrentIndex(dialog.exposure_control.findData("uvc"))
+    dialog.apply_to_config(config)
+
+    assert config.camera.exposure_control == "uvc"
+    dialog.close()
+    app.processEvents()
+
+
 def test_set_running_updates_capture_action_states() -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())

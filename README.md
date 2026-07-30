@@ -74,6 +74,7 @@ Start_BAS.cmd
 ```yaml
 camera:
   backend: opencv
+  exposure_control: uvc
   device_index: 0
   exposure_auto: false
   exposure_level: -8
@@ -84,6 +85,15 @@ Windows 下程序优先使用 DirectShow，并在开始采集后回读曝光值�
 画面越暗且运动拖影越少。相机应只由一个程序占用，修改配置后需要重新启动
 采集。若日志出现 `UVC exposure write was not confirmed`，表示驱动接受了调用
 但未实际改变曝光，此时应关闭其他相机程序后重试。
+
+设置窗口的“工业相机曝光”区域可手动选择曝光控制方式：
+
+- `自动选择`：优先尝试 Decxin/Nori SDK，不可用时回退 UVC/DirectShow。
+- `Decxin SDK`：只使用原 Decxin 控制链；SDK 相机不可用时明确报错，不静默切换。
+- `UVC / DirectShow`：跳过 Decxin SDK，直接使用标准 UVC 控制链。
+
+选择会保存到 `local_settings/user_settings.json`，下次启动自动恢复。运行中切换
+控制方式会触发采集管线重启，使新模式立即生效。
 
 ## 主控台界面
 
