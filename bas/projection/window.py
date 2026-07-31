@@ -9,6 +9,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ..config import ProjectionConfig
 from ..schemas import ProjectionOverlay
+from .frame_transform import ProjectionFrameTransform
 from .overlay import render_overlay_with_star
 from .star_formula import StarFormulaConfig
 
@@ -28,6 +29,9 @@ class ProjectionWindow(QtWidgets.QWidget):
         layout.addWidget(self._label)
         self.resize(config.projector_width, config.projector_height)
         self.star_formula = StarFormulaConfig()
+        self._calibration_mode = False
+        self._source_image_bgr: Optional[np.ndarray] = None
+        self._source_pixmap: Optional[QtGui.QPixmap] = None
 
     def show_on_configured_screen(self) -> None:
         app = QtWidgets.QApplication.instance()
@@ -49,15 +53,44 @@ class ProjectionWindow(QtWidgets.QWidget):
     def set_star_formula(self, config: StarFormulaConfig) -> None:
         self.star_formula = config
 
+    def set_calibration_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._calibration_mode == enabled:
+            return
+        self._calibration_mode = enabled
+        if self._source_image_bgr is not None:
+            self._render_source_image()
+
     def set_image(self, image_bgr: np.ndarray) -> None:
-        rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        self._source_image_bgr = np.ascontiguousarray(image_bgr).copy()
+        self._render_source_image()
+
+    def _render_source_image(self) -> None:
+        if self._source_image_bgr is None:
+            return
+        transform = ProjectionFrameTransform(
+            calibration_rotation_degrees=self.config.calibration_rotation_degrees,
+            output_rotation_degrees=self.config.output_rotation_degrees,
+        )
+        display_bgr = transform.apply(
+            self._source_image_bgr,
+            calibration_mode=self._calibration_mode,
+        )
+        rgb = cv2.cvtColor(display_bgr, cv2.COLOR_BGR2RGB)
         h, w = rgb.shape[:2]
         qimg = QtGui.QImage(rgb.data, w, h, 3 * w, QtGui.QImage.Format_RGB888).copy()
-        pix = QtGui.QPixmap.fromImage(qimg)
-        self._label.setPixmap(pix.scaled(self.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        self._source_pixmap = QtGui.QPixmap.fromImage(qimg)
+        self._update_scaled_pixmap()
+
+    def _update_scaled_pixmap(self) -> None:
+        if self._source_pixmap is None:
+            return
+        self._label.setPixmap(
+            self._source_pixmap.scaled(
+                self.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation
+            )
+        )
 
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
-        pix = self._label.pixmap()
-        if pix is not None:
-            self._label.setPixmap(pix.scaled(self.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        self._update_scaled_pixmap()
         super().resizeEvent(event)

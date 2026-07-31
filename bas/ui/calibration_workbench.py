@@ -206,9 +206,16 @@ class CalibrationWorkbenchDialog(QtWidgets.QDialog):
     def _render_status(self) -> None:
         assert self.status is not None and self.calibration is not None
         coordinate_domain = "undistorted" if self.calibration.distortion_correction_enabled else "raw"
-        rotation = int(self.operator.config.camera.frame_rotation_degrees) % 360
+        camera_rotation = int(self.operator.config.camera.frame_rotation_degrees) % 360
+        calibration_rotation = int(
+            self.operator.config.projection.calibration_rotation_degrees
+        ) % 360
+        output_rotation = int(self.operator.config.projection.output_rotation_degrees) % 360
         self.camera_state.setText("运行中" if self.status.camera_running else "未启动（仍可开始校准）")
-        self.orientation_state.setText(f"{rotation}° / {coordinate_domain}")
+        self.orientation_state.setText(
+            f"相机 {camera_rotation}° / {coordinate_domain}；"
+            f"投影校准 {calibration_rotation}° / 输出 {output_rotation}°"
+        )
         self.projection_state.setText(self._artifact_text(self.status.projection_valid, self.status.projection_errors))
         self.ball_state.setText(self._artifact_text(self.status.ball_compensation_valid, self.status.ball_errors))
         self.next_action.setText(self.status.next_action)

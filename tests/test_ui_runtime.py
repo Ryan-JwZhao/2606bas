@@ -656,6 +656,34 @@ def test_settings_dialog_applies_desktop_only_training_prompt_controls() -> None
     app.processEvents()
 
 
+def test_settings_dialog_keeps_camera_and_projector_rotations_independent() -> None:
+    app = _app()
+    config = AppConfig()
+    config.camera.frame_rotation_degrees = 0
+    config.projection.calibration_rotation_degrees = 90
+    config.projection.output_rotation_degrees = 180
+    dialog = main_window.SettingsDialog(config, main_window.StarFormulaConfig(angle_deg=-1.7))
+
+    assert dialog.frame_rotation_degrees.currentData() == 0
+    assert dialog.projection_calibration_rotation.currentData() == 90
+    assert dialog.projection_output_rotation.currentData() == 180
+    assert dialog.star_angle.value() == -1.7
+
+    dialog.projection_calibration_rotation.setCurrentIndex(
+        dialog.projection_calibration_rotation.findData(0)
+    )
+    dialog.projection_output_rotation.setCurrentIndex(
+        dialog.projection_output_rotation.findData(180)
+    )
+    dialog.apply_to_config(config)
+
+    assert config.camera.frame_rotation_degrees == 0
+    assert config.projection.calibration_rotation_degrees == 0
+    assert config.projection.output_rotation_degrees == 180
+    dialog.close()
+    app.processEvents()
+
+
 def test_settings_dialog_applies_exposure_control_mode() -> None:
     app = _app()
     config = AppConfig()
@@ -993,6 +1021,29 @@ def test_refresh_projection_uses_composed_interaction_frame() -> None:
     assert len(captured) == 1
     assert captured[0].shape == (4, 6, 3)
     assert int(captured[0][0, 0, 0]) == 77
+
+
+def test_operator_switches_projection_window_between_calibration_and_output_modes() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    mode_changes: list[bool] = []
+
+    class _ProjectionWindow:
+        def set_calibration_mode(self, enabled: bool) -> None:
+            mode_changes.append(enabled)
+
+    window.projection_window = _ProjectionWindow()
+    window._projection_calibration_mode = False
+    window.projection_btn = SimpleNamespace(setText=lambda _text: None)
+    window.last_output = None
+    window._ensure_projection_window = lambda: None
+    window._refresh_projection = lambda: None
+    window._append_log = lambda _message: None
+    window._update_module_status = lambda _output: None
+
+    main_window.OperatorWindow.ensure_projection_window_for_operator(window)
+    main_window.OperatorWindow.resume_runtime_projection(window)
+
+    assert mode_changes == [True, False]
 
 
 def test_web_target_state_is_cleared_after_shot_started() -> None:
