@@ -88,9 +88,19 @@ def _append_projected_ball_marker(
         return False
     if calibration.is_engineered_projection:
         try:
-            radius_proj = max(4.0, float(calibration.ball_projector_radius_px((cx, cy))))
+            ellipse = calibration.ball_projector_ellipse((cx, cy))
         except Exception:
             return False
+        overlay.circles.append(
+            OverlayCircle(
+                center=ellipse.center_px,
+                radius=max(4.0, float(ellipse.radius_x_px)),
+                radius_y=max(4.0, float(ellipse.radius_y_px)),
+                rotation_deg=float(ellipse.rotation_deg),
+                color=ROUTE_COLOR,
+            )
+        )
+        return True
     else:
         radius = float(max(1.0, radius_px))
         refs = np.asarray(

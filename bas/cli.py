@@ -114,6 +114,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 cfg.calibration,
                 cfg.camera,
                 frame_undistorted=capture_frames_are_distortion_corrected(cfg.camera),
+                detector_config=cfg.detector,
+                projection_config=cfg.projection,
             )
             summary = {
                 "calib_version": service.calib_version,
@@ -131,9 +133,13 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "projection_mode": service.projection.mode,
                 "projector_size": service.projection.projector_size,
                 "projection_error": service.projection.calibration_error_stats(),
+                "projection_compatibility_errors": list(service.projection.compatibility_errors),
+                "projection_calibration_context": service.projection.calibration_context,
                 "ball_compensation_valid": service.ball_compensation_model.is_valid,
                 "ball_compensation_source": service.ball_compensation_model.source_path,
                 "ball_compensation_mode": service.ball_compensation_model.mode,
+                "ball_compensation_compatibility_errors": list(service.ball_compensation_model.compatibility_errors),
+                "ball_compensation_calibration_context": service.ball_compensation_model.calibration_context,
                 "geometry_model": service.geometry_quality_report,
                 "table": to_jsonable(service.table),
             }
@@ -153,6 +159,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 cfg.calibration,
                 cfg.camera,
                 frame_undistorted=capture_frames_are_distortion_corrected(cfg.camera),
+                detector_config=cfg.detector,
+                projection_config=cfg.projection,
             )
             report = verify_holdout_file(args.holdout_json, service)
             print(format_holdout_report(report))

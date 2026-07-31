@@ -6,6 +6,7 @@ import pytest
 
 from bas.calibration.charuco import CharucoBoardSpec, detect_charuco_corners, render_charuco_board
 from bas.calibration.linked import (
+    LinkedCalibrationObservation,
     build_linked_patterns,
     match_linked_pattern_observation,
     projection_output_summary,
@@ -91,7 +92,12 @@ def test_linked_calibration_can_recover_projector_mapping_from_warped_patterns(t
         observations.append(observation)
 
     table_polygon_cam = cv2.perspectiveTransform(projector_quad.reshape((-1, 1, 2)), H_proj_to_cam).reshape((-1, 2))
-    result = solve_linked_projection_calibration(observations, projector_size, table_polygon_cam=table_polygon_cam)
+    result = solve_linked_projection_calibration(
+        observations,
+        projector_size,
+        table_polygon_cam=table_polygon_cam,
+        minimum_pocket_zones=0,
+    )
     summary = projection_output_summary(result)
 
     assert "匹配角点" in summary
@@ -108,3 +114,22 @@ def test_linked_calibration_can_recover_projector_mapping_from_warped_patterns(t
     np.testing.assert_allclose(restored.table_control_points_proj, result.projection.table_control_points_proj)
     pred = result.projection.camera_to_projector_points(observations[0].camera_points)
     assert np.max(np.linalg.norm(pred - observations[0].projector_points, axis=1)) < 2.0
+
+
+def test_linked_calibration_rejects_excessive_ransac_outliers() -> None:
+    camera = np.asarray([[x, y] for y in (100.0, 300.0, 500.0) for x in (100.0, 300.0, 500.0, 700.0)], dtype=np.float32)
+    projector = camera * np.asarray([1.2, 1.1], dtype=np.float32) + np.asarray([20.0, 30.0], dtype=np.float32)
+    corrupted = projector.copy()
+    corrupted[::2] += np.asarray([400.0, -300.0], dtype=np.float32)
+
+    observations = [
+        LinkedCalibrationObservation("clean", "clean", "center", camera, projector, np.arange(12), 12, 12),
+        LinkedCalibrationObservation("bad", "bad", "pocket_lt", camera, corrupted, np.arange(12), 12, 12),
+    ]
+
+    with pytest.raises(RuntimeError, match="inlier"):
+        solve_linked_projection_calibration(
+            observations,
+            (1280, 800),
+            table_polygon_cam=np.asarray([[100, 100], [700, 100], [700, 500], [100, 500]], dtype=np.float32),
+        )

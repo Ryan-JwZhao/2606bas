@@ -125,6 +125,57 @@ def test_ball_map_uses_direct_camera_to_known_table_targets() -> None:
     assert service.geometry_quality_report["ball_map_cv_p95_mm"] < 0.1
 
 
+def test_ball_map_blends_continuously_at_calibrated_domain_edge() -> None:
+    projection = _projection(
+        np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]], dtype=np.float64)
+    )
+    controls = np.asarray(
+        [[100.0, 100.0], [500.0, 100.0], [900.0, 100.0], [100.0, 250.0], [500.0, 250.0],
+         [900.0, 250.0], [100.0, 400.0], [500.0, 400.0], [900.0, 400.0]],
+        dtype=np.float64,
+    )
+    model = BallCompensationModel(
+        mode="direct",
+        control_points_camera_px=controls,
+        delta_table_mm=np.zeros_like(controls),
+        target_table_mm=controls + np.asarray([20.0, 0.0], dtype=np.float64),
+        sample_weights=np.ones((controls.shape[0],), dtype=np.float64),
+    )
+    service = CalibrationService(
+        CameraCalibration(metadata={}),
+        projection,
+        _table(),
+        projection_mode="engineered",
+        ball_compensation_model=model,
+    )
+    # The legacy rectangular support edge is x=36 px for this sample span.
+    probes = np.asarray([[35.99, 250.0], [36.01, 250.0]], dtype=np.float32)
+
+    mapped = service.ball_camera_px_to_table_mm(probes)
+
+    assert float(np.linalg.norm(mapped[1] - mapped[0])) < 0.5
+
+
+def test_invalid_projection_fails_closed_instead_of_returning_camera_pixels() -> None:
+    service = CalibrationService(CameraCalibration(metadata={}), ProjectionCalibration(), _table())
+
+    with np.testing.assert_raises(RuntimeError):
+        service.camera_px_to_projector_px(np.asarray([[120.0, 80.0]], dtype=np.float32))
+
+
+def test_projected_table_circle_preserves_directional_scale_as_ellipse() -> None:
+    projection = _projection(
+        np.asarray([[0.0, 0.0], [1000.0, 0.0], [900.0, 500.0], [100.0, 500.0]], dtype=np.float64)
+    )
+    service = CalibrationService(CameraCalibration(metadata={}), projection, _table())
+
+    ellipse = service.table_circle_to_projector_ellipse((500.0, 250.0), 50.0)
+
+    assert ellipse.radius_x_px > 0.0
+    assert ellipse.radius_y_px > 0.0
+    assert abs(ellipse.radius_x_px - ellipse.radius_y_px) > 1.0
+
+
 def test_camera_distortion_roundtrip_does_not_require_extrinsics() -> None:
     camera = CameraCalibration(
         image_size=(640, 480),
@@ -140,3 +191,29 @@ def test_camera_distortion_roundtrip_does_not_require_extrinsics() -> None:
     np.testing.assert_allclose(restored, raw, atol=0.03)
     assert camera.rvec is None
     assert camera.tvec is None
+
+
+def test_dense_table_outline_keeps_perspective_quad_instead_of_axis_aligned_bbox() -> None:
+    camera_quad = np.asarray([[100.0, 80.0], [1120.0, 120.0], [1050.0, 590.0], [140.0, 540.0]], dtype=np.float64)
+    projector_quad = np.asarray([[30.0, 20.0], [1230.0, 60.0], [1190.0, 760.0], [50.0, 720.0]], dtype=np.float64)
+    projection = ProjectionCalibration.fit_from_correspondences(camera_quad, projector_quad, projector_size=(1280, 800))
+
+    def dense_edges(quad: np.ndarray) -> np.ndarray:
+        return np.vstack(
+            [
+                np.linspace(quad[index], quad[(index + 1) % 4], 20, endpoint=False)
+                for index in range(4)
+            ]
+        )
+
+    projection.table_polygon_cam = dense_edges(camera_quad)
+    projection.table_polygon_proj = dense_edges(projector_quad)
+    service = CalibrationService(CameraCalibration(metadata={}), projection, _table())
+
+    mapped = service.camera_px_to_table_mm(camera_quad.astype(np.float32))
+
+    np.testing.assert_allclose(
+        mapped,
+        np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]], dtype=np.float32),
+        atol=0.1,
+    )

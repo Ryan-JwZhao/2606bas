@@ -9,7 +9,19 @@ import numpy as np
 from ..schemas import TableModel
 from ..utils import ensure_numpy_points
 from .ball_compensation import BallCompensationModel
-from .projector import ProjectionCalibration, table_bbox_from_polygon
+from .projector import ProjectionCalibration, polygon_quad, table_bbox_from_polygon
+
+
+class CalibrationUnavailableError(RuntimeError):
+    """Raised when a coordinate transform has no trustworthy calibration."""
+
+
+@dataclass(frozen=True)
+class ProjectedEllipse:
+    center_px: tuple[float, float]
+    radius_x_px: float
+    radius_y_px: float
+    rotation_deg: float = 0.0
 
 
 def _perspective(points: np.ndarray, homography: np.ndarray) -> np.ndarray:
@@ -42,6 +54,8 @@ class _RegularizedPointMap:
     degree: int
     source_min: np.ndarray
     source_max: np.ndarray
+    source_points: np.ndarray
+    support_fade_distance: float
     cv_p95: float
     rbf_centers: Optional[np.ndarray] = None
     rbf_weights: Optional[np.ndarray] = None
@@ -106,6 +120,8 @@ class _RegularizedPointMap:
             degree=selected[0],
             source_min=np.min(src, axis=0),
             source_max=np.max(src, axis=0),
+            source_points=src.copy(),
+            support_fade_distance=_support_fade_distance(src),
             cv_p95=float(selected[2]),
             rbf_centers=rbf_centers,
             rbf_weights=rbf_weights,
@@ -132,9 +148,42 @@ class _RegularizedPointMap:
         return "affine_rbf" if self.rbf_centers is not None else f"polynomial_{self.degree}"
 
     def supported(self, points: np.ndarray, margin_ratio: float = 0.08) -> np.ndarray:
+        del margin_ratio
+        return self.support_weights(points) > 0.0
+
+    def support_weights(self, points: np.ndarray) -> np.ndarray:
+        """Continuous confidence based on distance to the calibrated convex hull."""
         pts = ensure_numpy_points(points).astype(np.float64)
-        margin = np.maximum(1.0, (self.source_max - self.source_min) * float(max(0.0, margin_ratio)))
-        return np.all((pts >= self.source_min - margin) & (pts <= self.source_max + margin), axis=1)
+        if pts.size == 0:
+            return np.zeros((0,), dtype=np.float32)
+        hull = cv2.convexHull(self.source_points.astype(np.float32)).reshape((-1, 2))
+        if hull.shape[0] < 3 or abs(float(cv2.contourArea(hull.reshape((-1, 1, 2))))) < 1e-6:
+            distances = np.min(
+                np.linalg.norm(pts[:, None, :] - self.source_points[None, :, :], axis=2),
+                axis=1,
+            )
+            t = np.clip(1.0 - distances / max(1e-6, self.support_fade_distance), 0.0, 1.0)
+        else:
+            contour = hull.reshape((-1, 1, 2)).astype(np.float32)
+            signed = np.asarray(
+                [cv2.pointPolygonTest(contour, (float(point[0]), float(point[1])), True) for point in pts],
+                dtype=np.float64,
+            )
+            t = np.clip(1.0 + signed / max(1e-6, self.support_fade_distance), 0.0, 1.0)
+        # Smoothstep removes the derivative discontinuity at both ends.
+        return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+
+
+def _support_fade_distance(source: np.ndarray) -> float:
+    pts = ensure_numpy_points(source).astype(np.float64)
+    if pts.shape[0] < 2:
+        return 50.0
+    distances = np.linalg.norm(pts[:, None, :] - pts[None, :, :], axis=2)
+    distances[distances <= 1e-9] = np.inf
+    nearest = np.min(distances, axis=1)
+    finite = nearest[np.isfinite(nearest)]
+    spacing = float(np.median(finite)) if finite.size else 50.0
+    return max(8.0, 1.5 * spacing)
 
 
 def _robust_fit(
@@ -272,9 +321,8 @@ class _PlanarMap:
         if self.residual is None or pts.size == 0:
             return base
         correction = self.residual.map(pts)
-        supported = self.residual.supported(pts, margin_ratio=0.15)
-        correction[~supported] = 0.0
-        return (base + correction).astype(np.float32)
+        confidence = self.residual.support_weights(pts)[:, None]
+        return (base + correction * confidence).astype(np.float32)
 
     def inverse(self, points: np.ndarray) -> np.ndarray:
         target = ensure_numpy_points(points).astype(np.float32)
@@ -328,21 +376,50 @@ class IndependentGeometry:
         self._ball_direct, self._ball_residual = self._build_ball_maps()
 
     def camera_to_table(self, points_camera: np.ndarray) -> np.ndarray:
+        self._require_projection()
         return self._camera_table.forward(points_camera)
 
     def table_to_camera(self, points_table: np.ndarray) -> np.ndarray:
+        self._require_projection()
         return self._camera_table.inverse(points_table)
 
     def table_to_projector(self, points_table: np.ndarray) -> np.ndarray:
+        self._require_projection()
         return self._table_projector.forward(points_table)
 
     def projector_to_table(self, points_projector: np.ndarray) -> np.ndarray:
+        self._require_projection()
         return self._table_projector.inverse(points_projector)
 
     def camera_to_projector(self, points_camera: np.ndarray) -> np.ndarray:
-        if not self.projection.is_valid:
-            return ensure_numpy_points(points_camera).astype(np.float32)
+        self._require_projection()
         return self.table_to_projector(self.camera_to_table(points_camera))
+
+    def table_circle_to_projector_ellipse(
+        self,
+        center_table: np.ndarray | tuple[float, float],
+        radius_mm: float,
+    ) -> ProjectedEllipse:
+        self._require_projection()
+        center = np.asarray(center_table, dtype=np.float32).reshape((2,))
+        radius = float(max(0.0, radius_mm))
+        center_projector = self.table_to_projector(center.reshape((1, 2)))[0]
+        if radius <= 0.0:
+            return ProjectedEllipse(
+                center_px=(float(center_projector[0]), float(center_projector[1])),
+                radius_x_px=0.0,
+                radius_y_px=0.0,
+            )
+        angles = np.linspace(0.0, 2.0 * np.pi, 48, endpoint=False, dtype=np.float32)
+        circle = center.reshape((1, 2)) + radius * np.column_stack([np.cos(angles), np.sin(angles)])
+        projected = self.table_to_projector(circle.astype(np.float32))
+        (cx, cy), (diameter_a, diameter_b), angle = cv2.fitEllipse(projected.reshape((-1, 1, 2)))
+        return ProjectedEllipse(
+            center_px=(float(cx), float(cy)),
+            radius_x_px=max(0.0, 0.5 * float(diameter_a)),
+            radius_y_px=max(0.0, 0.5 * float(diameter_b)),
+            rotation_deg=float(angle),
+        )
 
     def ball_to_table(self, points_camera: np.ndarray) -> np.ndarray:
         points = ensure_numpy_points(points_camera).astype(np.float32)
@@ -351,17 +428,23 @@ class IndependentGeometry:
             return base
         if self._ball_direct is not None:
             direct = self._ball_direct.map(points)
-            supported = self._ball_direct.supported(points)
-            base[supported] = direct[supported]
+            confidence = self._ball_direct.support_weights(points)[:, None]
+            base += (direct - base) * confidence
         if self._ball_residual is not None:
             correction = self._ball_residual.map(points)
-            supported = self._ball_residual.supported(points, margin_ratio=0.12)
-            base[supported] += correction[supported]
+            confidence = self._ball_residual.support_weights(points)[:, None]
+            base += correction * confidence
         elif self._ball_direct is None and self.ball_compensation.is_valid:
             # Compatibility for old one/two-point files that cannot support a
             # stable smooth fit. New calibration sessions always use >= 3.
             base += self.ball_compensation.offsets_for_camera_points(points).astype(np.float32)
         return base.astype(np.float32)
+
+    def _require_projection(self) -> None:
+        if not self.projection.is_valid:
+            raise CalibrationUnavailableError(
+                "Projection calibration is unavailable or invalid; geometry transforms are disabled."
+            )
 
     @property
     def quality_report(self) -> dict[str, float | int | str]:
@@ -385,7 +468,7 @@ class IndependentGeometry:
 
     def _build_camera_table_map(self) -> _PlanarMap:
         table_rect = _table_rectangle(self.table)
-        camera_polygon = ensure_numpy_points(self.projection.table_polygon_cam).astype(np.float32)
+        camera_polygon = polygon_quad(self.projection.table_polygon_cam)
         if camera_polygon.shape[0] == 4:
             homography = cv2.getPerspectiveTransform(camera_polygon, table_rect)
             return _PlanarMap(homography=homography)
@@ -474,8 +557,9 @@ def _table_rectangle(table: TableModel) -> np.ndarray:
 
 
 def _projector_polygon(projection: ProjectionCalibration) -> np.ndarray:
-    polygon = ensure_numpy_points(projection.table_polygon_proj).astype(np.float32)
+    raw_polygon = ensure_numpy_points(projection.table_polygon_proj).astype(np.float32)
+    polygon = polygon_quad(raw_polygon)
     if polygon.shape[0] == 4:
         return polygon
-    x1, y1, x2, y2 = table_bbox_from_polygon(polygon, projection.projector_size)
+    x1, y1, x2, y2 = table_bbox_from_polygon(raw_polygon, projection.projector_size)
     return np.asarray([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.float32)

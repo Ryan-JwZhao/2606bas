@@ -9,10 +9,17 @@ import numpy as np
 from ..geometry import TableGeometry
 from ..utils import clamp, ensure_numpy_points
 from .charuco import CharucoBoardSpec, detect_charuco_corners, render_charuco_board
-from .projector import ProjectionCalibration, table_bbox_from_polygon
+from .projector import (
+    MAX_PROJECTION_INLIER_P95_PX,
+    MIN_PROJECTION_INLIER_RATIO,
+    ProjectionCalibration,
+    polygon_quad,
+    table_bbox_from_polygon,
+)
 
 
 PointArray = np.ndarray
+MAX_LINKED_PATTERN_CV_P95_PX = 5.0
 
 
 @dataclass
@@ -157,8 +164,9 @@ def solve_linked_projection_calibration(
     projector_size: Tuple[int, int],
     *,
     table_polygon_cam: Optional[np.ndarray] = None,
+    minimum_pocket_zones: int = 4,
 ) -> LinkedCalibrationResult:
-    usable = [obs for obs in observations if obs.matched_count >= 4]
+    usable = [obs for obs in observations if obs.matched_count >= 6]
     if len(usable) < 2:
         raise ValueError("联动校正至少需要两个有效采样图样。")
     camera_points = np.vstack([obs.camera_points for obs in usable]).astype(np.float64)
@@ -171,8 +179,36 @@ def solve_linked_projection_calibration(
         mode="linked_hybrid_charuco",
         projector_size=projector_size,
     )
-    cam_poly = ensure_numpy_points(table_polygon_cam)
-    if cam_poly.shape[0] >= 3:
+    inlier_ratio = float(projection.quality_report.get("ransac_inlier_ratio", 0.0))
+    if inlier_ratio < MIN_PROJECTION_INLIER_RATIO:
+        raise RuntimeError(
+            "Linked calibration rejected: RANSAC inlier ratio "
+            f"{inlier_ratio:.1%} is below the required {MIN_PROJECTION_INLIER_RATIO:.0%}."
+        )
+    inlier_p95 = float(projection.quality_report.get("ransac_inlier_p95_px", float("inf")))
+    if not np.isfinite(inlier_p95) or inlier_p95 > MAX_PROJECTION_INLIER_P95_PX:
+        raise RuntimeError(
+            "Linked calibration rejected: inlier reprojection P95 "
+            f"{inlier_p95:.2f}px exceeds {MAX_PROJECTION_INLIER_P95_PX:.2f}px."
+        )
+    zones = {str(obs.emphasis_zone).strip().lower() for obs in usable}
+    pocket_zones = {zone for zone in zones if zone.startswith("pocket_")}
+    missing_core = [zone for zone in ("full", "center") if zone not in zones]
+    if missing_core or len(pocket_zones) < max(0, int(minimum_pocket_zones)):
+        raise RuntimeError(
+            "Linked calibration rejected: insufficient spatial coverage; "
+            f"missing core zones={missing_core}, pocket zones={len(pocket_zones)}/"
+            f"{max(0, int(minimum_pocket_zones))}."
+        )
+    pattern_cv_errors = _leave_one_pattern_out_errors(usable)
+    pattern_cv_p95 = float(np.percentile(pattern_cv_errors, 95)) if pattern_cv_errors.size else float("inf")
+    if not np.isfinite(pattern_cv_p95) or pattern_cv_p95 > MAX_LINKED_PATTERN_CV_P95_PX:
+        raise RuntimeError(
+            "Linked calibration rejected: leave-one-pattern-out P95 "
+            f"{pattern_cv_p95:.2f}px exceeds {MAX_LINKED_PATTERN_CV_P95_PX:.2f}px."
+        )
+    cam_poly = polygon_quad(ensure_numpy_points(table_polygon_cam))
+    if cam_poly.shape[0] == 4:
         projection.table_polygon_cam = cam_poly.astype(np.float64)
         projection.table_polygon_proj = projection.camera_to_projector_points(cam_poly).astype(np.float64)
     if cam_poly.shape[0] == 4 and projection.residual_field.control_points_cam.shape[0] >= 4:
@@ -197,7 +233,8 @@ def solve_linked_projection_calibration(
         "patterns_used": len(usable),
         "matched_points_total": int(camera_points.shape[0]),
         "matched_points_by_pattern": {obs.pattern_id: int(obs.matched_count) for obs in usable},
-        "zones": sorted({obs.emphasis_zone for obs in usable}),
+        "zones": sorted(zones),
+        "pocket_zones_used": len(pocket_zones),
         "geometry_model": "independent_2d",
         "camera_extrinsics_used": False,
     }
@@ -208,9 +245,36 @@ def solve_linked_projection_calibration(
         "matched_points_total": summary["matched_points_total"],
         "matched_points_by_pattern": summary["matched_points_by_pattern"],
         "zones": summary["zones"],
+        "quality_gate_passed": True,
+        "minimum_inlier_ratio": float(MIN_PROJECTION_INLIER_RATIO),
+        "minimum_pocket_zones": max(0, int(minimum_pocket_zones)),
+        "maximum_inlier_p95_px": float(MAX_PROJECTION_INLIER_P95_PX),
+        "pattern_cv_p95_px": pattern_cv_p95,
+        "maximum_pattern_cv_p95_px": float(MAX_LINKED_PATTERN_CV_P95_PX),
     })
     projection.quality_report.update(projection.calibration_error_stats())
     return LinkedCalibrationResult(projection=projection, observations=usable, summary=summary)
+
+
+def _leave_one_pattern_out_errors(observations: Sequence[LinkedCalibrationObservation]) -> np.ndarray:
+    errors: list[float] = []
+    for validation_index, validation in enumerate(observations):
+        training = [obs for index, obs in enumerate(observations) if index != validation_index]
+        if not training:
+            continue
+        source = np.vstack([obs.camera_points for obs in training]).astype(np.float64)
+        target = np.vstack([obs.projector_points for obs in training]).astype(np.float64)
+        if source.shape[0] < 12:
+            continue
+        homography, _ = cv2.findHomography(source, target, cv2.RANSAC, 3.0)
+        if homography is None:
+            continue
+        predicted = cv2.perspectiveTransform(
+            validation.camera_points.astype(np.float64).reshape((-1, 1, 2)),
+            homography,
+        ).reshape((-1, 2))
+        errors.extend(np.linalg.norm(predicted - validation.projector_points, axis=1).tolist())
+    return np.asarray(errors, dtype=np.float64)
 
 
 def projection_output_summary(result: LinkedCalibrationResult) -> str:

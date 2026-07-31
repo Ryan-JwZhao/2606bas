@@ -7,6 +7,8 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+from ..geometry_contract import context_compatibility_errors
+
 
 @dataclass
 class BallCompensationModel:
@@ -18,9 +20,16 @@ class BallCompensationModel:
     max_neighbors: int = 8
     source_path: Optional[str] = None
     quality_report: Dict[str, Any] = field(default_factory=dict)
+    calibration_context: Dict[str, Any] = field(default_factory=dict)
+    compatibility_errors: tuple[str, ...] = ()
 
     @classmethod
-    def load_json(cls, path: str | Path | None) -> "BallCompensationModel":
+    def load_json(
+        cls,
+        path: str | Path | None,
+        *,
+        expected_context: Optional[Dict[str, Any]] = None,
+    ) -> "BallCompensationModel":
         if path is None:
             return cls()
         p = Path(path)
@@ -36,6 +45,8 @@ class BallCompensationModel:
                 targets = [sample.get("target_table_mm", []) for sample in samples]
             if not weights:
                 weights = [_sample_weight(sample) for sample in samples]
+        stored_context = dict(data.get("calibration_context", {}))
+        compatibility_errors = context_compatibility_errors(stored_context, expected_context)
         return cls(
             mode=str(data.get("mode", "none")),
             control_points_camera_px=np.asarray(
@@ -48,12 +59,15 @@ class BallCompensationModel:
             max_neighbors=max(1, int(data.get("max_neighbors", 8) or 8)),
             source_path=str(p),
             quality_report=dict(data.get("quality_report", {})),
+            calibration_context=stored_context,
+            compatibility_errors=compatibility_errors,
         )
 
     @property
     def is_valid(self) -> bool:
         return (
             self.control_points_camera_px.shape[0] > 0
+            and not self.compatibility_errors
             and (
                 self.control_points_camera_px.shape == self.delta_table_mm.shape
                 or self.control_points_camera_px.shape == self.target_table_mm.shape
@@ -75,6 +89,7 @@ class BallCompensationModel:
             "sample_weights": np.asarray(self.sample_weights, dtype=np.float64).reshape((-1,)).tolist(),
             "max_neighbors": int(max(1, int(self.max_neighbors))),
             "quality_report": dict(self.quality_report),
+            "calibration_context": dict(self.calibration_context),
         }
         if extra_data:
             payload.update(extra_data)
@@ -112,4 +127,7 @@ class BallCompensationModel:
 def _sample_weight(sample: Dict[str, Any]) -> float:
     confidence = float(sample.get("detection_confidence", 1.0) or 0.0)
     spread = max(0.0, float(sample.get("stability_spread_px", 0.0) or 0.0))
-    return float(np.clip(confidence / (1.0 + spread * spread), 0.05, 1.0))
+    geometry_quality = float(sample.get("geometry_quality", 0.0) or 0.0)
+    method = str(sample.get("geometry_method", "unknown")).strip().lower()
+    method_weight = 1.0 if method.startswith("segmentation_ellipse") else 0.85 if method.startswith("appearance_ellipse") else 0.25
+    return float(np.clip(confidence * geometry_quality * geometry_quality * method_weight / (1.0 + spread * spread), 0.01, 1.0))

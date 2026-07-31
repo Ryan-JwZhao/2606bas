@@ -54,6 +54,7 @@ from ..capture import (
 )
 from ..capture.nori_sdk import NoriProtocolController
 from ..geometry import TableGeometryLoader
+from ..geometry_contract import projection_calibration_context
 from ..logging_config import configure_logging
 from ..instant_replay import InstantReplayBuffer
 from ..media_capture import FfmpegH264Recorder
@@ -145,6 +146,8 @@ def _create_runtime_calibration_service(
         config.calibration,
         config.camera,
         frame_undistorted=_configured_frame_undistorted(config, pipeline),
+        detector_config=config.detector,
+        projection_config=config.projection,
     )
 
 
@@ -157,6 +160,8 @@ def _create_calibration_workflow_service(
         config.calibration,
         config.camera,
         frame_undistorted=_configured_frame_undistorted(config, pipeline),
+        detector_config=config.detector,
+        projection_config=config.projection,
     )
 
 
@@ -1383,6 +1388,25 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
                 observations,
                 (int(self.operator.config.projection.projector_width), int(self.operator.config.projection.projector_height)),
                 table_polygon_cam=table_polygon_cam,
+            )
+            frame_h, frame_w = first_frame_shape
+            coordinate_domain = (
+                "undistorted"
+                if calibration.distortion_correction_enabled and calibration.camera.is_valid
+                else "raw"
+            )
+            self._result.projection.calibration_context = projection_calibration_context(
+                frame_width=int(frame_w),
+                frame_height=int(frame_h),
+                frame_rotation_degrees=int(self.operator.config.camera.frame_rotation_degrees),
+                camera_coordinate_domain=coordinate_domain,
+                distortion_file=(
+                    self.operator.config.camera.distortion_correction_file
+                    if coordinate_domain == "undistorted"
+                    else None
+                ),
+                projector_width=int(self.operator.config.projection.projector_width),
+                projector_height=int(self.operator.config.projection.projector_height),
             )
             self._saved_path = self._projection_output_path()
             self._result.projection.save(self._saved_path)

@@ -1,5 +1,8 @@
 # BAS台球辅助系统 使用说明
 
+工业相机旋转、相机—投影仪联合校准与球心补偿的完整现场重标定步骤见
+[`docs/recalibration/README.md`](docs/recalibration/README.md)。
+
 ## 简介
 
 BAS 是一个台球辅助系统，主要能力包括：

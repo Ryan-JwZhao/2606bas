@@ -232,6 +232,8 @@ class OverlayCircle:
     radius: float
     color: Tuple[int, int, int] = (255, 255, 255)
     width: int = 2
+    radius_y: Optional[float] = None
+    rotation_deg: float = 0.0
 
 
 @dataclass

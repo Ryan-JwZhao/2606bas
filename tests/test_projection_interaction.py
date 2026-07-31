@@ -8,7 +8,7 @@ import numpy as np
 from bas.projection.interaction import ProjectionInteractionController
 from bas.projection.star_formula import StarFormulaConfig
 from bas.projection.overlay import render_overlay_image
-from bas.schemas import Event, MatchStateFrame, OverlayText, ProjectionOverlay, ShotPlan
+from bas.schemas import Event, MatchStateFrame, OverlayCircle, OverlayText, ProjectionOverlay, ShotPlan
 
 
 def _write_bgra_png(path: Path, frame: np.ndarray) -> None:
@@ -42,6 +42,20 @@ def test_unicode_overlay_text_is_rendered_in_final_projector_pixels() -> None:
 
     assert int(np.count_nonzero(first)) > 0
     assert np.array_equal(first, second)
+
+
+def test_projector_overlay_renders_anisotropic_circle_as_ellipse() -> None:
+    image = render_overlay_image(
+        ProjectionOverlay(
+            overlay_id="ellipse",
+            frame_id=1,
+            projector_size=(120, 120),
+            circles=[OverlayCircle(center=(60.0, 60.0), radius=10.0, radius_y=25.0, width=2)],
+        )
+    )
+    ys, xs = np.nonzero(np.any(image != 0, axis=2))
+
+    assert int(np.max(ys) - np.min(ys)) > int(np.max(xs) - np.min(xs)) * 1.8
 
 
 def test_unicode_overlay_text_supports_table_aligned_rotation() -> None:

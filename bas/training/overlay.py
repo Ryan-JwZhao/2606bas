@@ -80,12 +80,22 @@ class TrainingOverlayBuilder:
                 point = self.calibration.ball_camera_px_to_projector_px(
                     np.asarray([track.center_px], dtype=np.float32)
                 )[0]
-                radius = self.calibration.ball_projector_radius_px(track.center_px)
+                ellipse = self.calibration.ball_projector_ellipse(track.center_px)
+                radius = 0.5 * (float(ellipse.radius_x_px) + float(ellipse.radius_y_px))
             except Exception:
                 continue
-            center = (float(point[0]), float(point[1]))
+            center = ellipse.center_px
             color = (255, 255, 255) if number == 0 else ((0, 220, 255) if number in expected else (160, 160, 160))
-            overlay.circles.append(OverlayCircle(center=center, radius=max(8.0, float(radius) * 1.25), color=color, width=3))
+            overlay.circles.append(
+                OverlayCircle(
+                    center=center,
+                    radius=max(8.0, float(ellipse.radius_x_px) * 1.25),
+                    radius_y=max(8.0, float(ellipse.radius_y_px) * 1.25),
+                    rotation_deg=float(ellipse.rotation_deg),
+                    color=color,
+                    width=3,
+                )
+            )
             overlay.labels.append(((center[0] + radius, center[1] - radius), str(number), color))
 
         phase_text = str(state.phase or "setup").upper()

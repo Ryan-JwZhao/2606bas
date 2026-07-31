@@ -115,24 +115,14 @@ class OverlayBuilder:
             circle_points.extend((float(point[0]), float(point[1])) for point in object_nodes[1:-1])
         circles = self.calibration.table_mm_to_projector_px(np.asarray(circle_points, dtype=np.float32))
         radius_px = self._projector_radius_px(candidate.ghost_ball, ball_radius)
-        overlay.circles.append(OverlayCircle(center=(float(circles[0, 0]), float(circles[0, 1])), radius=radius_px, color=ROUTE_COLOR, width=style.circle_width))
-        overlay.circles.append(OverlayCircle(center=(float(circles[1, 0]), float(circles[1, 1])), radius=radius_px, color=ROUTE_COLOR, width=style.circle_width))
+        overlay.circles.append(self._projector_ellipse_circle(candidate.ghost_ball, ball_radius, ROUTE_COLOR, style.circle_width))
+        overlay.circles.append(self._projector_ellipse_circle(candidate.object_ball, ball_radius, ROUTE_COLOR, style.circle_width))
         overlay.circles.append(
-            OverlayCircle(
-                center=(float(circles[2, 0]), float(circles[2, 1])),
-                radius=max(8.0, radius_px * 0.45),
-                color=ROUTE_COLOR,
-                width=style.circle_width,
-            )
+            self._projector_ellipse_circle(candidate.pocket_point, ball_radius, ROUTE_COLOR, style.circle_width, scale=0.45, minimum=8.0)
         )
         for rail_circle in circles[3:]:
             overlay.circles.append(
-                OverlayCircle(
-                    center=(float(rail_circle[0]), float(rail_circle[1])),
-                    radius=max(6.0, radius_px * 0.35),
-                    color=ROUTE_COLOR,
-                    width=style.circle_width,
-                )
+                OverlayCircle(center=(float(rail_circle[0]), float(rail_circle[1])), radius=max(6.0, radius_px * 0.35), color=ROUTE_COLOR, width=style.circle_width)
             )
         label_pos = (float(circles[0, 0] + 14), float(circles[0, 1] - 14))
         overlay.labels.append((label_pos, f"{candidate.score:.2f}", ROUTE_COLOR))
@@ -153,12 +143,7 @@ class OverlayBuilder:
         collision_count = len(route.collision_points or [])
         for idx, node in enumerate(nodes[1 : 1 + collision_count]):
             overlay.circles.append(
-                OverlayCircle(
-                    center=self._projector_point(node),
-                    radius=self._projector_radius_px(node, radius),
-                    color=ROUTE_COLOR,
-                    width=style.circle_width,
-                )
+                self._projector_ellipse_circle(node, radius, ROUTE_COLOR, style.circle_width)
             )
 
         for i in range(max(0, len(nodes) - 1)):
@@ -199,12 +184,7 @@ class OverlayBuilder:
         if route.pocket_point is not None:
             pocket = np.asarray(route.pocket_point, dtype=np.float32)
             overlay.circles.append(
-                OverlayCircle(
-                    center=self._projector_point(pocket),
-                    radius=max(8.0, self._projector_radius_px(pocket, radius) * 0.45),
-                    color=ROUTE_COLOR,
-                    width=style.circle_width,
-                )
+                self._projector_ellipse_circle(pocket, radius, ROUTE_COLOR, style.circle_width, scale=0.45, minimum=8.0)
             )
 
     def _append_line_mm(
@@ -244,6 +224,26 @@ class OverlayBuilder:
         point = np.asarray(point_mm, dtype=np.float32).reshape((2,))
         arr = self.calibration.table_mm_to_projector_px(np.asarray([point, point + np.asarray([radius, 0.0], dtype=np.float32)], dtype=np.float32))
         return float(max(1.0, np.linalg.norm(arr[1] - arr[0])))
+
+    def _projector_ellipse_circle(
+        self,
+        point_mm,
+        radius_mm: float,
+        color: Tuple[int, int, int],
+        width: int,
+        *,
+        scale: float = 1.0,
+        minimum: float = 1.0,
+    ) -> OverlayCircle:
+        ellipse = self.calibration.table_circle_to_projector_ellipse(point_mm, radius_mm)
+        return OverlayCircle(
+            center=ellipse.center_px,
+            radius=max(float(minimum), float(ellipse.radius_x_px) * float(scale)),
+            radius_y=max(float(minimum), float(ellipse.radius_y_px) * float(scale)),
+            rotation_deg=float(ellipse.rotation_deg),
+            color=color,
+            width=width,
+        )
 
     @staticmethod
     def _trim_projector_segment(points: List[Tuple[float, float]], trim_start_px: float, trim_end_px: float) -> List[Tuple[float, float]]:
@@ -289,10 +289,15 @@ def render_overlay_image(overlay: ProjectionOverlay, background: Optional[np.nda
             if line.arrow:
                 _draw_arrow_head(img, pts[-2], pts[-1], color, width)
     for circle in overlay.circles:
-        cv2.circle(
+        radius_x = max(1, int(round(circle.radius)))
+        radius_y = max(1, int(round(circle.radius if circle.radius_y is None else circle.radius_y)))
+        cv2.ellipse(
             img,
             (int(round(circle.center[0])), int(round(circle.center[1]))),
-            max(1, int(round(circle.radius))),
+            (radius_x, radius_y),
+            float(circle.rotation_deg),
+            0.0,
+            360.0,
             tuple(int(c) for c in circle.color),
             max(1, int(circle.width)),
             cv2.LINE_AA,

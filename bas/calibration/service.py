@@ -5,12 +5,13 @@ from typing import List
 
 import numpy as np
 
-from ..config import CalibrationConfig, CameraConfig
+from ..config import CalibrationConfig, CameraConfig, DetectorConfig, ProjectionConfig
+from ..geometry_contract import calibration_context, projection_calibration_context
 from ..schemas import Point, TableModel
 from ..utils import ensure_numpy_points
 from .ball_compensation import BallCompensationModel
 from .camera import CameraCalibration
-from .geometry import IndependentGeometry
+from .geometry import IndependentGeometry, ProjectedEllipse
 from .projector import ProjectionCalibration
 
 
@@ -128,6 +129,17 @@ class CalibrationService:
     def table_mm_to_projector_px(self, points: np.ndarray) -> np.ndarray:
         return self._geometry.table_to_projector(points)
 
+    def table_circle_to_projector_ellipse(
+        self,
+        center_mm: np.ndarray | Point,
+        radius_mm: float,
+    ) -> ProjectedEllipse:
+        return self._geometry.table_circle_to_projector_ellipse(center_mm, radius_mm)
+
+    def ball_projector_ellipse(self, center_px: Point) -> ProjectedEllipse:
+        center_mm = self.ball_camera_px_to_table_mm(np.asarray([center_px], dtype=np.float32))[0]
+        return self.table_circle_to_projector_ellipse(center_mm, 0.5 * float(self.table.ball_diameter_mm))
+
     def table_mm_to_camera_px(self, points: np.ndarray) -> np.ndarray:
         camera_points = self._geometry.table_to_camera(points)
         if self._should_undistort_camera_points():
@@ -155,27 +167,15 @@ class CalibrationService:
         return float(np.linalg.norm(mm[1] - mm[0]))
 
     def ball_projector_radius_px(self, center_px: Point) -> float:
-        center = np.asarray([center_px], dtype=np.float32)
-        center_mm = self.ball_camera_px_to_table_mm(center)[0]
-        return self.table_radius_to_projector_px(center_mm, 0.5 * float(self.table.ball_diameter_mm))
+        ellipse = self.ball_projector_ellipse(center_px)
+        return 0.5 * (float(ellipse.radius_x_px) + float(ellipse.radius_y_px))
 
     def table_radius_to_projector_px(self, center_mm: np.ndarray | Point, radius_mm: float) -> float:
         radius = float(max(0.0, radius_mm))
         if radius <= 0.0:
             return 0.0
-        point = np.asarray(center_mm, dtype=np.float32).reshape((2,))
-        refs = np.asarray(
-            [
-                point,
-                point + np.asarray([radius, 0.0], dtype=np.float32),
-                point + np.asarray([0.0, radius], dtype=np.float32),
-            ],
-            dtype=np.float32,
-        )
-        proj = self.table_mm_to_projector_px(refs).astype(np.float32)
-        rx = float(np.linalg.norm(proj[1] - proj[0]))
-        ry = float(np.linalg.norm(proj[2] - proj[0]))
-        return max(1.0, 0.5 * (rx + ry))
+        ellipse = self.table_circle_to_projector_ellipse(center_mm, radius)
+        return max(1.0, 0.5 * (float(ellipse.radius_x_px) + float(ellipse.radius_y_px)))
 
     def _ball_center_reference_px(self) -> tuple[float, float]:
         cfg = self.ball_center_compensation
@@ -211,6 +211,8 @@ def create_calibration_service(
     frame_undistorted: bool = False,
     *,
     distortion_correction_enabled: bool,
+    ball_compensation_expected_context: dict[str, object] | None = None,
+    projection_expected_context: dict[str, object] | None = None,
 ) -> CalibrationService:
     config.sync_projection_file_alias()
     correction_enabled = bool(distortion_correction_enabled)
@@ -219,10 +221,14 @@ def create_calibration_service(
         if correction_enabled
         else CameraCalibration(metadata={"disabled": True})
     )
-    projection = ProjectionCalibration.load_json(config.active_projection_file())
+    projection = ProjectionCalibration.load_json(
+        config.active_projection_file(),
+        expected_context=projection_expected_context,
+    )
     projection_mode = config.normalized_projection_mode()
     ball_compensation_model = BallCompensationModel.load_json(
-        config.engineered_ball_compensation_file if projection_mode == "engineered" else None
+        config.engineered_ball_compensation_file if projection_mode == "engineered" else None,
+        expected_context=ball_compensation_expected_context,
     )
     table = TableModel(
         width_mm=float(config.table_width_mm),
@@ -250,11 +256,46 @@ def create_setting_aware_calibration_service(
     calibration_config: CalibrationConfig,
     camera_config: CameraConfig,
     frame_undistorted: bool = False,
+    detector_config: DetectorConfig | None = None,
+    projection_config: ProjectionConfig | None = None,
 ) -> CalibrationService:
     """Create calibration state without overriding the active camera correction setting."""
 
+    coordinate_domain = (
+        "undistorted"
+        if bool(camera_config.distortion_correction_enabled)
+        and CameraCalibration.load_opencv_yaml(camera_config.distortion_correction_file).is_valid
+        else "raw"
+    )
+    rotation_degrees = int(camera_config.frame_rotation_degrees) % 360
+    frame_width = int(camera_config.height) if rotation_degrees in {90, 270} else int(camera_config.width)
+    frame_height = int(camera_config.width) if rotation_degrees in {90, 270} else int(camera_config.height)
+    projection_context = projection_calibration_context(
+        frame_width=frame_width,
+        frame_height=frame_height,
+        frame_rotation_degrees=rotation_degrees,
+        camera_coordinate_domain=coordinate_domain,
+        distortion_file=camera_config.distortion_correction_file if coordinate_domain == "undistorted" else None,
+        projector_width=int(projection_config.projector_width) if projection_config is not None else 0,
+        projector_height=int(projection_config.projector_height) if projection_config is not None else 0,
+    )
+    if projection_config is None:
+        projection_context.pop("projector_width", None)
+        projection_context.pop("projector_height", None)
+    expected_context = calibration_context(
+        frame_width=frame_width,
+        frame_height=frame_height,
+        frame_rotation_degrees=rotation_degrees,
+        camera_coordinate_domain=coordinate_domain,
+        distortion_file=camera_config.distortion_correction_file if coordinate_domain == "undistorted" else None,
+        projection_file=calibration_config.active_projection_file(),
+        detector_model_file=detector_config.model_path if detector_config is not None else None,
+        ball_diameter_mm=float(calibration_config.ball_diameter_mm),
+    )
     return create_calibration_service(
         calibration_config,
         frame_undistorted=bool(frame_undistorted),
         distortion_correction_enabled=bool(camera_config.distortion_correction_enabled),
+        ball_compensation_expected_context=expected_context,
+        projection_expected_context=projection_context,
     )

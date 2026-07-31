@@ -54,7 +54,8 @@ def test_setting_aware_calibration_service_does_not_override_disabled_correction
 
     assert service.camera.is_valid is False
     assert service.distortion_correction_enabled is False
-    assert np.array_equal(service.camera_px_to_projector_px(points), points)
+    with pytest.raises(RuntimeError, match="Projection calibration"):
+        service.camera_px_to_projector_px(points)
 
 
 def test_projection_residual_maps_control_points_exactly() -> None:
@@ -90,7 +91,6 @@ def test_projection_residual_ignores_ransac_outliers() -> None:
             [45, 4],
             [50, 4],
             [55, 4],
-            [58, 8],
         ],
         dtype=np.float64,
     )
@@ -290,8 +290,56 @@ def test_holdout_verification_reports_mm_and_image_errors() -> None:
 
     assert report["image_error_px"]["p95"] < 1e-3
     assert report["table_error_mm"]["p95"] < 1e-3
-    assert report["verdict"]["formal"]
-    assert "正式: 通过" in format_holdout_report(report)
+    assert report["verdict"]["formal"] is False
+    assert report["coverage"]["formal"] is False
+    assert "正式: 未通过" in format_holdout_report(report)
+
+
+def test_holdout_formal_verdict_requires_and_accepts_spatial_coverage() -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [100, 0], [100, 50], [0, 50]], dtype=np.float64),
+        np.array([[10, 20], [210, 20], [210, 120], [10, 120]], dtype=np.float64),
+        projector_size=(220, 140),
+    )
+    projection.table_polygon_proj = np.array([[10, 20], [210, 20], [210, 120], [10, 120]], dtype=np.float64)
+    service = CalibrationService(
+        camera=CameraCalibration(metadata={}),
+        projection=projection,
+        table=TableModel(
+            width_mm=2000,
+            height_mm=1000,
+            ball_diameter_mm=57.15,
+            inner_polygon_mm=[(0, 0), (2000, 0), (2000, 1000), (0, 1000)],
+            pockets_mm=[],
+        ),
+    )
+    zones = [
+        "center",
+        "edge_top",
+        "edge_bottom",
+        "edge_left",
+        "pocket_lt",
+        "pocket_rt",
+        "pocket_lb",
+        "pocket_rb",
+    ]
+    samples = []
+    for index in range(24):
+        x = 10.0 + float((index % 6) * 15)
+        y = 8.0 + float((index // 6) * 10)
+        samples.append(
+            {
+                "camera_px": [x, y],
+                "projector_px": [2.0 * x + 10.0, 2.0 * y + 20.0],
+                "world_mm": [20.0 * x, 20.0 * y],
+                "zone": zones[index % len(zones)],
+            }
+        )
+
+    report = verify_holdout_samples(samples, service)
+
+    assert report["coverage"]["formal"] is True
+    assert report["verdict"]["formal"] is True
 
 
 def test_holdout_ball_samples_use_ball_center_geometry() -> None:
@@ -333,6 +381,55 @@ def test_holdout_ball_samples_use_ball_center_geometry() -> None:
 
     assert report["table_error_mm"]["p95"] < 1e-3
     assert report["geometry_model"]["camera_extrinsics_used"] == 0
+
+
+def test_single_holdout_sample_cannot_receive_formal_verdict() -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [100, 0], [100, 50], [0, 50]], dtype=np.float64),
+        np.array([[0, 0], [100, 0], [100, 50], [0, 50]], dtype=np.float64),
+        projector_size=(100, 50),
+    )
+    projection.table_polygon_cam = np.array([[0, 0], [100, 0], [100, 50], [0, 50]], dtype=np.float64)
+    projection.table_polygon_proj = projection.table_polygon_cam.copy()
+    service = CalibrationService(CameraCalibration(metadata={}), projection, TableModel(100, 50, 57.15, [(0, 0), (100, 0), (100, 50), (0, 50)], []))
+
+    report = verify_holdout_samples(
+        [{"camera_px": [50, 25], "world_mm": [50, 25], "zone": "center"}],
+        service,
+    )
+
+    assert report["verdict"]["formal"] is False
+    assert report["verdict"]["sample_coverage"] is False
+
+
+def test_projection_loader_rejects_null_homography(tmp_path) -> None:
+    path = tmp_path / "invalid_projection.json"
+    path.write_text(json.dumps({"mode": "invalid", "homography": None}), encoding="utf-8")
+
+    projection = ProjectionCalibration.load_json(path)
+
+    assert projection.is_valid is False
+
+
+def test_projection_context_mismatch_rejects_rotated_camera_artifact(tmp_path) -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [100, 0], [100, 50], [0, 50]], dtype=np.float64),
+        np.array([[10, 20], [210, 20], [210, 120], [10, 120]], dtype=np.float64),
+    )
+    projection.calibration_context = {
+        "frame_rotation_degrees": 0,
+        "camera_coordinate_domain": "raw",
+    }
+    path = tmp_path / "projection_context.json"
+    projection.save(path)
+
+    loaded = ProjectionCalibration.load_json(
+        path,
+        expected_context={"frame_rotation_degrees": 180, "camera_coordinate_domain": "raw"},
+    )
+
+    assert loaded.is_valid is False
+    assert "frame_rotation_degrees" in loaded.compatibility_errors
 
 
 def test_engineered_calibration_service_loads_plane_and_ball_compensation(tmp_path) -> None:

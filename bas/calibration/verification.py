@@ -10,6 +10,14 @@ from ..utils import percentile
 from .service import CalibrationService
 
 
+MVP_MIN_HOLDOUT_SAMPLES = 12
+FORMAL_MIN_HOLDOUT_SAMPLES = 24
+MVP_MIN_LABELED_ZONES = 4
+FORMAL_MIN_LABELED_ZONES = 8
+MVP_MIN_POCKET_ZONES = 2
+FORMAL_MIN_POCKET_ZONES = 4
+
+
 def verify_holdout_file(path: str | Path, service: CalibrationService) -> Dict[str, Any]:
     p = Path(path)
     with p.open("r", encoding="utf-8") as f:
@@ -68,6 +76,7 @@ def verify_holdout_samples(samples: Iterable[Dict[str, Any]], service: Calibrati
         "table_error_mm": _stats(mm_errors),
         "zone_p95_mm": {zone: percentile(values, 95) for zone, values in sorted(zone_errors.items()) if values},
         "distance_slope_mm_per_cm": _fit_slope(distances_cm, mm_errors),
+        "coverage": _coverage_report(used_samples, zone_errors),
         "thresholds": {
             "image_mean_px": 0.20,
             "image_p95_px": 0.35,
@@ -77,6 +86,12 @@ def verify_holdout_samples(samples: Iterable[Dict[str, Any]], service: Calibrati
             "formal_table_p95_mm": 2.0,
             "pocket_zone_p95_mm": 2.5,
             "distance_slope_abs_mm_per_cm": 0.03,
+            "mvp_min_samples": MVP_MIN_HOLDOUT_SAMPLES,
+            "formal_min_samples": FORMAL_MIN_HOLDOUT_SAMPLES,
+            "mvp_min_labeled_zones": MVP_MIN_LABELED_ZONES,
+            "formal_min_labeled_zones": FORMAL_MIN_LABELED_ZONES,
+            "mvp_min_pocket_zones": MVP_MIN_POCKET_ZONES,
+            "formal_min_pocket_zones": FORMAL_MIN_POCKET_ZONES,
         },
     }
     report["verdict"] = _verdict(report)
@@ -89,6 +104,7 @@ def format_holdout_report(report: Dict[str, Any]) -> str:
     mm = report.get("table_error_mm", {})
     slope = report.get("distance_slope_mm_per_cm")
     verdict = report.get("verdict", {})
+    coverage = report.get("coverage", {})
     lines = [
         f"样本: {report.get('sample_count', 0)} 有效 / {report.get('skipped_count', 0)} 跳过",
         "图像误差: "
@@ -98,6 +114,10 @@ def format_holdout_report(report: Dict[str, Any]) -> str:
         f"median={mm.get('median', 0.0):.3f}mm, p95={mm.get('p95', 0.0):.3f}mm, max={mm.get('max', 0.0):.3f}mm",
         f"距离梯度: {slope:.4f} mm/cm" if slope is not None else "距离梯度: 样本不足",
         f"MVP: {'通过' if verdict.get('mvp') else '未通过'} | 正式: {'通过' if verdict.get('formal') else '未通过'}",
+        "空间覆盖: "
+        f"分区={len(coverage.get('labeled_zones', []))}, "
+        f"袋口分区={len(coverage.get('pocket_zones', []))}, "
+        f"正式覆盖={'通过' if coverage.get('formal') else '未通过'}",
     ]
     zones = report.get("zone_p95_mm", {})
     if zones:
@@ -164,11 +184,42 @@ def _verdict(report: Dict[str, Any]) -> Dict[str, bool]:
     mvp_mm_ok = mm["count"] > 0 and mm["median"] < 1.5 and mm["p95"] < 3.0
     formal_mm_ok = mm["count"] > 0 and mm["median"] < 1.0 and mm["p95"] < 2.0
     slope_ok = slope is None or abs(float(slope)) < 0.03
+    coverage = report["coverage"]
+    mvp_coverage = bool(coverage["mvp"])
+    formal_coverage = bool(coverage["formal"])
     zones_ok = all(float(value) < 2.5 for zone, value in report["zone_p95_mm"].items() if "pocket" in str(zone).lower() or "袋" in str(zone))
     return {
         "image": bool(img_ok),
-        "mvp": bool(img_ok and mvp_mm_ok and slope_ok and zones_ok),
-        "formal": bool(img_ok and formal_mm_ok and slope_ok and zones_ok),
+        "mvp": bool(img_ok and mvp_mm_ok and slope_ok and zones_ok and mvp_coverage),
+        "formal": bool(img_ok and formal_mm_ok and slope_ok and zones_ok and formal_coverage),
         "slope": bool(slope_ok),
         "zones": bool(zones_ok),
+        "mvp_sample_coverage": mvp_coverage,
+        "sample_coverage": formal_coverage,
+    }
+
+
+def _coverage_report(sample_count: int, zone_errors: Dict[str, List[float]]) -> Dict[str, Any]:
+    labeled = {
+        str(zone).strip().lower()
+        for zone, values in zone_errors.items()
+        if values and str(zone).strip().lower() not in {"", "unlabeled", "unknown"}
+    }
+    pocket_zones = {zone for zone in labeled if "pocket" in zone or "袋" in zone}
+    mvp = (
+        int(sample_count) >= MVP_MIN_HOLDOUT_SAMPLES
+        and len(labeled) >= MVP_MIN_LABELED_ZONES
+        and len(pocket_zones) >= MVP_MIN_POCKET_ZONES
+    )
+    formal = (
+        int(sample_count) >= FORMAL_MIN_HOLDOUT_SAMPLES
+        and len(labeled) >= FORMAL_MIN_LABELED_ZONES
+        and len(pocket_zones) >= FORMAL_MIN_POCKET_ZONES
+    )
+    return {
+        "sample_count": int(sample_count),
+        "labeled_zones": sorted(labeled),
+        "pocket_zones": sorted(pocket_zones),
+        "mvp": bool(mvp),
+        "formal": bool(formal),
     }

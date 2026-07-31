@@ -18,10 +18,12 @@ from ..calibration import (
 )
 from ..capture import create_capture_service
 from ..geometry import TableGeometryLoader
+from ..geometry_contract import calibration_context
 from ..paths import PROJECT_ROOT
 from ..perception import build_detection_region_policy, create_detector, filter_detections_by_region
 from ..schemas import Detection
 from ..table_boundaries import EdgeInsets
+from ..utils import group_from_class
 
 TIMESTAMPED_BALL_COMPENSATION_FILE_RE = re.compile(r"^(?P<base>.*?)(?:_\d{8}_\d{6})?$")
 DEFAULT_BALL_COMPENSATION_OUTPUT_DIR = PROJECT_ROOT / "local_settings" / "calibrations"
@@ -242,6 +244,8 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 self.operator.config.calibration,
                 self.operator.config.camera,
                 frame_undistorted=bool(capture.frame_distortion_corrected),
+                detector_config=self.operator.config.detector,
+                projection_config=self.operator.config.projection,
             )
             self._append_log(
                 "camera_coordinate_domain="
@@ -340,11 +344,11 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 target_arr = np.asarray([target_table_mm], dtype=np.float32)
                 target_proj = calibration.table_mm_to_projector_px(target_arr)[0]
                 expected_cam = calibration.table_mm_to_camera_px(target_arr)[0]
-                target_radius_px = calibration.table_radius_to_projector_px(
+                target_ellipse = calibration.table_circle_to_projector_ellipse(
                     target_table_mm.astype(np.float32),
                     0.5 * float(calibration.table.ball_diameter_mm),
                 )
-                self._show_target(target_proj, target_radius_px, idx + 1, total)
+                self._show_target(target_ellipse, idx + 1, total)
                 self.summary.setText(
                     f"正在等待第 {idx + 1}/{total} 个点稳定。请把单颗球移到目标圈中央，系统检测到稳定后会自动跳到下一点。"
                 )
@@ -371,12 +375,34 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     f"delta=({outcome.delta_table_mm[0]:.2f}, {outcome.delta_table_mm[1]:.2f}) mm"
                 )
 
-            if len(self._samples) < 4:
-                raise RuntimeError(f"有效采样点只有 {len(self._samples)} 个，至少需要 4 个点才能生成稳定补偿文件。")
-
+            if len(self._samples) < 20:
+                raise RuntimeError(f"有效采样点只有 {len(self._samples)} 个，至少需要 20 个点才能生成可靠补偿文件。")
             model = build_ball_compensation_model(
                 self._samples,
                 ball_diameter_mm=calibration.table.ball_diameter_mm,
+            )
+            frame_height, frame_width = prime_frame.shape[:2] if prime_frame is not None else (
+                int(self.operator.config.camera.height),
+                int(self.operator.config.camera.width),
+            )
+            coordinate_domain = (
+                "undistorted"
+                if calibration.distortion_correction_enabled and calibration.camera.is_valid
+                else "raw"
+            )
+            model.calibration_context = calibration_context(
+                frame_width=frame_width,
+                frame_height=frame_height,
+                frame_rotation_degrees=int(self.operator.config.camera.frame_rotation_degrees),
+                camera_coordinate_domain=coordinate_domain,
+                distortion_file=(
+                    self.operator.config.camera.distortion_correction_file
+                    if coordinate_domain == "undistorted"
+                    else None
+                ),
+                projection_file=calibration.projection.source_path,
+                detector_model_file=self.operator.config.detector.model_path,
+                ball_diameter_mm=float(calibration.table.ball_diameter_mm),
             )
             save_template = self._safe_ball_compensation_output_path(calibration)
             save_path = timestamped_ball_compensation_output_path(str(save_template))
@@ -420,13 +446,12 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 capture.release()
             self._set_busy(False)
 
-    def _show_target(self, target_proj: np.ndarray, target_radius_px: float, index: int, total: int) -> None:
+    def _show_target(self, target_ellipse, index: int, total: int) -> None:
         if self.operator.projection_window is None:
             return
         image = _render_target_image(
             (int(self.operator.config.projection.projector_width), int(self.operator.config.projection.projector_height)),
-            target_proj,
-            target_radius_px,
+            target_ellipse,
             index,
             total,
         )
@@ -490,7 +515,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         expected_cam: np.ndarray,
     ) -> Optional[BallCompensationSample]:
         deadline = time.perf_counter() + ENGINEERED_SAMPLE_TIMEOUT_SECONDS
-        history: list[tuple[np.ndarray, float, float]] = []
+        history: list[tuple[np.ndarray, float, float, float, str]] = []
         detection_regions = None
         settle_started_at: float | None = None
         while time.perf_counter() < deadline:
@@ -507,7 +532,12 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             mask_polygon = detection_regions.global_polygon if detection_regions is not None else None
             detections = detector.detect(frame, mask_polygon=mask_polygon)
             detections = filter_detections_by_region(detections, detection_regions)
-            candidate, candidate_count, distance_px = _pick_ball_candidate(detections, expected_cam)
+            expected_radius_px = _expected_camera_ball_radius(calibration, target_table_mm)
+            candidate, candidate_count, distance_px = _pick_ball_candidate(
+                detections,
+                expected_cam,
+                expected_radius_px=expected_radius_px,
+            )
             if candidate is None:
                 history.clear()
                 settle_started_at = None
@@ -522,11 +552,13 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             center = np.asarray(candidate.center, dtype=np.float32)
             radius = float(candidate.radius_px)
             conf = float(candidate.conf)
+            geometry_quality = float(candidate.geometry_quality)
+            geometry_method = str(candidate.geometry_method)
             if history and np.linalg.norm(center - history[-1][0]) > max(32.0, radius * 1.6):
                 history.clear()
                 settle_started_at = None
-            history.append((center, radius, conf))
-            history = history[-5:]
+            history.append((center, radius, conf, geometry_quality, geometry_method))
+            history = history[-7:]
             stable = _stable_measurement(history)
             self.summary.setText(
                 f"第 {sample_index + 1}/{total_count} 个点等待稳定：候选球距目标 {distance_px:.1f}px，已连续观测 {len(history)} 帧。"
@@ -550,7 +582,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 time.sleep(0.03)
                 continue
 
-            stable_center, stable_radius, stable_confidence, spread_px = stable
+            stable_center, stable_radius, stable_confidence, spread_px, stable_quality, stable_method = stable
             observed_table_mm = calibration.camera_px_to_table_mm(np.asarray([stable_center], dtype=np.float32))[0]
             delta_table_mm = target_table_mm - observed_table_mm
             captured_preview = _annotate_preview(
@@ -579,6 +611,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 detected_radius_px=float(stable_radius),
                 detection_confidence=float(stable_confidence),
                 stability_spread_px=float(spread_px),
+                geometry_quality=float(stable_quality),
+                geometry_method=str(stable_method),
+                detector_version=str(getattr(detector, "version", "unknown")),
             )
         return None
 
@@ -594,18 +629,29 @@ def _prime_capture_frame(capture, attempts: int = 12) -> Optional[np.ndarray]:
 
 def _render_target_image(
     projector_size: tuple[int, int],
-    target_proj: np.ndarray,
-    target_radius_px: float,
+    target_ellipse,
     index: int,
     total: int,
 ) -> np.ndarray:
     width, height = int(projector_size[0]), int(projector_size[1])
     image = np.zeros((max(1, height), max(1, width), 3), dtype=np.uint8)
     image[:] = (8, 14, 10)
-    center = (int(round(float(target_proj[0]))), int(round(float(target_proj[1]))))
-    outer_radius = int(round(max(18.0, float(target_radius_px))))
+    center = (int(round(float(target_ellipse.center_px[0]))), int(round(float(target_ellipse.center_px[1]))))
+    radius_x = int(round(max(18.0, float(target_ellipse.radius_x_px))))
+    radius_y = int(round(max(18.0, float(target_ellipse.radius_y_px))))
+    outer_radius = max(radius_x, radius_y)
     inner_radius = max(6, int(round(outer_radius * 0.35)))
-    cv2.circle(image, center, outer_radius, (80, 255, 160), 3, cv2.LINE_AA)
+    cv2.ellipse(
+        image,
+        center,
+        (radius_x, radius_y),
+        float(target_ellipse.rotation_deg),
+        0.0,
+        360.0,
+        (80, 255, 160),
+        3,
+        cv2.LINE_AA,
+    )
     cv2.circle(image, center, inner_radius, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.drawMarker(image, center, (255, 255, 255), cv2.MARKER_CROSS, max(22, outer_radius + 10), 2, cv2.LINE_AA)
     cv2.putText(
@@ -646,8 +692,31 @@ def _detection_regions_for_frame(frame_bgr: np.ndarray, geometry, calibration):
     return policy
 
 
-def _pick_ball_candidate(detections: list[Detection], expected_cam: np.ndarray) -> tuple[Optional[Detection], int, float]:
-    ball_detections = [detection for detection in detections if _looks_like_ball_detection(detection)]
+def _expected_camera_ball_radius(calibration, target_table_mm: np.ndarray) -> float:
+    center = np.asarray(target_table_mm, dtype=np.float32).reshape((2,))
+    radius_mm = 0.5 * float(calibration.table.ball_diameter_mm)
+    references = np.asarray(
+        [center, center + np.asarray([radius_mm, 0.0], dtype=np.float32), center + np.asarray([0.0, radius_mm], dtype=np.float32)],
+        dtype=np.float32,
+    )
+    camera = calibration.table_mm_to_camera_px(references)
+    radii = [float(np.linalg.norm(camera[1] - camera[0])), float(np.linalg.norm(camera[2] - camera[0]))]
+    return max(2.0, float(np.median(radii)))
+
+
+def _pick_ball_candidate(
+    detections: list[Detection],
+    expected_cam: np.ndarray,
+    *,
+    expected_radius_px: float,
+) -> tuple[Optional[Detection], int, float]:
+    ball_detections = [
+        detection
+        for detection in detections
+        if _looks_like_ball_detection(detection)
+        and float(detection.geometry_quality) >= 0.55
+        and 0.65 <= float(detection.radius_px) / max(2.0, float(expected_radius_px)) <= 1.35
+    ]
     if not ball_detections:
         return None, 0, float("inf")
     expected = np.asarray(expected_cam, dtype=np.float32).reshape((2,))
@@ -671,7 +740,7 @@ def _looks_like_ball_detection(detection: Detection) -> bool:
     cls_name = str(detection.cls_name or "").strip().lower()
     if not cls_name:
         return False
-    if "stick" in cls_name:
+    if group_from_class(cls_name) not in {"cue", "solid", "stripe", "black"}:
         return False
     x1, y1, x2, y2 = detection.bbox
     width = max(0.0, float(x2) - float(x1))
@@ -679,18 +748,31 @@ def _looks_like_ball_detection(detection: Detection) -> bool:
     return width >= 4.0 and height >= 4.0
 
 
-def _stable_measurement(history: list[tuple[np.ndarray, float, float]]) -> Optional[tuple[np.ndarray, float, float, float]]:
-    if len(history) < 3:
+def _stable_measurement(
+    history: list[tuple[np.ndarray, float, float, float, str]],
+) -> Optional[tuple[np.ndarray, float, float, float, float, str]]:
+    if len(history) < 5:
         return None
-    centers = np.asarray([item[0] for item in history[-3:]], dtype=np.float32).reshape((-1, 2))
-    radii = np.asarray([item[1] for item in history[-3:]], dtype=np.float32).reshape((-1,))
-    confidences = np.asarray([item[2] for item in history[-3:]], dtype=np.float32).reshape((-1,))
+    window = history[-5:]
+    centers = np.asarray([item[0] for item in window], dtype=np.float32).reshape((-1, 2))
+    radii = np.asarray([item[1] for item in window], dtype=np.float32).reshape((-1,))
+    confidences = np.asarray([item[2] for item in window], dtype=np.float32).reshape((-1,))
+    qualities = np.asarray([item[3] for item in window], dtype=np.float32).reshape((-1,))
+    methods = [str(item[4]) for item in window]
     median_center = np.median(centers, axis=0).astype(np.float32)
     spread = float(np.max(np.linalg.norm(centers - median_center.reshape((1, 2)), axis=1)))
     allowed_spread = max(3.5, 0.18 * float(np.median(radii)))
     if spread > allowed_spread:
         return None
-    return median_center, float(np.median(radii)), float(np.mean(confidences)), spread
+    stable_method = max(dict.fromkeys(methods), key=methods.count)
+    return (
+        median_center,
+        float(np.median(radii)),
+        float(np.mean(confidences)),
+        spread,
+        float(np.median(qualities)),
+        stable_method,
+    )
 
 
 def _annotate_preview(

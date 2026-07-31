@@ -10,7 +10,12 @@ import cv2
 import numpy as np
 
 from ..schemas import Point
+from ..geometry_contract import context_compatibility_errors
 from ..utils import ensure_numpy_points, percentile
+
+
+MIN_PROJECTION_INLIER_RATIO = 0.80
+MAX_PROJECTION_INLIER_P95_PX = 3.0
 
 
 @dataclass
@@ -51,9 +56,16 @@ class ProjectionCalibration:
     projector_size: Tuple[int, int] = (0, 0)
     source_path: Optional[str] = None
     quality_report: Dict[str, Any] = field(default_factory=dict)
+    calibration_context: Dict[str, Any] = field(default_factory=dict)
+    compatibility_errors: tuple[str, ...] = ()
 
     @classmethod
-    def load_json(cls, path: str | Path | None) -> "ProjectionCalibration":
+    def load_json(
+        cls,
+        path: str | Path | None,
+        *,
+        expected_context: Optional[Dict[str, Any]] = None,
+    ) -> "ProjectionCalibration":
         if path is None:
             return cls()
         p = Path(path)
@@ -66,9 +78,10 @@ class ProjectionCalibration:
             offsets_proj=np.asarray(data.get("residual_proj_offsets", []), dtype=np.float64).reshape((-1, 2)),
         )
         proj_size = data.get("projector_size") or [0, 0]
+        stored_context = dict(data.get("calibration_context", {}))
         return cls(
             mode=str(data.get("mode", "none")),
-            homography=np.asarray(data["homography"], dtype=np.float64) if "homography" in data else None,
+            homography=_validated_homography(data.get("homography")),
             cam_points=np.asarray(data.get("cam_points", []), dtype=np.float64).reshape((-1, 2)),
             proj_points=np.asarray(data.get("proj_points", []), dtype=np.float64).reshape((-1, 2)),
             residual_field=residual,
@@ -85,6 +98,8 @@ class ProjectionCalibration:
             projector_size=(int(proj_size[0]), int(proj_size[1])) if len(proj_size) >= 2 else (0, 0),
             source_path=str(p),
             quality_report=dict(data.get("quality_report", {})),
+            calibration_context=stored_context,
+            compatibility_errors=context_compatibility_errors(stored_context, expected_context),
         )
 
     @classmethod
@@ -112,6 +127,16 @@ class ProjectionCalibration:
             "ransac_outliers": int(src.shape[0] - np.count_nonzero(inlier_mask)),
             "ransac_inlier_ratio": float(np.count_nonzero(inlier_mask) / max(1, src.shape[0])),
         }
+        base_errors = np.linalg.norm(_perspective_transform(src, H) - dst, axis=1)
+        inlier_errors = base_errors[inlier_mask]
+        if inlier_errors.size:
+            quality_report.update(
+                {
+                    "ransac_inlier_mean_px": float(np.mean(inlier_errors)),
+                    "ransac_inlier_p95_px": float(np.percentile(inlier_errors, 95)),
+                    "ransac_inlier_max_px": float(np.max(inlier_errors)),
+                }
+            )
         if src.shape[0] >= 12 and int(np.count_nonzero(inlier_mask)) >= 4:
             base = _perspective_transform(src, H)
             residual = ResidualField(control_points_cam=src[inlier_mask].copy(), offsets_proj=(dst - base)[inlier_mask])
@@ -127,7 +152,42 @@ class ProjectionCalibration:
 
     @property
     def is_valid(self) -> bool:
-        return self.homography is not None
+        if self.compatibility_errors:
+            return False
+        if _validated_homography(self.homography) is None:
+            return False
+        ratio = self.quality_report.get("ransac_inlier_ratio")
+        if ratio is not None:
+            try:
+                ratio_value = float(ratio)
+            except (TypeError, ValueError):
+                return False
+            if not np.isfinite(ratio_value) or ratio_value < MIN_PROJECTION_INLIER_RATIO:
+                return False
+        inlier_p95 = self.quality_report.get("ransac_inlier_p95_px")
+        if inlier_p95 is not None:
+            try:
+                inlier_p95_value = float(inlier_p95)
+            except (TypeError, ValueError):
+                return False
+            if not np.isfinite(inlier_p95_value) or inlier_p95_value > MAX_PROJECTION_INLIER_P95_PX:
+                return False
+        if self.quality_report.get("quality_gate_passed") is False:
+            return False
+        pattern_cv_p95 = self.quality_report.get("pattern_cv_p95_px")
+        pattern_cv_limit = self.quality_report.get("maximum_pattern_cv_p95_px")
+        if (
+            pattern_cv_p95 is not None
+            and pattern_cv_limit is not None
+        ):
+            try:
+                pattern_value = float(pattern_cv_p95)
+                pattern_limit = float(pattern_cv_limit)
+            except (TypeError, ValueError):
+                return False
+            if not np.isfinite(pattern_value) or pattern_value > pattern_limit:
+                return False
+        return True
 
     @property
     def version(self) -> str:
@@ -139,8 +199,9 @@ class ProjectionCalibration:
         pts = np.asarray(points_cam, dtype=np.float64).reshape((-1, 2))
         if pts.size == 0:
             return pts.astype(np.float32)
-        if self.homography is None:
-            return pts.astype(np.float32)
+        if not self.is_valid:
+            reason = ", ".join(self.compatibility_errors) if self.compatibility_errors else "missing or low-quality homography"
+            raise RuntimeError(f"Projection calibration is unavailable: {reason}.")
         base = _perspective_transform(pts, self.homography)
         if refined:
             base = base + self.residual_field.offsets_for(pts)
@@ -151,9 +212,12 @@ class ProjectionCalibration:
         return (float(out[0, 0]), float(out[0, 1]))
 
     def calibration_error_stats(self) -> Dict[str, float]:
-        if self.cam_points.shape[0] == 0 or self.proj_points.shape != self.cam_points.shape:
+        homography = _validated_homography(self.homography)
+        if homography is None or self.cam_points.shape[0] == 0 or self.proj_points.shape != self.cam_points.shape:
             return {}
-        pred = self.camera_to_projector_points(self.cam_points).astype(np.float64)
+        pred = _perspective_transform(self.cam_points, homography)
+        if self.residual_field.control_points_cam.shape[0] >= 4:
+            pred = pred + self.residual_field.offsets_for(self.cam_points)
         err = np.linalg.norm(pred - self.proj_points, axis=1)
         return {
             "mean_px": float(np.mean(err)),
@@ -181,6 +245,7 @@ class ProjectionCalibration:
             "table_polygon_proj": self.table_polygon_proj.tolist(),
             "projector_size": list(self.projector_size),
             "quality_report": quality_report,
+            "calibration_context": dict(self.calibration_context),
         }
         with p.open("w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -192,6 +257,20 @@ def _perspective_transform(points: np.ndarray, H: np.ndarray) -> np.ndarray:
     return out.reshape((-1, 2)).astype(np.float64)
 
 
+def _validated_homography(value: Any) -> Optional[np.ndarray]:
+    if value is None:
+        return None
+    try:
+        matrix = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError):
+        return None
+    if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
+        return None
+    if int(np.linalg.matrix_rank(matrix)) < 3 or abs(float(np.linalg.det(matrix))) < 1e-12:
+        return None
+    return matrix
+
+
 def _normalize_homography_mask(mask: Optional[np.ndarray], count: int) -> np.ndarray:
     if mask is None:
         return np.ones((count,), dtype=bool)
@@ -199,6 +278,39 @@ def _normalize_homography_mask(mask: Optional[np.ndarray], count: int) -> np.nda
     if arr.shape[0] != count:
         return np.ones((count,), dtype=bool)
     return arr.astype(bool)
+
+
+def polygon_quad(points: np.ndarray | Sequence[Point]) -> np.ndarray:
+    """Reduce a dense table outline to an image-ordered TL/TR/BR/BL quad."""
+
+    pts = np.asarray(points, dtype=np.float32).reshape((-1, 2))
+    if pts.shape[0] < 4:
+        return np.zeros((0, 2), dtype=np.float32)
+    hull = cv2.convexHull(pts.reshape((-1, 1, 2))).reshape((-1, 2))
+    candidate = hull
+    if hull.shape[0] != 4:
+        perimeter = float(cv2.arcLength(hull.reshape((-1, 1, 2)), True))
+        for ratio in np.linspace(0.005, 0.15, 30):
+            approx = cv2.approxPolyDP(hull.reshape((-1, 1, 2)), perimeter * float(ratio), True).reshape((-1, 2))
+            if approx.shape[0] == 4:
+                candidate = approx
+                break
+        else:
+            candidate = cv2.boxPoints(cv2.minAreaRect(hull.reshape((-1, 1, 2)))).reshape((-1, 2))
+    sums = candidate[:, 0] + candidate[:, 1]
+    differences = candidate[:, 0] - candidate[:, 1]
+    ordered = np.asarray(
+        [
+            candidate[int(np.argmin(sums))],
+            candidate[int(np.argmax(differences))],
+            candidate[int(np.argmax(sums))],
+            candidate[int(np.argmin(differences))],
+        ],
+        dtype=np.float32,
+    )
+    if np.unique(np.round(ordered, decimals=4), axis=0).shape[0] != 4:
+        return np.zeros((0, 2), dtype=np.float32)
+    return ordered
 
 
 def table_bbox_from_polygon(poly: np.ndarray, projector_size: Tuple[int, int]) -> Tuple[float, float, float, float]:

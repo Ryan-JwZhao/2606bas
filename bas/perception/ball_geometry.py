@@ -6,6 +6,7 @@ from typing import Optional, Sequence
 import cv2
 import numpy as np
 
+from ..geometry_contract import BALL_CENTER_REFINER_VERSION
 from ..schemas import BBox, Point
 
 
@@ -19,6 +20,8 @@ class BallGeometryEstimate:
 
 class BallCenterRefiner:
     """Refine a detector box into a sub-pixel ball center and radius."""
+
+    version = BALL_CENTER_REFINER_VERSION
 
     def refine(
         self,

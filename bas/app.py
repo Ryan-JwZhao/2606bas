@@ -69,6 +69,8 @@ class RuntimePipeline:
             config.calibration,
             config.camera,
             frame_undistorted=self.capture.frame_distortion_corrected,
+            detector_config=config.detector,
+            projection_config=config.projection,
         )
         self.geometry_reloader = RuntimeGeometryReloader()
         self.geometry, _ = self.geometry_reloader.refresh(

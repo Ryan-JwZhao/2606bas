@@ -22,6 +22,9 @@ class BallCompensationSample:
     detected_radius_px: float = 0.0
     detection_confidence: float = 0.0
     stability_spread_px: float = 0.0
+    geometry_quality: float = 0.0
+    geometry_method: str = "unknown"
+    detector_version: str = "unknown"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -35,6 +38,9 @@ class BallCompensationSample:
             "detected_radius_px": float(self.detected_radius_px),
             "detection_confidence": float(self.detection_confidence),
             "stability_spread_px": float(self.stability_spread_px),
+            "geometry_quality": float(self.geometry_quality),
+            "geometry_method": str(self.geometry_method),
+            "detector_version": str(self.detector_version),
         }
 
 
@@ -147,20 +153,26 @@ def build_ball_compensation_model(
     ball_diameter_mm: float,
     max_neighbors: int = 8,
     mode: str = "engineered_ball_comp_v2",
+    minimum_samples: int = 20,
 ) -> BallCompensationModel:
-    if not samples:
-        raise ValueError("At least one sampling point is required to build a ball compensation model.")
+    required = max(4, int(minimum_samples))
+    if len(samples) < required:
+        raise ValueError(f"At least {required} sampling points are required to build a ball compensation model.")
     controls = np.asarray([sample.detected_camera_px for sample in samples], dtype=np.float64).reshape((-1, 2))
     deltas = np.asarray([sample.delta_table_mm for sample in samples], dtype=np.float64).reshape((-1, 2))
     targets = np.asarray([sample.target_table_mm for sample in samples], dtype=np.float64).reshape((-1, 2))
     radii = np.asarray([float(sample.detected_radius_px) for sample in samples], dtype=np.float64)
     spreads = np.asarray([float(sample.stability_spread_px) for sample in samples], dtype=np.float64)
     confidences = np.asarray([float(sample.detection_confidence) for sample in samples], dtype=np.float64)
+    geometry_qualities = np.asarray([float(sample.geometry_quality) for sample in samples], dtype=np.float64)
     sample_weights = np.asarray(
         [
             np.clip(
-                float(sample.detection_confidence) / (1.0 + float(sample.stability_spread_px) ** 2),
-                0.05,
+                float(sample.detection_confidence)
+                * float(sample.geometry_quality) ** 2
+                * _geometry_method_weight(sample.geometry_method)
+                / (1.0 + float(sample.stability_spread_px) ** 2),
+                0.01,
                 1.0,
             )
             for sample in samples
@@ -178,6 +190,8 @@ def build_ball_compensation_model(
         "stability_spread_px": _stats_report(spreads),
         "detected_radius_px": _stats_report(radii),
         "detection_confidence": _stats_report(confidences),
+        "geometry_quality": _stats_report(geometry_qualities),
+        "geometry_methods": sorted({str(sample.geometry_method) for sample in samples}),
     }
     return BallCompensationModel(
         mode=str(mode or "engineered_ball_comp_v2"),
@@ -188,6 +202,17 @@ def build_ball_compensation_model(
         max_neighbors=max(1, min(int(max_neighbors), len(samples))),
         quality_report=quality_report,
     )
+
+
+def _geometry_method_weight(method: str) -> float:
+    normalized = str(method or "unknown").strip().lower()
+    if normalized.startswith("segmentation_ellipse"):
+        return 1.0
+    if normalized.startswith("appearance_ellipse"):
+        return 0.85
+    if normalized.startswith("bbox"):
+        return 0.25
+    return 0.50
 
 
 def _stats_report(values: np.ndarray) -> Dict[str, float]:

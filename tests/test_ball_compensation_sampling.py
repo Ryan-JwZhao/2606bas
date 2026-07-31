@@ -259,7 +259,12 @@ def test_build_ball_compensation_model_reports_quality_and_roundtrips(tmp_path) 
         ),
     ]
 
-    model = build_ball_compensation_model(samples, ball_diameter_mm=57.15, max_neighbors=8)
+    model = build_ball_compensation_model(
+        samples,
+        ball_diameter_mm=57.15,
+        max_neighbors=8,
+        minimum_samples=4,
+    )
     path = tmp_path / "engineered_ball_compensation.json"
     model.save_json(
         path,
@@ -279,6 +284,68 @@ def test_build_ball_compensation_model_reports_quality_and_roundtrips(tmp_path) 
     assert np.allclose(reloaded.control_points_camera_px, np.asarray([sample.detected_camera_px for sample in samples], dtype=np.float64))
     assert payload["ball_diameter_mm"] == 57.15
     assert len(payload["samples"]) == 4
+
+
+def test_ball_compensation_context_mismatch_disables_loaded_artifact(tmp_path) -> None:
+    path = tmp_path / "ball_context.json"
+    controls = np.asarray([[0, 0], [10, 0], [0, 10], [10, 10]], dtype=np.float64)
+    BallCompensationModel(
+        mode="direct",
+        control_points_camera_px=controls,
+        target_table_mm=controls,
+    ).save_json(
+        path,
+        extra_data={"calibration_context": {"frame_rotation_degrees": 0, "camera_coordinate_domain": "raw"}},
+    )
+
+    loaded = BallCompensationModel.load_json(
+        path,
+        expected_context={"frame_rotation_degrees": 180, "camera_coordinate_domain": "raw"},
+    )
+
+    assert loaded.is_valid is False
+    assert "frame_rotation_degrees" in loaded.compatibility_errors
+
+
+def test_ball_compensation_requires_twenty_samples_by_default() -> None:
+    sample = BallCompensationSample(
+        sample_index=0,
+        target_table_mm=(100.0, 100.0),
+        detected_camera_px=(50.0, 50.0),
+        projected_target_px=(50.0, 50.0),
+        expected_camera_px=(50.0, 50.0),
+        observed_table_mm=(100.0, 100.0),
+        delta_table_mm=(0.0, 0.0),
+        geometry_quality=0.9,
+        geometry_method="segmentation_ellipse",
+    )
+
+    with np.testing.assert_raises_regex(ValueError, "20"):
+        build_ball_compensation_model([sample] * 19, ball_diameter_mm=57.15)
+
+
+def test_ball_compensation_downweights_bbox_geometry() -> None:
+    samples = []
+    for index in range(20):
+        samples.append(
+            BallCompensationSample(
+                sample_index=index,
+                target_table_mm=(float(index * 10), float((index % 5) * 20)),
+                detected_camera_px=(float(index * 4), float((index % 5) * 8)),
+                projected_target_px=(0.0, 0.0),
+                expected_camera_px=(0.0, 0.0),
+                observed_table_mm=(0.0, 0.0),
+                delta_table_mm=(1.0, -1.0),
+                detection_confidence=0.95,
+                stability_spread_px=0.5,
+                geometry_quality=0.9,
+                geometry_method="bbox" if index == 0 else "segmentation_ellipse",
+            )
+        )
+
+    model = build_ball_compensation_model(samples, ball_diameter_mm=57.15)
+
+    assert model.sample_weights[0] < model.sample_weights[1] * 0.4
 
 
 def test_ball_compensation_path_from_input_resolves_relative_to_current_directory() -> None:
