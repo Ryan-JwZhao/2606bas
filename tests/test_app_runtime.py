@@ -6,6 +6,7 @@ import numpy as np
 
 from bas.app import RuntimePipeline
 from bas.operator_controls import RuntimeControlState
+from bas.config import AppConfig, CalibrationConfig
 from bas.schemas import DetectionsFrame, FramePacket, MatchStateFrame, ProjectionOverlay, ShotPlan, TracksFrame
 
 
@@ -95,3 +96,72 @@ def test_runtime_pipeline_updates_state_on_cached_detection_frames() -> None:
     assert second is not None
     assert pipeline.state_machine.calls == 2
     assert second.state.phase == "CALL_2"
+
+
+def test_uncalibrated_runtime_keeps_camera_acquisition_available() -> None:
+    pipeline = RuntimePipeline.__new__(RuntimePipeline)
+    pipeline.config = SimpleNamespace(calibration=CalibrationConfig())
+    pipeline.geometry = SimpleNamespace(
+        is_empty=False,
+        scaled=lambda _width, _height: (
+            np.asarray([[0, 0], [99, 0], [99, 99], [0, 99]], dtype=np.float32),
+            np.asarray([[5, 5], [94, 5], [94, 94], [5, 94]], dtype=np.float32),
+            [],
+        ),
+    )
+    pipeline.calibration = SimpleNamespace(
+        projection=SimpleNamespace(is_valid=False),
+        table=SimpleNamespace(
+            width_mm=2540.0,
+            height_mm=1270.0,
+            ball_diameter_mm=57.15,
+            projection_visible_polygon_mm=[],
+            inner_polygon_mm=[],
+            center_playable_polygon_mm=[],
+            projection_visible_pockets_mm=[],
+            pockets_mm=[],
+        ),
+        camera_px_to_table_mm=lambda _points: (_ for _ in ()).throw(
+            RuntimeError("Projection calibration is unavailable or invalid; geometry transforms are disabled.")
+        ),
+    )
+    pipeline._last_table_edge_polygon_mm = []
+    pipeline._last_pocket_curves_mm = []
+    frame = FramePacket(1, 1, "camera", image=np.zeros((100, 100, 3), dtype=np.uint8))
+
+    pipeline._update_table_geometry_for_frame(frame)
+
+    assert pipeline._last_table_edge_polygon_mm == []
+
+
+def test_uncalibrated_pipeline_returns_camera_frame_with_dense_geometry() -> None:
+    config = AppConfig()
+    config.camera.backend = "synthetic"
+    config.camera.width = 320
+    config.camera.height = 180
+    config.camera.distortion_correction_enabled = False
+    config.detector.backend = "disabled"
+    config.calibration.camera_file = None
+    config.calibration.projection_file = None
+    config.calibration.legacy_projection_file = None
+    config.calibration.engineered_plane_projection_file = None
+    config.calibration.projection_mode = "engineered"
+    pipeline = RuntimePipeline(config)
+    pipeline.geometry = SimpleNamespace(
+        is_empty=False,
+        scaled=lambda width, height: (
+            np.asarray([[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]], dtype=np.float32),
+            np.asarray([[5, 5], [width - 6, 5], [width - 6, height - 6], [5, height - 6]], dtype=np.float32),
+            [],
+        ),
+    )
+    try:
+        output = pipeline.step()
+    finally:
+        pipeline.close()
+
+    assert output is not None
+    assert output.frame.image is not None
+    assert output.frame.image.shape == (180, 320, 3)
+    assert output.state.phase == "CALIBRATION_REQUIRED"
+    assert pipeline.calibration.projection.is_valid is False

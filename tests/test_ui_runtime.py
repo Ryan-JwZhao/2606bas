@@ -510,7 +510,7 @@ def test_operator_window_buttons_remain_wired_after_layout_refactor(monkeypatch)
         ("toggle_capture", "capture"),
         ("toggle_projection_window", "projection"),
         ("initialize_graphics_image_module", "init_module"),
-        ("calibrate_projector", "projector_calib"),
+        ("open_calibration_workbench", "projector_calib"),
         ("open_settings", "settings"),
         ("probe_camera_devices", "probe"),
         ("export_diagnostic_snapshot", "export_diag"),

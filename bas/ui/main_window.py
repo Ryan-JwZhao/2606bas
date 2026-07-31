@@ -43,8 +43,6 @@ from ..calibration import (
     projection_output_summary,
     solve_linked_projection_calibration,
 )
-from ..calibration.charuco import CharucoBoardSpec, render_charuco_board
-from ..calibration.verification import format_holdout_report, verify_holdout_file
 from ..capture import (
     VideoTimelineState,
     capture_frames_are_distortion_corrected,
@@ -83,6 +81,7 @@ from ..training import (
 from ..utils import unit
 from ..web_control import PocketNoticeTracker, WebControlServer
 from .cue_sector_preview import draw_cue_sector_candidate_box
+from .calibration_workbench import CalibrationWorkbenchDialog
 from .engineered_ball_compensation_wizard import EngineeredBallCompensationWizardDialog
 from .geometry_reference import draw_geometry_reference_lines
 from .projection_debug import append_projected_ball_overlays, append_projected_boundary_overlays
@@ -272,9 +271,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self.pocket_path = self._path_row(config.geometry.pocket_path, "JSON (*.json);;所有文件 (*.*)")
         self.camera_calibration_file = self._path_row(config.calibration.camera_file, "OpenCV 标定文件 (*.yaml *.yml *.xml);;所有文件 (*.*)")
         self.projection_mode = QtWidgets.QComboBox()
-        self.projection_mode.addItem("传统模式", "legacy")
-        self.projection_mode.addItem("工程模式", "engineered")
-        selected_mode = config.calibration.normalized_projection_mode()
+        self.projection_mode.addItem("独立二维几何（新）", "engineered")
+        selected_mode = "engineered"
         selected_index = self.projection_mode.findData(selected_mode)
         self.projection_mode.setCurrentIndex(max(0, selected_index))
         self._legacy_projection_file = config.calibration.legacy_projection_file
@@ -580,9 +578,8 @@ class SettingsDialog(QtWidgets.QDialog):
                 ("inline.json", self.inline_path),
                 ("pocket.json", self.pocket_path),
                 ("相机标定文件", self.camera_calibration_file),
-                ("投影校准模式", self.projection_mode),
-                ("平面校正文件", self.projection_calibration_file),
-                ("工程球体补偿文件", self.engineered_ball_compensation_file),
+                ("联合平面校准文件（自动管理）", self.projection_calibration_file),
+                ("球心补偿文件（自动管理）", self.engineered_ball_compensation_file),
             ],
         )
         self._add_form_tab(
@@ -1054,162 +1051,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.star_offset_y.setValue(self.star_offset_y.value() + dy * step)
 
 
-class ProjectorCalibrationDialog(QtWidgets.QDialog):
-    def __init__(self, operator: "OperatorWindow", calibration, parent: Optional[QtWidgets.QWidget] = None):
-        super().__init__(parent or operator)
-        self.operator = operator
-        self.calibration = calibration
-        self.setWindowTitle("投影仪校正向导")
-        self.resize(840, 680)
-
-        layout = QtWidgets.QVBoxLayout(self)
-        title = QtWidgets.QLabel("投影仪校正")
-        title.setObjectName("title")
-        layout.addWidget(title)
-
-        steps = QtWidgets.QPlainTextEdit()
-        steps.setReadOnly(True)
-        steps.setPlainText(
-            "\n".join(
-                [
-                    "1. 先确认相机内参 ChArUco 标定文件有效，投影仪分辨率和屏幕编号正确。",
-                    "2. 在台面放置主标定板，点击“显示 ChArUco 校正码”或“显示编码网格”，让相机采集 >=20 个不同平移/俯仰姿态。",
-                    "3. 在六个袋口、两条长边中段、近投影端、远投影端放置 10-14 张 A6/A7 小 ChArUco 纸板，采集局部精修数据。",
-                    "4. 用外部标定脚本生成或替换 projection_calibration.json，再点击“显示当前校正结果”检查桌面多边形和对应点。",
-                    "5. 点击“显示残差箭头”检查局部误差方向；近端、远端、袋口区域都应有控制点覆盖。",
-                    "6. 最终验收需查看 holdout：图像重投影 mean/P95、台面毫米 median/P95、分区 P95 和误差随距离梯度。",
-                ]
-            )
-        )
-        layout.addWidget(steps, 1)
-
-        file_box = QtWidgets.QGroupBox("当前校正配置")
-        file_layout = QtWidgets.QVBoxLayout(file_box)
-        self.projection_file_edit = QtWidgets.QLineEdit(self.operator.config.calibration.active_projection_file() or "")
-        self.projection_file_edit.setPlaceholderText("输入投影校正 JSON 路径或文件名")
-        file_layout.addWidget(self.projection_file_edit)
-        file_actions = QtWidgets.QHBoxLayout()
-        browse_btn = QtWidgets.QPushButton("浏览")
-        browse_btn.clicked.connect(self._browse_projection_file)
-        file_actions.addWidget(browse_btn)
-        apply_btn = QtWidgets.QPushButton("应用并加载")
-        apply_btn.clicked.connect(self._apply_projection_file)
-        file_actions.addWidget(apply_btn)
-        file_actions.addStretch(1)
-        file_layout.addLayout(file_actions)
-        layout.addWidget(file_box)
-
-        button_grid = QtWidgets.QGridLayout()
-        actions = [
-            ("打开投影窗口", self.operator.ensure_projection_window_for_operator),
-            ("显示 ChArUco 校正码", self.operator.show_projector_charuco_code),
-            ("显示编码网格", self.operator.show_projector_encoded_grid),
-            ("显示当前校正结果", self._show_current_projection_result),
-            ("显示残差箭头", self._show_current_projection_residual),
-            ("验证 Holdout", self._verify_holdout),
-            ("一键联动校正", self.operator.run_linked_projector_calibration),
-            ("工程球体补偿向导", self.operator.run_engineered_ball_compensation_wizard),
-            ("恢复实时投影", self.operator.resume_runtime_projection),
-        ]
-        for idx, (text, slot) in enumerate(actions):
-            button = QtWidgets.QPushButton(text)
-            button.clicked.connect(slot)
-            button_grid.addWidget(button, idx // 3, idx % 3)
-        layout.addLayout(button_grid)
-
-        self.result = QtWidgets.QLabel(self._summary_text())
-        self.result.setObjectName("bestShot")
-        self.result.setWordWrap(True)
-        layout.addWidget(self.result)
-
-        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    def _summary_text(self) -> str:
-        projection = self.calibration.projection
-        stats = projection.calibration_error_stats()
-        runtime_mode = "engineered" if self.calibration.is_engineered_projection else "legacy"
-        lines = [
-            f"文件: {projection.source_path or '未设置'}",
-            f"模式: {projection.mode} | 投影尺寸: {projection.projector_size[0]}x{projection.projector_size[1]}",
-            f"对应点: {projection.cam_points.shape[0]} | 局部残差控制点: {projection.residual_field.control_points_cam.shape[0]}",
-            f"桌面多边形点: {projection.table_polygon_proj.shape[0]} | 有效: {'是' if projection.is_valid else '否'}",
-        ]
-        lines.append(f"runtime_mode: {runtime_mode}")
-        if self.calibration.is_engineered_projection:
-            ball_model = self.calibration.ball_compensation_model
-            lines.append(
-                "ball_compensation: "
-                f"{'valid' if ball_model.is_valid else 'missing'} | "
-                f"control_points: {ball_model.control_points_camera_px.shape[0]} | "
-                f"file: {ball_model.source_path or 'unset'}"
-            )
-        if stats:
-            p95 = stats.get("p95_px", stats.get("max_px", 0.0))
-            verdict = "通过预检查" if p95 <= 3.0 else "需要复核/重标定"
-            lines.append(
-                "像素误差: "
-                f"mean={stats.get('mean_px', 0.0):.2f}px, "
-                f"median={stats.get('median_px', 0.0):.2f}px, "
-                f"p95={p95:.2f}px, max={stats.get('max_px', 0.0):.2f}px | {verdict}"
-            )
-        else:
-            lines.append("像素误差: 当前 JSON 没有可统计的 paired correspondences。")
-        lines.append("注意: 像素误差只是预检查，正式验收还需要独立 holdout 的毫米误差、分区误差和距离梯度。")
-        return "\n".join(lines)
-
-    def _browse_projection_file(self) -> None:
-        current = str(projection_config_path_or_default(self.operator.config.calibration.active_projection_file()))
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "选择投影校正文件",
-            current,
-            "JSON (*.json);;所有文件 (*.*)",
-        )
-        if path:
-            self.projection_file_edit.setText(path)
-
-    def _apply_projection_file(self) -> None:
-        raw = self.projection_file_edit.text().strip()
-        if not raw:
-            QtWidgets.QMessageBox.warning(self, "配置无效", "投影校正文件路径不能为空。")
-            return
-        path = projection_config_path_from_input(raw, self.operator.config.calibration.active_projection_file())
-        self.operator.config.calibration.set_active_projection_file(str(path))
-        self.operator.config.calibration.sync_projection_file_alias()
-        self.operator._save_user_settings()
-        self.projection_file_edit.setText(str(path))
-        self.calibration = _create_calibration_workflow_service(
-            self.operator.config,
-            self.operator.pipeline,
-        )
-        self.result.setText(self._summary_text())
-        self.operator._append_log(f"已切换投影校正配置文件: {path}")
-
-    def _show_current_projection_result(self) -> None:
-        self._apply_projection_file()
-        self.operator.show_projector_calibration_result(self.calibration)
-
-    def _show_current_projection_residual(self) -> None:
-        self._apply_projection_file()
-        self.operator.show_projector_residual_overlay(self.calibration)
-
-    def _verify_holdout(self) -> None:
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "选择 Holdout JSON", str(Path.cwd()), "JSON (*.json);;所有文件 (*.*)")
-        if not path:
-            return
-        try:
-            report = verify_holdout_file(path, self.calibration)
-            text = format_holdout_report(report)
-            self.result.setText(self._summary_text() + "\n\nHoldout 验证:\n" + text)
-            self.operator._append_log("Holdout 验证完成: " + text.replace("\n", " | "))
-        except Exception as exc:
-            self.operator._append_log(f"Holdout 验证失败: {exc}")
-            QtWidgets.QMessageBox.critical(self, "Holdout 验证失败", str(exc))
-
-
-class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
+class JointCalibrationWizardDialog(QtWidgets.QDialog):
     def __init__(self, operator: "OperatorWindow", parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent or operator)
         self.operator = operator
@@ -1250,13 +1092,6 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
         self.start_btn = QtWidgets.QPushButton("开始一键联动校正")
         self.start_btn.clicked.connect(self.run_calibration)
         button_row.addWidget(self.start_btn)
-        self.save_btn = QtWidgets.QPushButton("保存结果")
-        self.save_btn.setEnabled(False)
-        self.save_btn.clicked.connect(self.save_result)
-        button_row.addWidget(self.save_btn)
-        self.load_btn = QtWidgets.QPushButton("加载当前结果")
-        self.load_btn.clicked.connect(self.load_result)
-        button_row.addWidget(self.load_btn)
         self.show_btn = QtWidgets.QPushButton("投影显示结果")
         self.show_btn.setEnabled(False)
         self.show_btn.clicked.connect(self.show_result)
@@ -1276,9 +1111,7 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         self.start_btn.setEnabled(not busy)
-        self.save_btn.setEnabled((self._result is not None) and (not busy))
         self.show_btn.setEnabled((self._result is not None) and (not busy))
-        self.load_btn.setEnabled(not busy)
 
     def _pump_ui(self) -> None:
         app = QtWidgets.QApplication.instance()
@@ -1427,34 +1260,6 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
             if capture is not None:
                 capture.release()
             self._set_busy(False)
-
-    @QtCore.pyqtSlot()
-    def save_result(self) -> None:
-        if self._result is None:
-            return
-        path = self._saved_path or self._projection_output_path()
-        self._result.projection.save(path)
-        self._saved_path = path
-        self.summary.setText(self.summary.text() + f"\n已保存到: {path}")
-        self._append_log(f"已保存联动校正结果: {path}")
-
-    @QtCore.pyqtSlot()
-    def load_result(self) -> None:
-        path = projection_config_path_or_default(self.operator.config.calibration.active_projection_file())
-        if not path.exists():
-            QtWidgets.QMessageBox.information(self, "未找到结果", f"当前投影校正文件不存在:\n{path}")
-            return
-        calibration = self._load_projection_from_path(path)
-        stats = calibration.projection.calibration_error_stats()
-        self.summary.setText(
-            "已加载当前投影校正结果。\n"
-            f"mean={stats.get('mean_px', 0.0):.2f}px  "
-            f"p95={stats.get('p95_px', stats.get('max_px', 0.0)):.2f}px  "
-            f"max={stats.get('max_px', 0.0):.2f}px\n"
-            f"路径: {path}"
-        )
-        self._append_log(f"已加载投影校正结果: {path}")
-        self.operator.show_projector_calibration_result(calibration)
 
     @QtCore.pyqtSlot()
     def show_result(self, calibration=None) -> None:
@@ -1631,7 +1436,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.capture_btn = self._button("开始采集", variant="primary")
         self.projection_btn = self._button("开始投影", variant="primary")
         self.init_module_btn = self._button("初始化图形图像模块", variant="compact")
-        self.projector_calib_btn = self._button("校正投影仪", variant="compact")
+        self.projector_calib_btn = self._button("校准工作台", variant="compact")
         self.settings_btn = self._button("设置", variant="compact")
         self.probe_btn = self._button("探测相机", variant="compact")
         self.export_diag_btn = self._button("导出诊断快照", variant="compact")
@@ -1639,7 +1444,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.capture_btn.clicked.connect(self.toggle_capture)
         self.projection_btn.clicked.connect(self.toggle_projection_window)
         self.init_module_btn.clicked.connect(self.initialize_graphics_image_module)
-        self.projector_calib_btn.clicked.connect(self.calibrate_projector)
+        self.projector_calib_btn.clicked.connect(self.open_calibration_workbench)
         self.settings_btn.clicked.connect(self.open_settings)
         self.probe_btn.clicked.connect(self.probe_camera_devices)
         self.export_diag_btn.clicked.connect(self.export_diagnostic_snapshot)
@@ -3890,30 +3695,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._append_log("投影已恢复实时 overlay")
         self._update_module_status(self.last_output)
 
-    def show_projector_charuco_code(self) -> None:
-        self.ensure_projection_window_for_operator()
-        used_fallback = False
-        try:
-            image = render_charuco_board(
-                CharucoBoardSpec(squares_x=10, squares_y=7, square_length_m=0.035, marker_length_m=0.026),
-                int(self.config.projection.projector_width),
-                int(self.config.projection.projector_height),
-            )
-        except Exception as exc:
-            image = self._encoded_grid_image()
-            used_fallback = True
-            self._append_log(f"ChArUco 生成失败，已改用编码网格: {exc}")
-        if self.projection_window is not None:
-            self.projection_window.set_image(image)
-        self._append_log("已显示编码网格" if used_fallback else "已显示全屏 ChArUco 校正码")
-
-    def show_projector_encoded_grid(self) -> None:
-        self.ensure_projection_window_for_operator()
-        image = self._encoded_grid_image()
-        if self.projection_window is not None:
-            self.projection_window.set_image(image)
-        self._append_log("已显示编码网格/定位十字")
-
     def show_projector_calibration_result(self, calibration=None) -> None:
         self.ensure_projection_window_for_operator()
         calibration = calibration or _create_calibration_workflow_service(self.config, self.pipeline)
@@ -3949,26 +3730,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self._append_log("当前校正文件没有局部残差控制点，已显示基础校正结果")
         if self.projection_window is not None:
             self.projection_window.set_overlay(overlay)
-
-    def _encoded_grid_image(self) -> np.ndarray:
-        w = int(self.config.projection.projector_width)
-        h = int(self.config.projection.projector_height)
-        img = np.zeros((h, w, 3), dtype=np.uint8)
-        img[:] = (8, 8, 8)
-        step_x = max(40, w // 16)
-        step_y = max(40, h // 10)
-        for x in range(0, w + 1, step_x):
-            color = (255, 255, 255)
-            cv2.line(img, (x, 0), (x, h), color, 1, cv2.LINE_AA)
-            cv2.putText(img, str(x), (min(w - 70, x + 4), 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
-        for y in range(0, h + 1, step_y):
-            color = (255, 255, 255)
-            cv2.line(img, (0, y), (w, y), color, 1, cv2.LINE_AA)
-            cv2.putText(img, str(y), (8, min(h - 10, y + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1, cv2.LINE_AA)
-        for x, y, label in [(w // 2, h // 2, "C"), (40, 40, "LT"), (w - 40, 40, "RT"), (w - 40, h - 40, "RB"), (40, h - 40, "LB")]:
-            cv2.drawMarker(img, (x, y), (255, 255, 255), cv2.MARKER_CROSS, 34, 2, cv2.LINE_AA)
-            cv2.putText(img, label, (x + 12, y - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-        return img
 
     def _update_module_status(self, out: Optional[PipelineOutput] = None) -> None:
         projection_state = "校正模式" if self._projection_calibration_mode else ("运行中" if self.projection_window is not None else "关闭")
@@ -4107,26 +3868,21 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "初始化失败", str(exc))
 
     @QtCore.pyqtSlot()
-    def calibrate_projector(self) -> None:
+    def open_calibration_workbench(self) -> None:
         self._sync_config_from_controls()
+        self.config.calibration.set_projection_mode("engineered")
         self._save_user_settings()
-        self._append_log("正在打开投影仪校正向导")
+        self._append_log("正在打开独立几何校准工作台")
         try:
-            calibration = _create_calibration_workflow_service(self.config, self.pipeline)
-            if calibration.projection.is_valid:
-                self.show_projector_calibration_result(calibration)
-            else:
-                self.show_projector_encoded_grid()
-                self._append_log(f"投影校正文件无效或缺失: {self.config.calibration.active_projection_file()}")
-            dialog = ProjectorCalibrationDialog(self, calibration, self)
+            dialog = CalibrationWorkbenchDialog(self, self)
             dialog.exec_()
         except Exception as exc:
-            self._append_log(f"投影仪校正失败: {exc}")
-            QtWidgets.QMessageBox.critical(self, "投影仪校正失败", str(exc))
+            self._append_log(f"校准工作台打开失败: {exc}")
+            QtWidgets.QMessageBox.critical(self, "校准工作台打开失败", str(exc))
 
     @QtCore.pyqtSlot()
     def run_linked_projector_calibration(self) -> None:
-        dialog = LinkedProjectorCalibrationDialog(self, self)
+        dialog = JointCalibrationWizardDialog(self, self)
         dialog.exec_()
 
     @QtCore.pyqtSlot()

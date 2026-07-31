@@ -2,6 +2,8 @@
 
 工业相机旋转、相机—投影仪联合校准与球心补偿的完整现场重标定步骤见
 [`docs/recalibration/README.md`](docs/recalibration/README.md)。
+新的纯图形化校准入口说明见
+[`docs/calibration_workbench/README.md`](docs/calibration_workbench/README.md)。
 
 ## 简介
 
@@ -101,17 +103,14 @@ FOURCC、分辨率和帧率，并在打开后读回 FOURCC；如果驱动返回 
   播放原始视频且需要校正时应开启开关。
 - 开关变化会重启采集管线，保证同一轮运行中不会混用两套帧坐标。
 
-投影平面标定、联动校正、工程球体补偿向导以及 `inspect-calib` /
-`verify-calib` 也必须遵循这个总开关，不再存在“标定工具强制启用相机内参”
-的例外：
+图形化校准工作台、联合校准、球心补偿和 Holdout 验收也必须遵循这个总开关，
+不再存在“标定工具强制启用相机内参”的例外：
 
 - 开关关闭时，所有标定工具都不加载相机内参，不校正整帧，也不校正 ChArUco
   角点、球心或 Holdout 相机像素坐标；平面标定直接使用当前原始画面坐标。
 - 开关开启且文件有效时，采集层只校正一次，标定工具读取已经校正的帧，不再
   对角点或球心重复校正。
-- `inspect-calib` 会输出 `distortion_correction_enabled` 和
-  `camera_coordinate_domain`，便于确认当前使用的是 `raw` 还是
-  `undistorted` 坐标域。
+- 校准工作台直接显示当前方向和 `raw` / `undistorted` 坐标域，无需执行命令。
 - 投影平面映射、工程球心补偿和纯投影训练仍可独立工作，但不得改变相机画面
   的坐标域。
 

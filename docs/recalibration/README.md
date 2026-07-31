@@ -90,13 +90,7 @@
 
 ## 7. 第五步：先检查联合校准文件
 
-关闭校准窗口后，在项目根目录执行：
-
-```powershell
-.\.venv\Scripts\python.exe -m bas inspect-calib
-```
-
-至少确认：
+联合校准结束后回到“独立几何校准工作台”，点击“刷新校准状态”，至少确认：
 
 - `projection_valid` 为 `true`；
 - `projection_compatibility_errors` 为空；
@@ -128,7 +122,7 @@
 - 分割椭圆优先，外观椭圆次之，检测框中心会被显著降权；
 - 模型在采样凸包外连续衰减回平面几何，不再在边界发生毫米级跳变。
 
-再次运行 `inspect-calib`，确认：
+回到校准工作台并刷新状态，确认：
 
 - `ball_compensation_valid` 为 `true`；
 - `ball_compensation_compatibility_errors` 为空；
@@ -191,9 +185,7 @@ Holdout 点不能与联合校准角点或 30 个球心拟合点重复。正式�
 
 ## 10. 第八步：运行正式验收
 
-```powershell
-.\.venv\Scripts\python.exe -m bas verify-calib C:\path\to\holdout.json
-```
+在校准工作台的“独立 Holdout 验收”区域点击“选择文件”，选择 Holdout JSON，然后点击“开始图形化验收”。结果会直接显示在工作台中，不需要执行命令。
 
 正式通过条件为：
 

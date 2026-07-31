@@ -127,6 +127,8 @@ class RuntimePipeline:
             getattr(self, "operating_mode", RULES_MODE) == TRAINING_MODE
             and self.training_session.scenario.projection_only
         )
+        projection = getattr(self.calibration, "projection", None)
+        projection_geometry_ready = bool(getattr(projection, "is_valid", True))
         frame = self.capture.read()
         capture_ms = (time.perf_counter() - stage_start) * 1000.0
         if frame is None:
@@ -197,7 +199,35 @@ class RuntimePipeline:
         pocket_observer_ms = (time.perf_counter() - stage_start) * 1000.0
         stage_start = time.perf_counter()
         training_state: Optional[TrainingStateFrame] = None
-        if getattr(self, "operating_mode", RULES_MODE) == TRAINING_MODE:
+        uncalibrated_preview_mode = (
+            not projection_geometry_ready
+            and not projection_only_training
+            and getattr(self, "operating_mode", RULES_MODE) != TRAINING_MODE
+        )
+        if uncalibrated_preview_mode:
+            state = MatchStateFrame(
+                frame_id=frame.frame_id,
+                ts_cam_ns=frame.ts_cam_ns,
+                phase="CALIBRATION_REQUIRED",
+                layout=list(tracks.tracks),
+                confidence=1.0,
+                state_version="uncalibrated_camera_preview_v1",
+            )
+            plan = ShotPlan(
+                plan_id=f"uncalibrated_{frame.frame_id}",
+                frame_id=frame.frame_id,
+                ts_cam_ns=frame.ts_cam_ns,
+                planner_version="calibration_required_v1",
+            )
+            overlay = ProjectionOverlay(
+                overlay_id=f"uncalibrated_{frame.frame_id}",
+                frame_id=frame.frame_id,
+                projector_size=(
+                    int(self.config.projection.projector_width),
+                    int(self.config.projection.projector_height),
+                ),
+            )
+        elif getattr(self, "operating_mode", RULES_MODE) == TRAINING_MODE:
             self.training_session.set_table_context(
                 inner_polygon_mm=self.calibration.table.inner_polygon_mm,
                 table_edge_polygon_mm=getattr(self, "_last_table_edge_polygon_mm", []),
@@ -500,6 +530,11 @@ class RuntimePipeline:
 
     def _update_table_geometry_for_frame(self, frame: FramePacket) -> None:
         if frame.image is None or self.geometry.is_empty:
+            return
+        projection = getattr(self.calibration, "projection", None)
+        if projection is None or not bool(getattr(projection, "is_valid", False)):
+            # Camera acquisition and pixel-domain detection must remain usable
+            # before the first projection calibration is created.
             return
         h, w = frame.image.shape[:2]
         _, inner_px, pockets_px = self.geometry.scaled(w, h)
