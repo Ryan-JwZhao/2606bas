@@ -67,6 +67,23 @@
 4. 正式采样不少于 30 点；验收点必须独立于拟合点。
 5. 不要混用不同日期、不同分辨率或不同畸变开关下的标定文件。
 
+### 保存前质量门禁
+
+工程球体补偿现在使用与运行时相同的正则化映射做空间交叉验证，并在保存前检查：
+
+- 交叉验证 P95 不得超过 `max(8 mm, 球直径 × 18%)`；标准 57.15 mm 球对应约 10.29 mm。
+- 提供球桌尺寸时，目标点宽度覆盖率不得低于 60%，高度覆盖率不得低于 55%，凸包面积覆盖率不得低于 35%。
+- 质量结果保存在 `quality_report.mapping_cross_validation`、`target_coverage` 和 `quality_gate_passed` 中；显式标记未通过的模型在加载后也不会生效。
+- 对没有门禁字段但包含至少 20 个对应点的历史产物，加载时会自动复算并记录 `legacy_model_audited`；不合格的旧模型会被停用。少于 20 点的旧兼容格式保持原行为。
+
+门禁失败时向导会直接报告失败原因，应重新采集离群点或缺失区域，不应手工把 `quality_gate_passed` 改为 `true`。
+
+### 几何缺失与实际分辨率
+
+- 当联合边界尚未生成时，采样区域使用 `inner_polygon_mm`，并额外内缩半个球直径；只有边界明确就绪后才使用 `center_playable_polygon_mm`。
+- 桌面运行时、联合校准、球体补偿向导和已启动采集的校准工作台使用采集后回读的实际定向帧尺寸。相机驱动或视频返回的尺寸与配置请求值不同时，不会再误判刚保存的标定文件。
+- `inspect-calib` 不会主动占用相机，因此仍只能按配置尺寸做离线检查。若设备会协商到不同分辨率，请以启动采集后的工作台状态为准。
+
 Holdout 样本如用于验证球心，应增加：
 
 ```json
@@ -100,7 +117,7 @@ Holdout 样本如用于验证球心，应增加：
 核心测试：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_independent_geometry.py tests\test_ball_geometry.py tests\test_calibration.py -q
+.\.venv\Scripts\python.exe -m pytest tests\test_ball_compensation_sampling.py tests\test_calibration.py tests\test_independent_geometry.py tests\test_ball_geometry.py -q
 ```
 
 全量测试：

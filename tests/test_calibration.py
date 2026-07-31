@@ -16,7 +16,8 @@ from bas.calibration.service import (
     create_calibration_service,
     create_setting_aware_calibration_service,
 )
-from bas.config import CalibrationConfig, CameraConfig
+from bas.config import CalibrationConfig, CameraConfig, ProjectionConfig
+from bas.geometry_contract import projection_calibration_context
 from bas.calibration.verification import format_holdout_report, verify_holdout_samples
 from bas.schemas import TableModel
 
@@ -56,6 +57,44 @@ def test_setting_aware_calibration_service_does_not_override_disabled_correction
     assert service.distortion_correction_enabled is False
     with pytest.raises(RuntimeError, match="Projection calibration"):
         service.camera_px_to_projector_px(points)
+
+
+def test_setting_aware_service_uses_actual_capture_size_for_projection_context(tmp_path) -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [1280, 0], [1280, 720], [0, 720]], dtype=np.float64),
+        np.array([[0, 0], [1280, 0], [1280, 720], [0, 720]], dtype=np.float64),
+        projector_size=(1280, 800),
+    )
+    projection.calibration_context = projection_calibration_context(
+        frame_width=1280,
+        frame_height=720,
+        frame_rotation_degrees=0,
+        camera_coordinate_domain="raw",
+        distortion_file=None,
+        projector_width=1280,
+        projector_height=800,
+        projection_calibration_rotation_degrees=0,
+    )
+    path = tmp_path / "actual_capture_size_projection.json"
+    projection.save(path)
+
+    service = create_setting_aware_calibration_service(
+        CalibrationConfig(projection_file=str(path)),
+        CameraConfig(
+            width=1920,
+            height=1080,
+            distortion_correction_enabled=False,
+        ),
+        projection_config=ProjectionConfig(
+            projector_width=1280,
+            projector_height=800,
+            calibration_rotation_degrees=0,
+        ),
+        actual_frame_size=(1280, 720),
+    )
+
+    assert service.projection.is_valid is True
+    assert service.projection.compatibility_errors == ()
 
 
 def test_projection_residual_maps_control_points_exactly() -> None:
@@ -470,3 +509,57 @@ def test_engineered_calibration_service_loads_plane_and_ball_compensation(tmp_pa
     assert service.ball_compensation_model.source_path == str(ball_path)
     assert np.allclose(out[0], [110.0, 195.0], atol=1e-3)
     assert service.ball_pixel_radius_to_mm((100.0, 200.0), 99.0) == pytest.approx(28.575, abs=1e-6)
+
+
+def test_engineered_service_audits_and_rejects_bad_legacy_full_grid_model(tmp_path) -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [1920, 0], [1920, 1080], [0, 1080]], dtype=np.float64),
+        np.array([[0, 0], [1920, 0], [1920, 1080], [0, 1080]], dtype=np.float64),
+        projector_size=(1920, 1080),
+    )
+    projection.table_polygon_proj = np.array(
+        [[0, 0], [1920, 0], [1920, 1080], [0, 1080]],
+        dtype=np.float64,
+    )
+    plane_path = tmp_path / "engineered_plane.json"
+    projection.save(plane_path)
+
+    controls = np.column_stack(
+        [
+            np.tile(np.linspace(160.0, 1760.0, 6), 5),
+            np.repeat(np.linspace(140.0, 940.0, 5), 6),
+        ]
+    )
+    targets = np.random.default_rng(20260801).uniform(
+        [0.0, 0.0],
+        [2540.0, 1270.0],
+        size=(30, 2),
+    )
+    ball_path = tmp_path / "legacy_bad_ball.json"
+    ball_path.write_text(
+        json.dumps(
+            {
+                "mode": "engineered_ball_comp_v2",
+                "control_camera_points": controls.tolist(),
+                "target_table_mm": targets.tolist(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = CalibrationConfig(
+        projection_mode="engineered",
+        engineered_plane_projection_file=str(plane_path),
+        engineered_ball_compensation_file=str(ball_path),
+        table_width_mm=2540.0,
+        table_height_mm=1270.0,
+        ball_diameter_mm=57.15,
+    )
+
+    service = create_calibration_service(cfg, distortion_correction_enabled=False)
+
+    assert service.ball_compensation_model.is_valid is False
+    assert service.ball_compensation_model.quality_report["legacy_model_audited"] is True
+    assert service.ball_compensation_model.quality_report["quality_gate_passed"] is False
+    assert "cross-validation" in " ".join(
+        service.ball_compensation_model.quality_report["quality_gate_errors"]
+    )

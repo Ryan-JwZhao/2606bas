@@ -38,6 +38,26 @@ class _SamplingAborted(RuntimeError):
     pass
 
 
+def resolve_ball_sampling_region(table, *, boundaries_ready: bool) -> tuple[np.ndarray, float, str]:
+    """Return the polygon, extra inset and diagnostic name used for ball sampling."""
+
+    using_center_playable = bool(boundaries_ready and table.center_playable_polygon_mm)
+    polygon = np.asarray(
+        table.center_playable_polygon_mm or table.inner_polygon_mm,
+        dtype=np.float32,
+    ).reshape((-1, 2))
+    safe_inset_mm = (
+        ENGINEERED_CENTER_PLAYABLE_SAFE_INSET_MM
+        if using_center_playable
+        else 0.5 * float(table.ball_diameter_mm)
+    )
+    return (
+        polygon,
+        safe_inset_mm,
+        "center_playable" if using_center_playable else "inner_polygon_fallback",
+    )
+
+
 def ball_compensation_path_or_default(path_value: Optional[str]) -> Path:
     current = (path_value or "").strip()
     if current:
@@ -240,12 +260,14 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 self._append_log("检测到实时采集正在运行，先自动停止以释放相机。")
                 self.operator.stop_pipeline()
             capture = create_capture_service(self.operator.config.camera)
+            capture_info = capture.info()
             calibration = create_setting_aware_calibration_service(
                 self.operator.config.calibration,
                 self.operator.config.camera,
                 frame_undistorted=bool(capture.frame_distortion_corrected),
                 detector_config=self.operator.config.detector,
                 projection_config=self.operator.config.projection,
+                actual_frame_size=(int(capture_info.width), int(capture_info.height)),
             )
             self._append_log(
                 "camera_coordinate_domain="
@@ -307,15 +329,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 self._append_log("已根据 inline/pocket 几何刷新球心可达区，采样点将只落在 center playable 内圈。")
             else:
                 self._append_log("未能从 inline/pocket 几何刷新球心可达区，将回退到矩形安全采样区。")
-            using_center_playable = bool(calibration.table.center_playable_polygon_mm)
-            sample_polygon = np.asarray(
-                calibration.table.center_playable_polygon_mm or calibration.table.inner_polygon_mm,
-                dtype=np.float32,
-            ).reshape((-1, 2))
-            edge_safe_inset_mm = (
-                ENGINEERED_CENTER_PLAYABLE_SAFE_INSET_MM
-                if using_center_playable
-                else 0.5 * float(calibration.table.ball_diameter_mm)
+            sample_polygon, edge_safe_inset_mm, sampling_region_name = resolve_ball_sampling_region(
+                calibration.table,
+                boundaries_ready=boundaries_ready,
             )
             sample_points = build_engineered_ball_sampling_grid(
                 calibration.table.width_mm,
@@ -329,7 +345,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             )
             self._append_log(
                 "sampling_region="
-                f"{'center_playable' if using_center_playable else 'inner_polygon_fallback'}, "
+                f"{sampling_region_name}, "
                 f"grid={ENGINEERED_SAMPLING_COLS}x{ENGINEERED_SAMPLING_ROWS}, "
                 f"edge_safe_inset={edge_safe_inset_mm:.1f}mm"
             )
@@ -380,6 +396,8 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             model = build_ball_compensation_model(
                 self._samples,
                 ball_diameter_mm=calibration.table.ball_diameter_mm,
+                table_width_mm=calibration.table.width_mm,
+                table_height_mm=calibration.table.height_mm,
             )
             frame_height, frame_width = prime_frame.shape[:2] if prime_frame is not None else (
                 int(self.operator.config.camera.height),

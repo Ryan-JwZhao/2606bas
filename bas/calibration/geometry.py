@@ -174,6 +174,35 @@ class _RegularizedPointMap:
         return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
+def regularized_point_map_quality(
+    source: np.ndarray,
+    target: np.ndarray,
+    *,
+    sample_weights: Optional[np.ndarray] = None,
+) -> dict[str, float | int | str | bool]:
+    """Fit the runtime point-map family and expose its spatial CV quality."""
+
+    model = _RegularizedPointMap.fit(
+        source,
+        target,
+        sample_weights=sample_weights,
+        allow_quadratic=True,
+    )
+    if model is None:
+        return {
+            "model_available": False,
+            "model_kind": "unavailable",
+            "degree": 0,
+            "cv_p95": float("inf"),
+        }
+    return {
+        "model_available": True,
+        "model_kind": model.model_kind,
+        "degree": int(model.degree),
+        "cv_p95": float(model.cv_p95),
+    }
+
+
 def _support_fade_distance(source: np.ndarray) -> float:
     pts = ensure_numpy_points(source).astype(np.float64)
     if pts.shape[0] < 2:

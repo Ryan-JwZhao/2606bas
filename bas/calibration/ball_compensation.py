@@ -68,6 +68,7 @@ class BallCompensationModel:
         return (
             self.control_points_camera_px.shape[0] > 0
             and not self.compatibility_errors
+            and self.quality_report.get("quality_gate_passed") is not False
             and (
                 self.control_points_camera_px.shape == self.delta_table_mm.shape
                 or self.control_points_camera_px.shape == self.target_table_mm.shape

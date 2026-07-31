@@ -180,12 +180,18 @@ class CalibrationWorkbenchDialog(QtWidgets.QDialog):
             if capture is not None
             else bool(capture_frames_are_distortion_corrected(self.operator.config.camera))
         )
+        actual_frame_size = None
+        if capture is not None:
+            info = capture.info()
+            if int(info.width) > 0 and int(info.height) > 0:
+                actual_frame_size = (int(info.width), int(info.height))
         return create_setting_aware_calibration_service(
             self.operator.config.calibration,
             self.operator.config.camera,
             frame_undistorted=frame_undistorted,
             detector_config=self.operator.config.detector,
             projection_config=self.operator.config.projection,
+            actual_frame_size=actual_frame_size,
         )
 
     @QtCore.pyqtSlot()

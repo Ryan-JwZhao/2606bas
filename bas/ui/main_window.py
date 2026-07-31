@@ -138,6 +138,14 @@ def _configured_frame_undistorted(config: AppConfig, pipeline: Optional[RuntimeP
     return bool(capture_frames_are_distortion_corrected(config.camera))
 
 
+def _capture_frame_size(pipeline: Optional[RuntimePipeline]) -> Optional[tuple[int, int]]:
+    if pipeline is None:
+        return None
+    info = pipeline.capture.info()
+    width, height = int(info.width), int(info.height)
+    return (width, height) if width > 0 and height > 0 else None
+
+
 def _create_runtime_calibration_service(
     config: AppConfig,
     pipeline: Optional[RuntimePipeline] = None,
@@ -148,12 +156,15 @@ def _create_runtime_calibration_service(
         frame_undistorted=_configured_frame_undistorted(config, pipeline),
         detector_config=config.detector,
         projection_config=config.projection,
+        actual_frame_size=_capture_frame_size(pipeline),
     )
 
 
 def _create_calibration_workflow_service(
     config: AppConfig,
     pipeline: Optional[RuntimePipeline] = None,
+    *,
+    actual_frame_size: Optional[tuple[int, int]] = None,
 ):
     """Create calibration state in the same camera coordinate domain as runtime."""
     return create_setting_aware_calibration_service(
@@ -162,6 +173,7 @@ def _create_calibration_workflow_service(
         frame_undistorted=_configured_frame_undistorted(config, pipeline),
         detector_config=config.detector,
         projection_config=config.projection,
+        actual_frame_size=actual_frame_size or _capture_frame_size(pipeline),
     )
 
 
@@ -1190,8 +1202,13 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                 self.operator.config.geometry.inline_path,
                 self.operator.config.geometry.pocket_path,
             )
-            calibration = _create_calibration_workflow_service(self.operator.config)
             capture = create_capture_service(self.operator.config.camera)
+            capture_info = capture.info()
+            actual_frame_size = (int(capture_info.width), int(capture_info.height))
+            calibration = _create_calibration_workflow_service(
+                self.operator.config,
+                actual_frame_size=actual_frame_size,
+            )
             patterns = build_linked_patterns(
                 geometry,
                 (int(self.operator.config.projection.projector_width), int(self.operator.config.projection.projector_height)),
@@ -1277,7 +1294,10 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
             )
             self._saved_path = self._projection_output_path()
             self._result.projection.save(self._saved_path)
-            calibration = self._load_projection_from_path(self._saved_path)
+            calibration = self._load_projection_from_path(
+                self._saved_path,
+                actual_frame_size=(int(frame_w), int(frame_h)),
+            )
             self.progress.setValue(100)
             self.summary.setText(
                 "联动校正完成。\n"
@@ -1305,7 +1325,12 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
         self.operator.show_projector_residual_overlay(calibration)
         self._append_log("已在投影窗口显示联动校正结果与残差箭头。")
 
-    def _load_projection_from_path(self, path: Path):
+    def _load_projection_from_path(
+        self,
+        path: Path,
+        *,
+        actual_frame_size: Optional[tuple[int, int]] = None,
+    ):
         self.operator.config.calibration.set_active_projection_file(str(path))
         self.operator.config.calibration.sync_projection_file_alias()
         self.operator._sync_controls_from_config()
@@ -1313,6 +1338,7 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
         return _create_calibration_workflow_service(
             self.operator.config,
             self.operator.pipeline,
+            actual_frame_size=actual_frame_size,
         )
 
 

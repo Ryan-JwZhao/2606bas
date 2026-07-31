@@ -65,12 +65,14 @@ class RuntimePipeline:
         self.config = config
         self.control_state = control_state or RuntimeControlState()
         self.capture: CaptureService = create_capture_service(config.camera)
+        capture_info = self.capture.info()
         self.calibration: CalibrationService = create_setting_aware_calibration_service(
             config.calibration,
             config.camera,
             frame_undistorted=self.capture.frame_distortion_corrected,
             detector_config=config.detector,
             projection_config=config.projection,
+            actual_frame_size=(int(capture_info.width), int(capture_info.height)),
         )
         self.geometry_reloader = RuntimeGeometryReloader()
         self.geometry, _ = self.geometry_reloader.refresh(

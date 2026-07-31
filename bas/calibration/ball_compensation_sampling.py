@@ -10,6 +10,13 @@ from .ball_compensation import BallCompensationModel
 from ..table_boundaries import EdgeInsets, derive_table_boundaries, inset_polygon_uniform
 
 
+MAX_BALL_MAP_CV_P95_BALL_DIAMETER_RATIO = 0.18
+MIN_BALL_MAP_CV_P95_MM = 8.0
+MIN_BALL_TARGET_WIDTH_RATIO = 0.60
+MIN_BALL_TARGET_HEIGHT_RATIO = 0.55
+MIN_BALL_TARGET_HULL_AREA_RATIO = 0.35
+
+
 @dataclass
 class BallCompensationSample:
     sample_index: int
@@ -154,6 +161,8 @@ def build_ball_compensation_model(
     max_neighbors: int = 8,
     mode: str = "engineered_ball_comp_v2",
     minimum_samples: int = 20,
+    table_width_mm: float | None = None,
+    table_height_mm: float | None = None,
 ) -> BallCompensationModel:
     required = max(4, int(minimum_samples))
     if len(samples) < required:
@@ -181,6 +190,15 @@ def build_ball_compensation_model(
     )
     delta_norms = np.linalg.norm(deltas, axis=1)
 
+    quality_gate = evaluate_ball_compensation_quality(
+        controls,
+        targets,
+        sample_weights=sample_weights,
+        ball_diameter_mm=ball_diameter_mm,
+        table_width_mm=table_width_mm,
+        table_height_mm=table_height_mm,
+    )
+
     quality_report = {
         "sample_count": int(len(samples)),
         "ball_diameter_mm": float(ball_diameter_mm),
@@ -192,7 +210,13 @@ def build_ball_compensation_model(
         "detection_confidence": _stats_report(confidences),
         "geometry_quality": _stats_report(geometry_qualities),
         "geometry_methods": sorted({str(sample.geometry_method) for sample in samples}),
+        **quality_gate,
     }
+    if not bool(quality_gate["quality_gate_passed"]):
+        raise ValueError(
+            "Ball compensation quality gate failed: "
+            + "; ".join(str(error) for error in quality_gate["quality_gate_errors"])
+        )
     return BallCompensationModel(
         mode=str(mode or "engineered_ball_comp_v2"),
         control_points_camera_px=controls,
@@ -202,6 +226,78 @@ def build_ball_compensation_model(
         max_neighbors=max(1, min(int(max_neighbors), len(samples))),
         quality_report=quality_report,
     )
+
+
+def evaluate_ball_compensation_quality(
+    control_points_camera_px: np.ndarray,
+    target_table_mm: np.ndarray,
+    *,
+    sample_weights: np.ndarray | None,
+    ball_diameter_mm: float,
+    table_width_mm: float | None = None,
+    table_height_mm: float | None = None,
+) -> Dict[str, object]:
+    """Evaluate a persisted or newly sampled model with the runtime map family."""
+
+    controls = np.asarray(control_points_camera_px, dtype=np.float64).reshape((-1, 2))
+    targets = np.asarray(target_table_mm, dtype=np.float64).reshape((-1, 2))
+    weights = None if sample_weights is None else np.asarray(sample_weights, dtype=np.float64).reshape((-1,))
+
+    # Import lazily so the persistence module remains independent while using
+    # the exact regularized mapping family selected by IndependentGeometry.
+    from .geometry import regularized_point_map_quality
+
+    mapping_quality = regularized_point_map_quality(
+        controls,
+        targets,
+        sample_weights=weights,
+    )
+    maximum_cv_p95_mm = max(
+        MIN_BALL_MAP_CV_P95_MM,
+        float(ball_diameter_mm) * MAX_BALL_MAP_CV_P95_BALL_DIAMETER_RATIO,
+    )
+    quality_errors: list[str] = []
+    cv_p95_mm = float(mapping_quality.get("cv_p95", float("inf")))
+    if not bool(mapping_quality.get("model_available", False)):
+        quality_errors.append("cross-validation model is unavailable")
+    elif not np.isfinite(cv_p95_mm) or cv_p95_mm > maximum_cv_p95_mm:
+        quality_errors.append(
+            f"cross-validation P95 {cv_p95_mm:.2f} mm exceeds {maximum_cv_p95_mm:.2f} mm"
+        )
+
+    coverage_report = _target_coverage_report(
+        targets,
+        table_width_mm=table_width_mm,
+        table_height_mm=table_height_mm,
+    )
+    if coverage_report.get("evaluated"):
+        width_ratio = float(coverage_report["width_ratio"])
+        height_ratio = float(coverage_report["height_ratio"])
+        hull_area_ratio = float(coverage_report["hull_area_ratio"])
+        if width_ratio < MIN_BALL_TARGET_WIDTH_RATIO:
+            quality_errors.append(
+                f"target width coverage {width_ratio:.1%} is below {MIN_BALL_TARGET_WIDTH_RATIO:.0%}"
+            )
+        if height_ratio < MIN_BALL_TARGET_HEIGHT_RATIO:
+            quality_errors.append(
+                f"target height coverage {height_ratio:.1%} is below {MIN_BALL_TARGET_HEIGHT_RATIO:.0%}"
+            )
+        if hull_area_ratio < MIN_BALL_TARGET_HULL_AREA_RATIO:
+            quality_errors.append(
+                f"target hull coverage {hull_area_ratio:.1%} is below {MIN_BALL_TARGET_HULL_AREA_RATIO:.0%}"
+            )
+
+    return {
+        "mapping_cross_validation": {
+            "model_kind": str(mapping_quality.get("model_kind", "unavailable")),
+            "degree": int(mapping_quality.get("degree", 0)),
+            "p95_mm": cv_p95_mm,
+            "maximum_p95_mm": float(maximum_cv_p95_mm),
+        },
+        "target_coverage": coverage_report,
+        "quality_gate_passed": not quality_errors,
+        "quality_gate_errors": quality_errors,
+    }
 
 
 def _geometry_method_weight(method: str) -> float:
@@ -237,6 +333,31 @@ def _span_report(points: np.ndarray) -> Dict[str, float]:
     return {
         "width": float(maxs[0] - mins[0]),
         "height": float(maxs[1] - mins[1]),
+    }
+
+
+def _target_coverage_report(
+    points: np.ndarray,
+    *,
+    table_width_mm: float | None,
+    table_height_mm: float | None,
+) -> Dict[str, float | bool]:
+    pts = np.asarray(points, dtype=np.float64).reshape((-1, 2))
+    width = float(table_width_mm or 0.0)
+    height = float(table_height_mm or 0.0)
+    if pts.shape[0] < 3 or width <= 0.0 or height <= 0.0:
+        return {"evaluated": False}
+    span = np.ptp(pts, axis=0)
+    hull = cv2.convexHull(pts.astype(np.float32)).reshape((-1, 2))
+    hull_area = abs(float(cv2.contourArea(hull.reshape((-1, 1, 2))))) if hull.shape[0] >= 3 else 0.0
+    return {
+        "evaluated": True,
+        "width_ratio": float(span[0] / width),
+        "height_ratio": float(span[1] / height),
+        "hull_area_ratio": float(hull_area / (width * height)),
+        "minimum_width_ratio": float(MIN_BALL_TARGET_WIDTH_RATIO),
+        "minimum_height_ratio": float(MIN_BALL_TARGET_HEIGHT_RATIO),
+        "minimum_hull_area_ratio": float(MIN_BALL_TARGET_HULL_AREA_RATIO),
     }
 
 

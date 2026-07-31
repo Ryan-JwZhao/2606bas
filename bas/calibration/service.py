@@ -10,6 +10,7 @@ from ..geometry_contract import calibration_context, projection_calibration_cont
 from ..schemas import Point, TableModel
 from ..utils import ensure_numpy_points
 from .ball_compensation import BallCompensationModel
+from .ball_compensation_sampling import evaluate_ball_compensation_quality
 from .camera import CameraCalibration
 from .geometry import IndependentGeometry, ProjectedEllipse
 from .projector import ProjectionCalibration
@@ -240,6 +241,7 @@ def create_calibration_service(
         center_playable_polygon_mm=default_inner_polygon(float(config.table_width_mm), float(config.table_height_mm)),
         projection_visible_pockets_mm=default_pockets(float(config.table_width_mm), float(config.table_height_mm)),
     )
+    _audit_legacy_ball_compensation_model(ball_compensation_model, table)
     return CalibrationService(
         camera=camera,
         projection=projection,
@@ -252,14 +254,43 @@ def create_calibration_service(
     )
 
 
+def _audit_legacy_ball_compensation_model(
+    model: BallCompensationModel,
+    table: TableModel,
+) -> None:
+    """Backfill the quality gate for old full-grid artifacts at load time."""
+
+    if "quality_gate_passed" in model.quality_report:
+        return
+    controls = np.asarray(model.control_points_camera_px, dtype=np.float64).reshape((-1, 2))
+    targets = np.asarray(model.target_table_mm, dtype=np.float64).reshape((-1, 2))
+    if controls.shape != targets.shape or controls.shape[0] < 20:
+        return
+    weights = model.sample_weights if model.sample_weights.shape[0] == controls.shape[0] else None
+    audit = evaluate_ball_compensation_quality(
+        controls,
+        targets,
+        sample_weights=weights,
+        ball_diameter_mm=float(table.ball_diameter_mm),
+        table_width_mm=float(table.width_mm),
+        table_height_mm=float(table.height_mm),
+    )
+    model.quality_report = {
+        **model.quality_report,
+        **audit,
+        "legacy_model_audited": True,
+    }
+
+
 def create_setting_aware_calibration_service(
     calibration_config: CalibrationConfig,
     camera_config: CameraConfig,
     frame_undistorted: bool = False,
     detector_config: DetectorConfig | None = None,
     projection_config: ProjectionConfig | None = None,
+    actual_frame_size: tuple[int, int] | None = None,
 ) -> CalibrationService:
-    """Create calibration state without overriding the active camera correction setting."""
+    """Create calibration state; actual_frame_size is the post-rotation capture size."""
 
     coordinate_domain = (
         "undistorted"
@@ -268,8 +299,14 @@ def create_setting_aware_calibration_service(
         else "raw"
     )
     rotation_degrees = int(camera_config.frame_rotation_degrees) % 360
-    frame_width = int(camera_config.height) if rotation_degrees in {90, 270} else int(camera_config.width)
-    frame_height = int(camera_config.width) if rotation_degrees in {90, 270} else int(camera_config.height)
+    if actual_frame_size is not None:
+        frame_width = int(actual_frame_size[0])
+        frame_height = int(actual_frame_size[1])
+        if frame_width <= 0 or frame_height <= 0:
+            raise ValueError("actual_frame_size must contain positive oriented-frame dimensions")
+    else:
+        frame_width = int(camera_config.height) if rotation_degrees in {90, 270} else int(camera_config.width)
+        frame_height = int(camera_config.width) if rotation_degrees in {90, 270} else int(camera_config.height)
     projection_context = projection_calibration_context(
         frame_width=frame_width,
         frame_height=frame_height,

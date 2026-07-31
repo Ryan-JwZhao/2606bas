@@ -22,6 +22,7 @@ from bas.table_boundaries import EdgeInsets
 from bas.ui.engineered_ball_compensation_wizard import (
     ball_compensation_path_or_default,
     ball_compensation_path_from_input,
+    resolve_ball_sampling_region,
     timestamped_ball_compensation_output_path,
 )
 
@@ -164,6 +165,51 @@ def test_build_engineered_ball_sampling_grid_keeps_pocket_edge_anchors() -> None
     assert float(np.max(nearest)) <= 5.0
 
 
+def test_missing_geometry_uses_ball_radius_fallback_instead_of_default_center_polygon() -> None:
+    table = TableModel(
+        width_mm=2540.0,
+        height_mm=1270.0,
+        ball_diameter_mm=57.15,
+        inner_polygon_mm=[(0.0, 0.0), (2540.0, 0.0), (2540.0, 1270.0), (0.0, 1270.0)],
+        pockets_mm=[],
+        center_playable_polygon_mm=[
+            (0.0, 0.0),
+            (2540.0, 0.0),
+            (2540.0, 1270.0),
+            (0.0, 1270.0),
+        ],
+    )
+
+    polygon, safe_inset_mm, source = resolve_ball_sampling_region(
+        table,
+        boundaries_ready=False,
+    )
+    grid = build_engineered_ball_sampling_grid(
+        table.width_mm,
+        table.height_mm,
+        table.ball_diameter_mm,
+        cols=6,
+        rows=5,
+        preferred_polygon_mm=polygon,
+        extra_safe_inset_mm=safe_inset_mm,
+    )
+    edge_clearance = np.min(
+        np.column_stack(
+            [
+                grid[:, 0],
+                table.width_mm - grid[:, 0],
+                grid[:, 1],
+                table.height_mm - grid[:, 1],
+            ]
+        ),
+        axis=1,
+    )
+
+    assert source == "inner_polygon_fallback"
+    assert safe_inset_mm >= 0.5 * table.ball_diameter_mm
+    assert float(np.min(edge_clearance)) >= 0.5 * table.ball_diameter_mm - 1.0
+
+
 def test_update_calibration_table_boundaries_from_geometry_frame_refreshes_center_polygon() -> None:
     projection = ProjectionCalibration.fit_from_correspondences(
         np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
@@ -279,6 +325,8 @@ def test_build_ball_compensation_model_reports_quality_and_roundtrips(tmp_path) 
     assert model.max_neighbors == 4
     assert model.quality_report["sample_count"] == 4
     assert model.quality_report["delta_norm_mm"]["max"] > 0.0
+    assert model.quality_report["quality_gate_passed"] is True
+    assert model.quality_report["mapping_cross_validation"]["p95_mm"] < 10.29
     assert reloaded.is_valid is True
     assert reloaded.max_neighbors == 4
     assert np.allclose(reloaded.control_points_camera_px, np.asarray([sample.detected_camera_px for sample in samples], dtype=np.float64))
@@ -322,6 +370,84 @@ def test_ball_compensation_requires_twenty_samples_by_default() -> None:
 
     with np.testing.assert_raises_regex(ValueError, "20"):
         build_ball_compensation_model([sample] * 19, ball_diameter_mm=57.15)
+
+
+def test_ball_compensation_rejects_unpredictable_cross_validated_mapping() -> None:
+    rng = np.random.default_rng(20260801)
+    camera_points = np.column_stack(
+        [
+            np.tile(np.linspace(160.0, 1760.0, 6), 5),
+            np.repeat(np.linspace(140.0, 940.0, 5), 6),
+        ]
+    )
+    random_targets = rng.uniform([0.0, 0.0], [2540.0, 1270.0], size=(30, 2))
+    samples = [
+        BallCompensationSample(
+            sample_index=index,
+            target_table_mm=tuple(random_targets[index]),
+            detected_camera_px=tuple(camera_points[index]),
+            projected_target_px=(0.0, 0.0),
+            expected_camera_px=tuple(camera_points[index]),
+            observed_table_mm=tuple(random_targets[index]),
+            delta_table_mm=(0.0, 0.0),
+            detected_radius_px=22.0,
+            detection_confidence=0.92,
+            stability_spread_px=0.3,
+            geometry_quality=0.9,
+            geometry_method="segmentation_ellipse",
+        )
+        for index in range(30)
+    ]
+
+    with np.testing.assert_raises_regex(ValueError, "cross-validation"):
+        build_ball_compensation_model(samples, ball_diameter_mm=57.15)
+
+
+def test_ball_compensation_rejects_samples_that_cover_too_little_of_table() -> None:
+    camera_points = np.column_stack(
+        [
+            np.tile(np.linspace(100.0, 500.0, 5), 4),
+            np.repeat(np.linspace(100.0, 400.0, 4), 5),
+        ]
+    )
+    target_points = camera_points * np.asarray([1.25, 1.1]) + np.asarray([120.0, 80.0])
+    samples = [
+        BallCompensationSample(
+            sample_index=index,
+            target_table_mm=tuple(target_points[index]),
+            detected_camera_px=tuple(camera_points[index]),
+            projected_target_px=(0.0, 0.0),
+            expected_camera_px=tuple(camera_points[index]),
+            observed_table_mm=tuple(target_points[index]),
+            delta_table_mm=(0.0, 0.0),
+            detected_radius_px=22.0,
+            detection_confidence=0.95,
+            stability_spread_px=0.2,
+            geometry_quality=0.95,
+            geometry_method="segmentation_ellipse",
+        )
+        for index in range(20)
+    ]
+
+    with np.testing.assert_raises_regex(ValueError, "target width coverage"):
+        build_ball_compensation_model(
+            samples,
+            ball_diameter_mm=57.15,
+            table_width_mm=2540.0,
+            table_height_mm=1270.0,
+        )
+
+
+def test_ball_compensation_model_rejects_explicit_failed_quality_gate() -> None:
+    controls = np.asarray([[0, 0], [10, 0], [0, 10], [10, 10]], dtype=np.float64)
+    model = BallCompensationModel(
+        mode="direct",
+        control_points_camera_px=controls,
+        target_table_mm=controls.copy(),
+        quality_report={"quality_gate_passed": False},
+    )
+
+    assert model.is_valid is False
 
 
 def test_ball_compensation_downweights_bbox_geometry() -> None:
