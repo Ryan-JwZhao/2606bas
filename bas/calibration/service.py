@@ -38,6 +38,17 @@ class BallCenterCompensation:
     scale_x_pct: float = 0.0
     scale_y_pct: float = 0.0
 
+    @classmethod
+    def from_config(cls, config: CalibrationConfig) -> "BallCenterCompensation":
+        return cls(
+            enabled=bool(config.ball_center_compensation_enabled),
+            auto_reference=bool(config.ball_center_compensation_auto_reference),
+            ref_x_px=float(config.ball_center_compensation_ref_x_px),
+            ref_y_px=float(config.ball_center_compensation_ref_y_px),
+            scale_x_pct=float(config.ball_center_compensation_scale_x_pct),
+            scale_y_pct=float(config.ball_center_compensation_scale_y_pct),
+        )
+
 
 @dataclass
 class CalibrationService:
@@ -49,6 +60,9 @@ class CalibrationService:
     projection_mode: str = "legacy"
     ball_compensation_model: BallCompensationModel = field(default_factory=BallCompensationModel)
     ball_center_compensation: BallCenterCompensation = field(default_factory=BallCenterCompensation)
+
+    def sync_ball_center_compensation(self, config: CalibrationConfig) -> None:
+        self.ball_center_compensation = BallCenterCompensation.from_config(config)
 
     @property
     def calib_version(self) -> str:
@@ -260,12 +274,5 @@ def create_calibration_service(
         distortion_correction_enabled=correction_enabled,
         projection_mode=projection_mode,
         ball_compensation_model=ball_compensation_model,
-        ball_center_compensation=BallCenterCompensation(
-            enabled=bool(config.ball_center_compensation_enabled),
-            auto_reference=bool(config.ball_center_compensation_auto_reference),
-            ref_x_px=float(config.ball_center_compensation_ref_x_px),
-            ref_y_px=float(config.ball_center_compensation_ref_y_px),
-            scale_x_pct=float(config.ball_center_compensation_scale_x_pct),
-            scale_y_pct=float(config.ball_center_compensation_scale_y_pct),
-        ),
+        ball_center_compensation=BallCenterCompensation.from_config(config),
     )

@@ -118,6 +118,9 @@ class RuntimePipeline:
         total_start = time.perf_counter()
         stage_start = total_start
         self._refresh_geometry_if_needed()
+        sync_ball_compensation = getattr(self.calibration, "sync_ball_center_compensation", None)
+        if callable(sync_ball_compensation):
+            sync_ball_compensation(self.config.calibration)
         projection_only_training = (
             getattr(self, "operating_mode", RULES_MODE) == TRAINING_MODE
             and self.training_session.scenario.projection_only
@@ -415,13 +418,7 @@ class RuntimePipeline:
         if not changed:
             return
         self.geometry = geometry
-        self._last_state = None
-        self._last_plan = None
-        self._last_overlay = None
-        reset_cache = getattr(self.detector, "reset_cache", None)
-        if callable(reset_cache):
-            reset_cache()
-        self.pocket_observer.reset()
+        self._reset_temporal_processing_state()
         LOGGER.info(
             "Geometry hot-reloaded: outline=%s inline=%s pocket=%s empty=%s",
             self.config.geometry.outline_path,
@@ -442,6 +439,11 @@ class RuntimePipeline:
             self.geometry,
             fallback_polygon=fallback_polygon,
             ball_diameter_px_by_pocket=self._camera_ball_diameters_px(frame),
+            ball_center_reachable_polygon_mm=np.asarray(
+                getattr(self.calibration.table, "center_playable_polygon_mm", []),
+                dtype=np.float32,
+            ),
+            ball_camera_px_to_table_mm=getattr(self.calibration, "ball_camera_px_to_table_mm", None),
         )
         if policy.global_polygon is None and policy.ball_polygon is None and policy.cue_stick_polygon is None:
             return None

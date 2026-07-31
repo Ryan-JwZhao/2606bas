@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from bas.perception.detector import Detector
+from bas.perception.regions import DetectionRegionPolicy
 from bas.perception.service import DetectService
 from bas.schemas import Detection, FramePacket
 
@@ -59,3 +60,26 @@ def test_detect_service_resets_cached_result() -> None:
     assert detector.calls == 2
     assert first.detections[0].cls_name == "call_1"
     assert second.detections[0].cls_name == "call_2"
+
+
+def test_cached_detections_are_refiltered_against_latest_region_policy() -> None:
+    class BallDetector(Detector):
+        version = "ball"
+
+        def detect(self, frame_bgr, mask_polygon=None):
+            return [Detection(bbox=(4.0, 4.0, 6.0, 6.0), conf=0.9, cls_id=0, cls_name="solid")]
+
+    service = DetectService(BallDetector(), detect_interval_frames=5, detect_fps_limit_hz=0.0)
+    permissive = DetectionRegionPolicy(
+        ball_polygon=np.array([[0, 0], [8, 0], [8, 8], [0, 8]], dtype=np.float32)
+    )
+    restrictive = DetectionRegionPolicy(
+        ball_polygon=np.array([[0, 0], [2, 0], [2, 2], [0, 2]], dtype=np.float32)
+    )
+
+    first = service.process(_frame(0), detection_regions=permissive)
+    cached = service.process(_frame(1), detection_regions=restrictive)
+
+    assert len(first.detections) == 1
+    assert cached.detections == []
+    assert cached.detector_version == "ball:cached"

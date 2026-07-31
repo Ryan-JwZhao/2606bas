@@ -54,7 +54,7 @@ def test_filter_detections_by_region_keeps_balls_inside_inner_and_cue_sticks_ins
     assert [det.cls_name for det in filtered] == ["solid", "cue_stick"]
 
 
-def test_pocket_guard_band_keeps_ball_on_pocket_lip_but_not_unrelated_outer_area() -> None:
+def test_pocket_guard_band_is_observation_only_and_does_not_admit_balls_outside_inner() -> None:
     geometry = TableGeometry(
         outer_norm=_square(0.0, 0.0, 1.0, 1.0),
         inner_norm=_square(0.2, 0.2, 0.8, 0.8),
@@ -74,4 +74,25 @@ def test_pocket_guard_band_keeps_ball_on_pocket_lip_but_not_unrelated_outer_area
     filtered = filter_detections_by_region(detections, policy)
 
     assert len(policy.ball_guard_regions) == 1
-    assert [det.cls_name for det in filtered] == ["solid"]
+    assert filtered == []
+
+
+def test_ball_detection_requires_center_to_be_inside_reachable_polygon() -> None:
+    geometry = TableGeometry(
+        outer_norm=_square(0.0, 0.0, 1.0, 1.0),
+        inner_norm=_square(0.1, 0.1, 0.9, 0.9),
+    )
+    policy = build_detection_region_policy(
+        (100, 100, 3),
+        geometry,
+        ball_center_reachable_polygon_mm=_square(20.0, 20.0, 80.0, 80.0),
+        ball_camera_px_to_table_mm=lambda points: np.asarray(points, dtype=np.float32),
+    )
+    detections = [
+        _detection("solid", 15.0, 50.0),
+        _detection("stripe", 50.0, 50.0),
+    ]
+
+    filtered = filter_detections_by_region(detections, policy)
+
+    assert [(det.cls_name, det.center) for det in filtered] == [("stripe", (50.0, 50.0))]

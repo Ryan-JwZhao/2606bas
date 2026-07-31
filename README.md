@@ -510,3 +510,20 @@ node --test tests\web_control_coordinates.test.js
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests\test_training_mode.py tests\test_planner.py -q --basetemp=pytest_tmp_training_routes -o cache_dir=pytest_cache_local\training_routes
 ```
+
+## 更换台面几何文件后的区域规则
+
+运行时会读取设置中的 `outline.json`、`inline.json` 和 `pocket.json`。文件内容变化且校验成功后会自动重建边界，并清空检测缓存、跟踪历史、状态机历史和规划锁定，避免继续使用旧几何产生的球轨迹。
+
+球检测采用两级严格过滤：
+
+1. 球中心必须位于 `inline + pocket` 拼接出的相机画面多边形内。
+2. 球中心经过当前球心补偿和相机到台面毫米坐标转换后，还必须位于 `center_playable_polygon_mm` 球心可达域内。
+
+袋口保护区仅供袋口视觉观察器分析进袋画面，不再允许位于台面边界外的 YOLO 球候选进入跟踪器。设置界面中的球心补偿、物理库边内缩和球心额外安全边会在运行中实时生效。
+
+更换文件后建议打开“投影调试模式”，确认 `inline`、`pocket`、`physical` 和 `center` 四类参考线位置正确。定向回归测试命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q tests\test_detection_regions.py tests\test_detection_service.py tests\test_geometry_runtime.py tests\test_calibration.py
+```

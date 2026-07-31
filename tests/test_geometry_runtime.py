@@ -63,3 +63,26 @@ def test_runtime_geometry_reloader_detects_path_switch(tmp_path) -> None:
     geometry, changed = reloader.refresh(None, str(inline_b), None)
     assert changed is True
     np.testing.assert_allclose(geometry.inline_norm[0], np.array([[0.0, 0.8], [1.0, 0.8]], dtype=np.float32))
+
+
+def test_runtime_geometry_reloader_keeps_last_valid_geometry_during_partial_write(tmp_path) -> None:
+    inline_path = tmp_path / "inline.json"
+    _write_labelme(inline_path, "inline", [[10, 20], [90, 20]])
+    reloader = RuntimeGeometryReloader()
+    original, changed = reloader.refresh(None, str(inline_path), None)
+    assert changed is True
+
+    inline_path.write_text('{"imageWidth": 100, "shapes": [', encoding="utf-8")
+    retained, changed = reloader.refresh(None, str(inline_path), None)
+
+    assert changed is False
+    np.testing.assert_allclose(retained.inline_norm[0], original.inline_norm[0])
+
+    _write_labelme(inline_path, "inline", [[10, 60], [90, 60]])
+    refreshed, changed = reloader.refresh(None, str(inline_path), None)
+
+    assert changed is True
+    np.testing.assert_allclose(
+        refreshed.inline_norm[0],
+        np.array([[0.1, 0.6], [0.9, 0.6]], dtype=np.float32),
+    )

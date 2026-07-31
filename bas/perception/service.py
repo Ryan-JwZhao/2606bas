@@ -33,10 +33,14 @@ class DetectService:
         frame_index = self._frame_index
         self._frame_index += 1
         if self._last_result is not None and not self._should_detect(start, frame_index):
+            cached_detections = filter_detections_by_region(
+                self._last_result.detections,
+                detection_regions,
+            )
             return DetectionsFrame(
                 frame_id=frame.frame_id,
                 ts_cam_ns=frame.ts_cam_ns,
-                detections=list(self._last_result.detections),
+                detections=cached_detections,
                 detector_version=f"{getattr(self.detector, 'version', 'unknown')}:cached",
                 latency_ms=0.0,
             )

@@ -210,6 +210,32 @@ def test_ball_center_compensation_auto_reference_uses_image_center() -> None:
     assert np.allclose(out[0], [154.0, 77.0], atol=1e-3)
 
 
+def test_ball_center_compensation_can_sync_from_live_config() -> None:
+    service = create_calibration_service(
+        CalibrationConfig(),
+        distortion_correction_enabled=False,
+    )
+    config = CalibrationConfig(
+        ball_center_compensation_enabled=True,
+        ball_center_compensation_auto_reference=False,
+        ball_center_compensation_ref_x_px=321.0,
+        ball_center_compensation_ref_y_px=654.0,
+        ball_center_compensation_scale_x_pct=2.5,
+        ball_center_compensation_scale_y_pct=-1.5,
+    )
+
+    service.sync_ball_center_compensation(config)
+
+    assert service.ball_center_compensation == BallCenterCompensation(
+        enabled=True,
+        auto_reference=False,
+        ref_x_px=321.0,
+        ref_y_px=654.0,
+        scale_x_pct=2.5,
+        scale_y_pct=-1.5,
+    )
+
+
 def test_holdout_verification_reports_mm_and_image_errors() -> None:
     projection = ProjectionCalibration.fit_from_correspondences(
         np.array([[0, 0], [100, 0], [100, 50], [0, 50]], dtype=np.float64),
