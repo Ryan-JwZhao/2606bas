@@ -371,14 +371,19 @@ def test_raw_and_route_video_recorders_share_the_authoritative_pipeline_frame() 
     assert writes == [(False, base_frame), (True, route_frame)]
 
 
-def test_runtime_and_calibration_workflow_use_explicit_correction_policies(monkeypatch) -> None:
+def test_runtime_and_calibration_workflow_follow_current_correction_setting(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 
-    def fake_create(_config, **kwargs):
-        calls.append(kwargs)
+    def fake_create(_calibration_config, camera_config, **kwargs):
+        calls.append(
+            {
+                **kwargs,
+                "distortion_correction_enabled": bool(camera_config.distortion_correction_enabled),
+            }
+        )
         return SimpleNamespace()
 
-    monkeypatch.setattr(main_window, "create_calibration_service", fake_create)
+    monkeypatch.setattr(main_window, "create_setting_aware_calibration_service", fake_create)
     config = AppConfig()
     config.camera.distortion_correction_enabled = False
 
@@ -386,7 +391,7 @@ def test_runtime_and_calibration_workflow_use_explicit_correction_policies(monke
     main_window._create_calibration_workflow_service(config)
 
     assert calls[0]["distortion_correction_enabled"] is False
-    assert calls[1]["distortion_correction_enabled"] is True
+    assert calls[1]["distortion_correction_enabled"] is False
 
 
 def test_operator_window_exposes_explicit_review_controls() -> None:

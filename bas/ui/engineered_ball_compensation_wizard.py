@@ -13,7 +13,7 @@ from ..calibration import (
     BallCompensationSample,
     build_ball_compensation_model,
     build_engineered_ball_sampling_grid,
-    create_calibration_service,
+    create_setting_aware_calibration_service,
     update_calibration_table_boundaries_from_geometry_frame,
 )
 from ..capture import create_capture_service
@@ -95,7 +95,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             "\n".join(
                 [
                     "1. 在设置中切换到工程模式，并确认当前工程平面校准文件可加载。",
-                    "2. 启用可用的球检测后端，并确保当前相机画面已经完成去畸变。",
+                    "2. 启用可用的球检测后端；向导严格沿用当前工业相机畸变校正开关，不会自行开启校正。",
                     "3. 清空台面，仅保留一颗标准球。",
                     "4. 点击“开始自动采样”，按提示把球逐个移动到投影目标圈。",
                     "5. 采样完成后，程序会自动生成新的工程球体补偿 JSON，并写回当前设置。",
@@ -238,10 +238,15 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 self._append_log("检测到实时采集正在运行，先自动停止以释放相机。")
                 self.operator.stop_pipeline()
             capture = create_capture_service(self.operator.config.camera)
-            calibration = create_calibration_service(
+            calibration = create_setting_aware_calibration_service(
                 self.operator.config.calibration,
+                self.operator.config.camera,
                 frame_undistorted=bool(capture.frame_distortion_corrected),
-                distortion_correction_enabled=True,
+            )
+            self._append_log(
+                "camera_coordinate_domain="
+                f"{'undistorted' if calibration.distortion_correction_enabled else 'raw'}, "
+                "严格遵循当前工业相机畸变校正开关"
             )
             if not calibration.projection.is_valid:
                 plane_path = self.operator.config.calibration.engineered_plane_projection_file or self.operator.config.calibration.active_projection_file()
@@ -316,6 +321,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 rows=ENGINEERED_SAMPLING_ROWS,
                 preferred_polygon_mm=sample_polygon,
                 extra_safe_inset_mm=edge_safe_inset_mm,
+                priority_points_mm=np.asarray(calibration.table.pockets_mm, dtype=np.float32),
             )
             self._append_log(
                 "sampling_region="

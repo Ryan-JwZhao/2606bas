@@ -46,6 +46,7 @@ def build_engineered_ball_sampling_grid(
     rows: int = 4,
     preferred_polygon_mm: np.ndarray | None = None,
     extra_safe_inset_mm: float | None = None,
+    priority_points_mm: np.ndarray | None = None,
 ) -> np.ndarray:
     width = max(1.0, float(table_width_mm))
     height = max(1.0, float(table_height_mm))
@@ -60,8 +61,12 @@ def build_engineered_ball_sampling_grid(
         safe_polygon = inset_polygon_uniform(polygon, safe_inset, width, height) if safe_inset > 1e-6 else polygon
         polygon_grid = _sampling_grid_inside_polygon(safe_polygon, target_count=target_count, cols=cols, rows=rows)
         if polygon_grid.shape[0] >= 4:
-            edge_target_count = min(max(8, int(round(target_count * 0.4))), max(0, target_count - 4))
-            edge_points = _polygon_edge_priority_points(safe_polygon, target_count=edge_target_count)
+            edge_target_count = min(max(12, int(round(target_count * 0.55))), max(0, target_count - 4))
+            edge_points = _polygon_edge_priority_points(
+                safe_polygon,
+                target_count=edge_target_count,
+                priority_points_mm=priority_points_mm,
+            )
             if edge_points.shape[0] > 0:
                 merged = _merge_sampling_sets(
                     edge_points,
@@ -234,25 +239,66 @@ def _sampling_grid_inside_polygon(
     return selected[order].reshape((-1, 2))
 
 
-def _polygon_edge_priority_points(polygon_mm: np.ndarray, *, target_count: int) -> np.ndarray:
+def _polygon_edge_priority_points(
+    polygon_mm: np.ndarray,
+    *,
+    target_count: int,
+    priority_points_mm: np.ndarray | None = None,
+) -> np.ndarray:
     poly = np.asarray(polygon_mm, dtype=np.float32).reshape((-1, 2))
     if poly.shape[0] < 3 or target_count <= 0:
         return np.zeros((0, 2), dtype=np.float64)
-    vertices = _unique_points(poly.astype(np.float64))
-    if vertices.shape[0] >= target_count:
-        return vertices[:target_count].reshape((-1, 2))
-    perimeter_candidates = _sample_polygon_perimeter(poly, sample_count=max(target_count * 3, poly.shape[0] * 2))
+    perimeter_candidates = _sample_polygon_perimeter(
+        poly,
+        sample_count=max(target_count * 24, poly.shape[0] * 2),
+    )
     perimeter_points = _select_spaced_points(
         perimeter_candidates,
-        min(max(target_count * 2, vertices.shape[0]), perimeter_candidates.shape[0]),
+        min(max(target_count * 2, target_count), perimeter_candidates.shape[0]),
     )
+    anchors = _nearest_polygon_boundary_points(poly, priority_points_mm)
     merged = _merge_sampling_sets(
-        vertices,
+        anchors,
         perimeter_points,
         target_count=target_count,
-        min_spacing=max(2.0, 0.55 * _estimated_sampling_spacing(poly, cols=max(2, target_count // 2), rows=2)),
+        min_spacing=max(
+            2.0,
+            0.42 * _estimated_sampling_spacing(poly, cols=max(2, target_count // 2), rows=2),
+        ),
     )
-    return merged if merged.shape[0] > 0 else vertices.reshape((-1, 2))
+    return merged if merged.shape[0] > 0 else perimeter_points[:target_count].reshape((-1, 2))
+
+
+def _nearest_polygon_boundary_points(
+    polygon_mm: np.ndarray,
+    points_mm: np.ndarray | None,
+) -> np.ndarray:
+    poly = np.asarray(polygon_mm, dtype=np.float64).reshape((-1, 2))
+    points = (
+        np.asarray(points_mm, dtype=np.float64).reshape((-1, 2))
+        if points_mm is not None
+        else np.zeros((0, 2), dtype=np.float64)
+    )
+    if poly.shape[0] < 2 or points.shape[0] == 0:
+        return np.zeros((0, 2), dtype=np.float64)
+    closed = np.vstack([poly, poly[0:1]])
+    starts = closed[:-1]
+    segments = closed[1:] - starts
+    segment_norm_sq = np.sum(segments * segments, axis=1)
+    out: list[list[float]] = []
+    for point in points:
+        rel = point.reshape((1, 2)) - starts
+        t = np.divide(
+            np.sum(rel * segments, axis=1),
+            segment_norm_sq,
+            out=np.zeros_like(segment_norm_sq),
+            where=segment_norm_sq > 1e-9,
+        )
+        t = np.clip(t, 0.0, 1.0)
+        projected = starts + t[:, None] * segments
+        nearest = projected[int(np.argmin(np.sum((projected - point.reshape((1, 2))) ** 2, axis=1)))]
+        out.append([float(nearest[0]), float(nearest[1])])
+    return _unique_points(np.asarray(out, dtype=np.float64).reshape((-1, 2)))
 
 
 def _sample_polygon_perimeter(polygon_mm: np.ndarray, *, sample_count: int) -> np.ndarray:
@@ -301,7 +347,7 @@ def _merge_sampling_sets(
     for spacing in (max(0.0, float(min_spacing)), max(0.0, float(min_spacing) * 0.55), 0.0):
         selected: list[list[float]] = []
         _append_points_with_spacing(selected, pri, target_count=target, min_spacing=spacing)
-        _append_points_with_spacing(selected, sec, target_count=target, min_spacing=spacing)
+        _append_spread_points_with_spacing(selected, sec, target_count=target, min_spacing=spacing)
         if len(selected) >= target or spacing <= 0.0:
             return np.asarray(selected[:target], dtype=np.float64).reshape((-1, 2))
     return np.zeros((0, 2), dtype=np.float64)
@@ -326,6 +372,32 @@ def _append_points_with_spacing(
         if float(np.min(distances)) < max(1e-6, float(min_spacing)):
             continue
         selected.append([float(point[0]), float(point[1])])
+
+
+def _append_spread_points_with_spacing(
+    selected: list[list[float]],
+    points: np.ndarray,
+    *,
+    target_count: int,
+    min_spacing: float,
+) -> None:
+    remaining = _unique_points(np.asarray(points, dtype=np.float64).reshape((-1, 2)))
+    while len(selected) < target_count and remaining.shape[0] > 0:
+        if selected:
+            picked = np.asarray(selected, dtype=np.float64).reshape((-1, 2))
+            spacing = np.min(
+                np.linalg.norm(remaining[:, None, :] - picked[None, :, :], axis=2),
+                axis=1,
+            )
+        else:
+            center = np.mean(remaining, axis=0)
+            spacing = np.linalg.norm(remaining - center.reshape((1, 2)), axis=1)
+        next_index = int(np.argmax(spacing))
+        if selected and float(spacing[next_index]) < max(1e-6, float(min_spacing)):
+            return
+        point = remaining[next_index]
+        selected.append([float(point[0]), float(point[1])])
+        remaining = np.delete(remaining, next_index, axis=0)
 
 
 def _select_spread_points(points: np.ndarray, boundary_scores: np.ndarray, target_count: int) -> np.ndarray:

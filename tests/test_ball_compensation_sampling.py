@@ -100,6 +100,70 @@ def test_build_engineered_ball_sampling_grid_adds_corner_and_edge_coverage() -> 
     assert np.any((grid[:, 0] >= 976.0) & (grid[:, 1] >= 476.0))
 
 
+def test_build_engineered_ball_sampling_grid_spreads_edges_on_dense_polygon() -> None:
+    top = np.column_stack([np.linspace(0.0, 1000.0, 101), np.zeros(101)])
+    right = np.column_stack([np.full(51, 1000.0), np.linspace(10.0, 500.0, 51)])
+    bottom = np.column_stack([np.linspace(990.0, 0.0, 100), np.full(100, 500.0)])
+    left = np.column_stack([np.zeros(49), np.linspace(490.0, 10.0, 49)])
+    polygon = np.vstack([top, right, bottom, left]).astype(np.float32)
+
+    grid = build_engineered_ball_sampling_grid(
+        1000.0,
+        500.0,
+        57.15,
+        cols=6,
+        rows=5,
+        preferred_polygon_mm=polygon,
+        extra_safe_inset_mm=0.0,
+    )
+
+    assert np.sum(grid[:, 1] <= 5.0) >= 3
+    assert np.sum(grid[:, 0] >= 995.0) >= 3
+    assert np.sum(grid[:, 1] >= 495.0) >= 3
+    assert np.sum(grid[:, 0] <= 5.0) >= 3
+    spatial_bins = np.zeros((2, 3), dtype=np.int32)
+    for x, y in grid:
+        col = min(2, max(0, int(float(x) / 1000.0 * 3.0)))
+        row = min(1, max(0, int(float(y) / 500.0 * 2.0)))
+        spatial_bins[row, col] += 1
+    assert int(np.min(spatial_bins)) >= 3
+
+
+def test_build_engineered_ball_sampling_grid_keeps_pocket_edge_anchors() -> None:
+    polygon = np.asarray(
+        [[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]],
+        dtype=np.float32,
+    )
+    pocket_anchors = np.asarray(
+        [
+            [0.0, 0.0],
+            [500.0, 0.0],
+            [1000.0, 0.0],
+            [1000.0, 500.0],
+            [500.0, 500.0],
+            [0.0, 500.0],
+        ],
+        dtype=np.float32,
+    )
+
+    grid = build_engineered_ball_sampling_grid(
+        1000.0,
+        500.0,
+        57.15,
+        cols=6,
+        rows=5,
+        preferred_polygon_mm=polygon,
+        extra_safe_inset_mm=0.0,
+        priority_points_mm=pocket_anchors,
+    )
+    nearest = np.min(
+        np.linalg.norm(pocket_anchors[:, None, :] - grid[None, :, :], axis=2),
+        axis=1,
+    )
+
+    assert float(np.max(nearest)) <= 5.0
+
+
 def test_update_calibration_table_boundaries_from_geometry_frame_refreshes_center_polygon() -> None:
     projection = ProjectionCalibration.fit_from_correspondences(
         np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),

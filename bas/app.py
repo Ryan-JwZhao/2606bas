@@ -7,7 +7,7 @@ from typing import Optional
 
 import numpy as np
 
-from .calibration import CalibrationService, create_calibration_service
+from .calibration import CalibrationService, create_setting_aware_calibration_service
 from .capture import CaptureService, VideoTimelineState, create_capture_service
 from .config import AppConfig
 from .geometry import TableGeometry
@@ -65,10 +65,10 @@ class RuntimePipeline:
         self.config = config
         self.control_state = control_state or RuntimeControlState()
         self.capture: CaptureService = create_capture_service(config.camera)
-        self.calibration: CalibrationService = create_calibration_service(
+        self.calibration: CalibrationService = create_setting_aware_calibration_service(
             config.calibration,
+            config.camera,
             frame_undistorted=self.capture.frame_distortion_corrected,
-            distortion_correction_enabled=config.camera.distortion_correction_enabled,
         )
         self.geometry_reloader = RuntimeGeometryReloader()
         self.geometry, _ = self.geometry_reloader.refresh(

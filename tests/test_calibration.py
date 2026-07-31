@@ -9,8 +9,13 @@ import pytest
 from bas.calibration.camera import CameraCalibration
 from bas.calibration.charuco import CharucoBoardSpec, detect_charuco_corners, render_charuco_board
 from bas.calibration.projector import ProjectionCalibration
-from bas.calibration.service import BallCenterCompensation, CalibrationService, create_calibration_service
-from bas.config import CalibrationConfig
+from bas.calibration.service import (
+    BallCenterCompensation,
+    CalibrationService,
+    create_calibration_service,
+    create_setting_aware_calibration_service,
+)
+from bas.config import CalibrationConfig, CameraConfig
 from bas.calibration.verification import format_holdout_report, verify_holdout_samples
 from bas.schemas import TableModel
 
@@ -29,6 +34,26 @@ def test_create_calibration_service_does_not_load_camera_file_when_correction_is
     frame = np.ones((4, 6, 3), dtype=np.uint8)
     assert service.camera.is_valid is False
     assert service.undistort_frame(frame) is frame
+
+
+def test_setting_aware_calibration_service_does_not_override_disabled_correction(monkeypatch) -> None:
+    def unexpected_load(_path):
+        raise AssertionError("disabled setting must apply to every calibration tool")
+
+    monkeypatch.setattr(CameraCalibration, "load_opencv_yaml", unexpected_load)
+
+    service = create_setting_aware_calibration_service(
+        CalibrationConfig(camera_file="must_not_load.yaml"),
+        CameraConfig(
+            distortion_correction_enabled=False,
+            distortion_correction_file="must_not_load.yaml",
+        ),
+    )
+    points = np.asarray([[12.0, 34.0]], dtype=np.float32)
+
+    assert service.camera.is_valid is False
+    assert service.distortion_correction_enabled is False
+    assert np.array_equal(service.camera_px_to_projector_px(points), points)
 
 
 def test_projection_residual_maps_control_points_exactly() -> None:

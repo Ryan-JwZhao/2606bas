@@ -105,15 +105,15 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 1 if any(row["status"] == "missing" for row in rows) else 0
 
         if args.command == "inspect-calib":
-            from .calibration import create_calibration_service
+            from .calibration import create_setting_aware_calibration_service
             from .logging_config import configure_logging
             from .schemas import to_jsonable
 
             configure_logging(cfg.logging.directory, cfg.logging.level)
-            service = create_calibration_service(
+            service = create_setting_aware_calibration_service(
                 cfg.calibration,
+                cfg.camera,
                 frame_undistorted=capture_frames_are_distortion_corrected(cfg.camera),
-                distortion_correction_enabled=True,
             )
             summary = {
                 "calib_version": service.calib_version,
@@ -121,6 +121,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "camera_image_size": service.camera.image_size,
                 "camera_source": service.camera.source_path,
                 "frame_undistorted": service.frame_undistorted,
+                "distortion_correction_enabled": service.distortion_correction_enabled,
+                "camera_coordinate_domain": (
+                    "undistorted" if service.distortion_correction_enabled else "raw"
+                ),
                 "projection_runtime_mode": service.projection_mode,
                 "projection_valid": service.projection.is_valid,
                 "projection_source": service.projection.source_path,
@@ -136,14 +140,18 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
         if args.command == "verify-calib":
-            from .calibration import create_calibration_service, format_holdout_report, verify_holdout_file
+            from .calibration import (
+                create_setting_aware_calibration_service,
+                format_holdout_report,
+                verify_holdout_file,
+            )
             from .logging_config import configure_logging
 
             configure_logging(cfg.logging.directory, cfg.logging.level)
-            service = create_calibration_service(
+            service = create_setting_aware_calibration_service(
                 cfg.calibration,
+                cfg.camera,
                 frame_undistorted=capture_frames_are_distortion_corrected(cfg.camera),
-                distortion_correction_enabled=True,
             )
             report = verify_holdout_file(args.holdout_json, service)
             print(format_holdout_report(report))

@@ -18,7 +18,11 @@ from .linked import (
     solve_linked_projection_calibration,
 )
 from .projector import ProjectionCalibration
-from .service import CalibrationService, create_calibration_service
+from .service import (
+    CalibrationService,
+    create_calibration_service,
+    create_setting_aware_calibration_service,
+)
 from .verification import format_holdout_report, verify_holdout_file, verify_holdout_samples
 
 __all__ = [
@@ -28,6 +32,7 @@ __all__ = [
     "ProjectionCalibration",
     "CalibrationService",
     "create_calibration_service",
+    "create_setting_aware_calibration_service",
     "build_ball_compensation_model",
     "build_engineered_ball_sampling_grid",
     "update_calibration_table_boundaries_from_geometry_frame",

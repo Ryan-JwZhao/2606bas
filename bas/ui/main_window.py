@@ -38,7 +38,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from ..app import PipelineOutput, RuntimePipeline
 from ..calibration import (
     build_linked_patterns,
-    create_calibration_service,
+    create_setting_aware_calibration_service,
     match_linked_pattern_observation,
     projection_output_summary,
     solve_linked_projection_calibration,
@@ -135,10 +135,10 @@ def _create_runtime_calibration_service(
     config: AppConfig,
     pipeline: Optional[RuntimePipeline] = None,
 ):
-    return create_calibration_service(
+    return create_setting_aware_calibration_service(
         config.calibration,
+        config.camera,
         frame_undistorted=_configured_frame_undistorted(config, pipeline),
-        distortion_correction_enabled=bool(config.camera.distortion_correction_enabled),
     )
 
 
@@ -146,11 +146,11 @@ def _create_calibration_workflow_service(
     config: AppConfig,
     pipeline: Optional[RuntimePipeline] = None,
 ):
-    """Load camera calibration for an explicitly requested calibration workflow."""
-    return create_calibration_service(
+    """Create calibration state in the same camera coordinate domain as runtime."""
+    return create_setting_aware_calibration_service(
         config.calibration,
+        config.camera,
         frame_undistorted=_configured_frame_undistorted(config, pipeline),
-        distortion_correction_enabled=True,
     )
 
 
@@ -1284,9 +1284,15 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
         self._append_log("联动校正开始，准备同步当前配置。")
         try:
             self.operator._sync_config_from_controls()
-            if not self.operator.config.calibration.camera_file and self.operator.config.camera.distortion_correction_file:
+            if (
+                self.operator.config.camera.distortion_correction_enabled
+                and not self.operator.config.calibration.camera_file
+                and self.operator.config.camera.distortion_correction_file
+            ):
                 self.operator.config.calibration.camera_file = self.operator.config.camera.distortion_correction_file
                 self._append_log("已将工业相机畸变标定文件同步为联动校正的相机标定输入。")
+            if not self.operator.config.camera.distortion_correction_enabled:
+                self._append_log("工业相机畸变校正未开启；联动校正将直接使用当前原始画面与原始像素坐标。")
             self.operator._save_user_settings()
             if self.operator.pipeline is not None:
                 self._append_log("检测到实时采集正在运行，先自动停止以释放相机。")

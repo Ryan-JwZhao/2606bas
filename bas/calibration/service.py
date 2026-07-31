@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
-from ..config import CalibrationConfig
+from ..config import CalibrationConfig, CameraConfig
 from ..schemas import Point, TableModel
 from ..utils import ensure_numpy_points
 from .ball_compensation import BallCompensationModel
@@ -275,4 +275,18 @@ def create_calibration_service(
         projection_mode=projection_mode,
         ball_compensation_model=ball_compensation_model,
         ball_center_compensation=BallCenterCompensation.from_config(config),
+    )
+
+
+def create_setting_aware_calibration_service(
+    calibration_config: CalibrationConfig,
+    camera_config: CameraConfig,
+    frame_undistorted: bool = False,
+) -> CalibrationService:
+    """Create calibration state without overriding the active camera correction setting."""
+
+    return create_calibration_service(
+        calibration_config,
+        frame_undistorted=bool(frame_undistorted),
+        distortion_correction_enabled=bool(camera_config.distortion_correction_enabled),
     )
