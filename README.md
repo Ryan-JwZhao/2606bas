@@ -513,17 +513,19 @@ node --test tests\web_control_coordinates.test.js
 
 ## 更换台面几何文件后的区域规则
 
-运行时会读取设置中的 `outline.json`、`inline.json` 和 `pocket.json`。文件内容变化且校验成功后会自动重建边界，并清空检测缓存、跟踪历史、状态机历史和规划锁定，避免继续使用旧几何产生的球轨迹。
+运行时会读取设置中的 `outline.json`、`inline.json` 和 `pocket.json`。系统使用文件内容哈希检查变化；即使新旧文件大小和修改时间相同，只要内容变化也会自动重载。校验成功后会重建边界，并清空检测缓存、跟踪历史、袋口观察历史、状态机历史和规划锁定，避免旧轨迹继续绑定旧袋位。六个袋口会统一规范为 `左上、上中、右上、右下、下中、左下`，因此 `pocket.json` 中 shape 的书写顺序不会改变袋号。
 
-球检测采用两级严格过滤：
+球检测与球心可达域采用彼此独立的职责：
 
-1. 球中心必须位于 `inline + pocket` 拼接出的相机画面多边形内。
-2. 球中心经过当前球心补偿和相机到台面毫米坐标转换后，还必须位于 `center_playable_polygon_mm` 球心可达域内。
+1. YOLO 球候选只以 `inline + pocket` 拼接出的相机画面多边形作为硬准入边界。位于该边界内的真实贴库球不会因为规划安全边而被删除。
+2. `center_playable_polygon_mm` 继续由当前物理库边内缩、球半径和球心额外安全边实时计算，用于路线规划、摆球合法性、训练安全距离和袋口几何判断，不再作为检测层的硬过滤条件。
 
-袋口保护区仅供袋口视觉观察器分析进袋画面，不再允许位于台面边界外的 YOLO 球候选进入跟踪器。设置界面中的球心补偿、物理库边内缩和球心额外安全边会在运行中实时生效。
+袋口保护区仅供袋口视觉观察器分析进袋画面，不允许位于 `inline + pocket` 外的新 YOLO 球候选进入跟踪器。合法球进入袋口、离开检测边界后，观察器会使用新袋位 ROI、最近轨迹和画面运动继续完成进洞接力。
+
+如果首次启动时配置的几何文件不存在、JSON 未写完整或校验失败，检测器会进入 `region_disabled` 状态，不会退回宽标定区域识别球；运行中替换文件发生临时半写入时，则继续使用上一套有效几何并自动重试。
 
 更换文件后建议打开“投影调试模式”，确认 `inline`、`pocket`、`physical` 和 `center` 四类参考线位置正确。定向回归测试命令：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_detection_regions.py tests\test_detection_service.py tests\test_geometry_runtime.py tests\test_calibration.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_detection_regions.py tests\test_detection_service.py tests\test_geometry_runtime.py tests\test_geometry_pocket_integration.py tests\test_pocket_observer.py tests\test_pocket_visual_state.py
 ```

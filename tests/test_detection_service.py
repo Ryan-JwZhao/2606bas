@@ -83,3 +83,21 @@ def test_cached_detections_are_refiltered_against_latest_region_policy() -> None
     assert len(first.detections) == 1
     assert cached.detections == []
     assert cached.detector_version == "ball:cached"
+
+
+def test_disabled_region_policy_skips_detector_and_drops_cached_results() -> None:
+    detector = CountingDetector()
+    service = DetectService(detector, detect_interval_frames=5, detect_fps_limit_hz=0.0)
+
+    first = service.process(_frame(0))
+    disabled = service.process(
+        _frame(1),
+        detection_regions=DetectionRegionPolicy(detection_enabled=False),
+    )
+    resumed = service.process(_frame(2))
+
+    assert first.detections
+    assert disabled.detections == []
+    assert disabled.detector_version == "region_disabled"
+    assert detector.calls == 2
+    assert resumed.detections[0].cls_name == "call_2"

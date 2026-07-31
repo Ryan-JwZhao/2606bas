@@ -80,6 +80,8 @@ class TableGeometryLoader:
 
         inline_lines = cls._all_shapes_with_label(in_data, "inline", src_w, src_h)
         pockets = cls._all_shapes_with_label(pk_data, "pocket", src_w, src_h)
+        pocket_order = canonical_pocket_indices(pockets)
+        pockets = [pockets[index] for index in pocket_order]
 
         inner = np.zeros((0, 2), dtype=np.float32)
         boundary_segments: List[np.ndarray] = []
@@ -195,3 +197,31 @@ class TableGeometryLoader:
         if best.shape[0] >= 3 and float(np.linalg.norm(best[0] - best[-1])) <= join_eps:
             return best, best_parts
         return np.zeros((0, 2), dtype=np.float32), []
+
+
+def canonical_pocket_indices(pockets: List[np.ndarray]) -> List[int]:
+    """Return stable TL, TM, TR, BR, BM, BL indices for a six-pocket table."""
+
+    if len(pockets) != 6:
+        return list(range(len(pockets)))
+    valid = [
+        index
+        for index, curve in enumerate(pockets)
+        if np.asarray(curve, dtype=np.float32).reshape((-1, 2)).shape[0] >= 2
+    ]
+    if len(valid) != 6:
+        return list(range(len(pockets)))
+    ranked = sorted(
+        valid,
+        key=lambda index: float(np.mean(np.asarray(pockets[index], dtype=np.float32)[:, 1])),
+    )
+    top = sorted(
+        ranked[:3],
+        key=lambda index: float(np.mean(np.asarray(pockets[index], dtype=np.float32)[:, 0])),
+    )
+    bottom = sorted(
+        ranked[3:],
+        key=lambda index: float(np.mean(np.asarray(pockets[index], dtype=np.float32)[:, 0])),
+        reverse=True,
+    )
+    return [*top, *bottom]

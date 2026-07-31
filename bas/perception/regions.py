@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
 import cv2
 import numpy as np
 
-from ..geometry import TableGeometry
+from ..geometry import TableGeometry, canonical_pocket_indices
 from ..schemas import Detection
 from ..utils import ensure_numpy_points, group_from_class
 
@@ -23,18 +22,12 @@ class PocketGuardRegion:
 
 
 @dataclass(frozen=True)
-class BallCenterRegion:
-    polygon_mm: np.ndarray
-    camera_px_to_table_mm: Callable[[np.ndarray], np.ndarray]
-
-
-@dataclass(frozen=True)
 class DetectionRegionPolicy:
     global_polygon: Optional[np.ndarray] = None
     ball_polygon: Optional[np.ndarray] = None
     cue_stick_polygon: Optional[np.ndarray] = None
     ball_guard_regions: tuple[PocketGuardRegion, ...] = ()
-    ball_center_region: Optional[BallCenterRegion] = None
+    detection_enabled: bool = True
 
 
 def build_detection_region_policy(
@@ -42,8 +35,6 @@ def build_detection_region_policy(
     geometry: TableGeometry | None,
     fallback_polygon: Optional[np.ndarray] = None,
     ball_diameter_px_by_pocket: Optional[Sequence[float]] = None,
-    ball_center_reachable_polygon_mm: Optional[np.ndarray] = None,
-    ball_camera_px_to_table_mm: Optional[Callable[[np.ndarray], np.ndarray]] = None,
 ) -> DetectionRegionPolicy:
     height, width = _frame_size(frame_shape)
     fallback = _normalize_polygon(fallback_polygon)
@@ -64,21 +55,11 @@ def build_detection_region_policy(
     cue_stick_polygon = outer if outer is not None else global_polygon
     ball_polygon = inner if inner is not None else global_polygon
     guards = _build_pocket_guards(pockets_scaled, ball_diameter_px_by_pocket)
-    center_polygon_mm = _normalize_polygon(ball_center_reachable_polygon_mm)
-    center_region = (
-        BallCenterRegion(
-            polygon_mm=center_polygon_mm,
-            camera_px_to_table_mm=ball_camera_px_to_table_mm,
-        )
-        if center_polygon_mm is not None and callable(ball_camera_px_to_table_mm)
-        else None
-    )
     return DetectionRegionPolicy(
         global_polygon=global_polygon,
         ball_polygon=ball_polygon,
         cue_stick_polygon=cue_stick_polygon,
         ball_guard_regions=guards,
-        ball_center_region=center_region,
     )
 
 
@@ -88,13 +69,12 @@ def filter_detections_by_region(
 ) -> list[Detection]:
     if policy is None:
         return list(detections)
+    if not policy.detection_enabled:
+        return []
     out: list[Detection] = []
     for detection in detections:
-        group = group_from_class(detection.cls_name)
         polygon = _polygon_for_detection(detection, policy)
         allowed = polygon is None or _contains_point(polygon, detection.center)
-        if allowed and group in BALL_GROUPS and policy.ball_center_region is not None:
-            allowed = _ball_center_is_reachable(policy.ball_center_region, detection.center)
         if not allowed:
             continue
         out.append(detection)
@@ -135,19 +115,6 @@ def _contains_point(polygon: np.ndarray, point: tuple[float, float]) -> bool:
     return inside >= 0.0
 
 
-def _ball_center_is_reachable(region: BallCenterRegion, center_px: tuple[float, float]) -> bool:
-    try:
-        mapped = region.camera_px_to_table_mm(
-            np.asarray([[float(center_px[0]), float(center_px[1])]], dtype=np.float32)
-        )
-        points_mm = np.asarray(mapped, dtype=np.float32).reshape((-1, 2))
-    except Exception:
-        return False
-    if points_mm.shape[0] != 1 or not np.all(np.isfinite(points_mm[0])):
-        return False
-    return _contains_point(region.polygon_mm, (float(points_mm[0, 0]), float(points_mm[0, 1])))
-
-
 def _build_pocket_guards(
     pockets: Sequence[np.ndarray],
     ball_diameters_px: Optional[Sequence[float]],
@@ -156,12 +123,11 @@ def _build_pocket_guards(
         return ()
     diameters = [float(value) for value in ball_diameters_px]
     guards: list[PocketGuardRegion] = []
-    indexed_pockets = [
-        (source_index, np.asarray(curve, dtype=np.float32).reshape((-1, 2)))
-        for source_index, curve in enumerate(pockets)
-    ]
-    ordered_pockets = _canonical_pocket_order(indexed_pockets)
-    for pocket_index, (source_index, curve) in enumerate(ordered_pockets):
+    ordered_indices = canonical_pocket_indices(
+        [np.asarray(curve, dtype=np.float32).reshape((-1, 2)) for curve in pockets]
+    )
+    for pocket_index, source_index in enumerate(ordered_indices):
+        curve = np.asarray(pockets[source_index], dtype=np.float32).reshape((-1, 2))
         points = np.asarray(curve, dtype=np.float32).reshape((-1, 2))
         if points.shape[0] < 2 or source_index >= len(diameters):
             continue
@@ -192,23 +158,7 @@ def _build_pocket_guards(
         )
     return tuple(guards)
 
-
-def _canonical_pocket_order(
-    pockets: list[tuple[int, np.ndarray]],
-) -> list[tuple[int, np.ndarray]]:
-    """Match the state model: TL, TM, TR, BR, BM, BL."""
-
-    valid = [item for item in pockets if item[1].shape[0] >= 2]
-    if len(valid) != 6:
-        return valid
-    ranked = sorted(valid, key=lambda item: float(np.mean(item[1][:, 1])))
-    top = sorted(ranked[:3], key=lambda item: float(np.mean(item[1][:, 0])))
-    bottom = sorted(ranked[3:], key=lambda item: float(np.mean(item[1][:, 0])), reverse=True)
-    return [*top, *bottom]
-
-
 __all__ = [
-    "BallCenterRegion",
     "DetectionRegionPolicy",
     "PocketGuardRegion",
     "build_detection_region_policy",

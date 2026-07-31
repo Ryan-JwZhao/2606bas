@@ -32,6 +32,15 @@ class DetectService:
         start = time.perf_counter()
         frame_index = self._frame_index
         self._frame_index += 1
+        if detection_regions is not None and not detection_regions.detection_enabled:
+            self.reset_cache()
+            return DetectionsFrame(
+                frame_id=frame.frame_id,
+                ts_cam_ns=frame.ts_cam_ns,
+                detections=[],
+                detector_version="region_disabled",
+                latency_ms=0.0,
+            )
         if self._last_result is not None and not self._should_detect(start, frame_index):
             cached_detections = filter_detections_by_region(
                 self._last_result.detections,

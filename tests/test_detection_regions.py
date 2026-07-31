@@ -77,7 +77,7 @@ def test_pocket_guard_band_is_observation_only_and_does_not_admit_balls_outside_
     assert filtered == []
 
 
-def test_ball_detection_requires_center_to_be_inside_reachable_polygon() -> None:
+def test_center_playable_polygon_does_not_discard_ball_inside_inline_boundary() -> None:
     geometry = TableGeometry(
         outer_norm=_square(0.0, 0.0, 1.0, 1.0),
         inner_norm=_square(0.1, 0.1, 0.9, 0.9),
@@ -85,8 +85,6 @@ def test_ball_detection_requires_center_to_be_inside_reachable_polygon() -> None
     policy = build_detection_region_policy(
         (100, 100, 3),
         geometry,
-        ball_center_reachable_polygon_mm=_square(20.0, 20.0, 80.0, 80.0),
-        ball_camera_px_to_table_mm=lambda points: np.asarray(points, dtype=np.float32),
     )
     detections = [
         _detection("solid", 15.0, 50.0),
@@ -95,4 +93,21 @@ def test_ball_detection_requires_center_to_be_inside_reachable_polygon() -> None
 
     filtered = filter_detections_by_region(detections, policy)
 
-    assert [(det.cls_name, det.center) for det in filtered] == [("stripe", (50.0, 50.0))]
+    assert [(det.cls_name, det.center) for det in filtered] == [
+        ("solid", (15.0, 50.0)),
+        ("stripe", (50.0, 50.0)),
+    ]
+
+
+def test_disabled_region_policy_rejects_every_detection() -> None:
+    detections = [
+        _detection("solid", 50.0, 50.0),
+        _detection("cue_stick", 50.0, 50.0),
+    ]
+
+    filtered = filter_detections_by_region(
+        detections,
+        DetectionRegionPolicy(detection_enabled=False),
+    )
+
+    assert filtered == []

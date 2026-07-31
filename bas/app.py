@@ -433,17 +433,15 @@ class RuntimePipeline:
     ) -> DetectionRegionPolicy | None:
         if frame.image is None or frame.image.size == 0:
             return None
+        geometry_reloader = getattr(self, "geometry_reloader", None)
+        if geometry_reloader is not None and not bool(getattr(geometry_reloader, "is_ready", False)):
+            return DetectionRegionPolicy(detection_enabled=False)
         fallback_polygon = self._camera_table_mask(frame)
         policy = build_detection_region_policy(
             frame.image.shape,
             self.geometry,
             fallback_polygon=fallback_polygon,
             ball_diameter_px_by_pocket=self._camera_ball_diameters_px(frame),
-            ball_center_reachable_polygon_mm=np.asarray(
-                getattr(self.calibration.table, "center_playable_polygon_mm", []),
-                dtype=np.float32,
-            ),
-            ball_camera_px_to_table_mm=getattr(self.calibration, "ball_camera_px_to_table_mm", None),
         )
         if policy.global_polygon is None and policy.ball_polygon is None and policy.cue_stick_polygon is None:
             return None
