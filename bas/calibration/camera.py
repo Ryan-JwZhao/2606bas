@@ -93,6 +93,32 @@ class CameraCalibration:
         out = cv2.undistortPoints(pts, self.camera_matrix, self.distortion_coefficients, P=self.camera_matrix)
         return out.reshape((-1, 2)).astype(np.float32)
 
+    def distort_points(self, points: np.ndarray) -> np.ndarray:
+        """Map undistorted pixel coordinates back to the raw camera frame."""
+
+        pts = np.asarray(points, dtype=np.float64).reshape((-1, 2))
+        if not self.is_valid or pts.size == 0:
+            return pts.astype(np.float32)
+        matrix = np.asarray(self.camera_matrix, dtype=np.float64)
+        inverse = np.linalg.inv(matrix)
+        homogeneous = np.column_stack([pts, np.ones((pts.shape[0],), dtype=np.float64)])
+        normalized = (inverse @ homogeneous.T).T
+        object_points = np.column_stack(
+            [
+                normalized[:, 0] / normalized[:, 2],
+                normalized[:, 1] / normalized[:, 2],
+                np.ones((pts.shape[0],), dtype=np.float64),
+            ]
+        )
+        projected, _ = cv2.projectPoints(
+            object_points.reshape((-1, 1, 3)),
+            np.zeros((3, 1), dtype=np.float64),
+            np.zeros((3, 1), dtype=np.float64),
+            matrix,
+            np.asarray(self.distortion_coefficients, dtype=np.float64),
+        )
+        return projected.reshape((-1, 2)).astype(np.float32)
+
 
 def _read_matrix(fs: cv2.FileStorage, name: str) -> Optional[np.ndarray]:
     node = fs.getNode(name)

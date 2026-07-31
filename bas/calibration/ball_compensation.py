@@ -13,6 +13,8 @@ class BallCompensationModel:
     mode: str = "none"
     control_points_camera_px: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
     delta_table_mm: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
+    target_table_mm: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
+    sample_weights: np.ndarray = field(default_factory=lambda: np.zeros((0,), dtype=np.float64))
     max_neighbors: int = 8
     source_path: Optional[str] = None
     quality_report: Dict[str, Any] = field(default_factory=dict)
@@ -26,6 +28,14 @@ class BallCompensationModel:
             return cls(source_path=str(p), quality_report={"missing": True})
         with p.open("r", encoding="utf-8") as f:
             data = json.load(f)
+        samples = data.get("samples", [])
+        targets = data.get("target_table_mm", [])
+        weights = data.get("sample_weights", [])
+        if isinstance(samples, list) and samples:
+            if not targets:
+                targets = [sample.get("target_table_mm", []) for sample in samples]
+            if not weights:
+                weights = [_sample_weight(sample) for sample in samples]
         return cls(
             mode=str(data.get("mode", "none")),
             control_points_camera_px=np.asarray(
@@ -33,6 +43,8 @@ class BallCompensationModel:
                 dtype=np.float64,
             ).reshape((-1, 2)),
             delta_table_mm=np.asarray(data.get("delta_table_mm", []), dtype=np.float64).reshape((-1, 2)),
+            target_table_mm=np.asarray(targets, dtype=np.float64).reshape((-1, 2)),
+            sample_weights=np.asarray(weights, dtype=np.float64).reshape((-1,)),
             max_neighbors=max(1, int(data.get("max_neighbors", 8) or 8)),
             source_path=str(p),
             quality_report=dict(data.get("quality_report", {})),
@@ -42,7 +54,10 @@ class BallCompensationModel:
     def is_valid(self) -> bool:
         return (
             self.control_points_camera_px.shape[0] > 0
-            and self.control_points_camera_px.shape == self.delta_table_mm.shape
+            and (
+                self.control_points_camera_px.shape == self.delta_table_mm.shape
+                or self.control_points_camera_px.shape == self.target_table_mm.shape
+            )
         )
 
     @property
@@ -56,6 +71,8 @@ class BallCompensationModel:
             "mode": str(self.mode or "none"),
             "control_camera_points": np.asarray(self.control_points_camera_px, dtype=np.float64).reshape((-1, 2)).tolist(),
             "delta_table_mm": np.asarray(self.delta_table_mm, dtype=np.float64).reshape((-1, 2)).tolist(),
+            "target_table_mm": np.asarray(self.target_table_mm, dtype=np.float64).reshape((-1, 2)).tolist(),
+            "sample_weights": np.asarray(self.sample_weights, dtype=np.float64).reshape((-1,)).tolist(),
             "max_neighbors": int(max(1, int(self.max_neighbors))),
             "quality_report": dict(self.quality_report),
         }
@@ -72,7 +89,11 @@ class BallCompensationModel:
 
     def offsets_for_camera_points(self, points_camera_px: np.ndarray) -> np.ndarray:
         pts = np.asarray(points_camera_px, dtype=np.float64).reshape((-1, 2))
-        if pts.size == 0 or not self.is_valid:
+        if (
+            pts.size == 0
+            or not self.is_valid
+            or self.delta_table_mm.shape != self.control_points_camera_px.shape
+        ):
             return np.zeros_like(pts)
         out = np.zeros_like(pts)
         k = min(int(self.max_neighbors), self.control_points_camera_px.shape[0])
@@ -86,3 +107,9 @@ class BallCompensationModel:
             weights = 1.0 / np.maximum(d2[nn], 1.0)
             out[idx] = np.sum(self.delta_table_mm[nn] * weights[:, None], axis=0) / max(1e-9, float(np.sum(weights)))
         return out
+
+
+def _sample_weight(sample: Dict[str, Any]) -> float:
+    confidence = float(sample.get("detection_confidence", 1.0) or 0.0)
+    spread = max(0.0, float(sample.get("stability_spread_px", 0.0) or 0.0))
+    return float(np.clip(confidence / (1.0 + spread * spread), 0.05, 1.0))

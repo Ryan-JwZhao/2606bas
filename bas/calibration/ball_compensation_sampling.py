@@ -146,7 +146,7 @@ def build_ball_compensation_model(
     samples: Sequence[BallCompensationSample],
     ball_diameter_mm: float,
     max_neighbors: int = 8,
-    mode: str = "engineered_ball_comp_v1",
+    mode: str = "engineered_ball_comp_v2",
 ) -> BallCompensationModel:
     if not samples:
         raise ValueError("At least one sampling point is required to build a ball compensation model.")
@@ -156,6 +156,17 @@ def build_ball_compensation_model(
     radii = np.asarray([float(sample.detected_radius_px) for sample in samples], dtype=np.float64)
     spreads = np.asarray([float(sample.stability_spread_px) for sample in samples], dtype=np.float64)
     confidences = np.asarray([float(sample.detection_confidence) for sample in samples], dtype=np.float64)
+    sample_weights = np.asarray(
+        [
+            np.clip(
+                float(sample.detection_confidence) / (1.0 + float(sample.stability_spread_px) ** 2),
+                0.05,
+                1.0,
+            )
+            for sample in samples
+        ],
+        dtype=np.float64,
+    )
     delta_norms = np.linalg.norm(deltas, axis=1)
 
     quality_report = {
@@ -169,9 +180,11 @@ def build_ball_compensation_model(
         "detection_confidence": _stats_report(confidences),
     }
     return BallCompensationModel(
-        mode=str(mode or "engineered_ball_comp_v1"),
+        mode=str(mode or "engineered_ball_comp_v2"),
         control_points_camera_px=controls,
         delta_table_mm=deltas,
+        target_table_mm=targets,
+        sample_weights=sample_weights,
         max_neighbors=max(1, min(int(max_neighbors), len(samples))),
         quality_report=quality_report,
     )

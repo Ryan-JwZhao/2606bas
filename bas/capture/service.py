@@ -14,6 +14,7 @@ from ..utils import monotonic_ns
 from .base import CaptureInfo, CaptureSource, VideoTimelineState
 from .nori_sdk import NoriProtocolController, open_nori_capture
 from .opencv_capture import OpenCVCapture, SyntheticCapture, VideoFileCapture, probe_cameras as _probe_opencv
+from .orientation import FrameOrientedCapture, normalize_frame_rotation_degrees
 
 LOGGER = logging.getLogger(__name__)
 
@@ -152,6 +153,11 @@ def create_capture_service(config: CameraConfig) -> CaptureService:
     source: CaptureSource
 
     def finish(src: CaptureSource) -> CaptureService:
+        rotation_degrees = normalize_frame_rotation_degrees(config.frame_rotation_degrees)
+        if rotation_degrees:
+            # Mount orientation is normalized before undistortion so that camera
+            # intrinsics remain expressed in the canonical image coordinates.
+            src = FrameOrientedCapture(src, rotation_degrees)
         state = _distortion_correction_state(config)
         if state.should_wrap_source and state.calibration is not None:
             src = DistortionCorrectedCapture(src, state.calibration)

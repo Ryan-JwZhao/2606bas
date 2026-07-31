@@ -65,6 +65,7 @@ class CameraConfig:
     width: int = 1920
     height: int = 1080
     fps: int = 30
+    frame_rotation_degrees: int = 0  # clockwise normalization: 0 | 90 | 180 | 270
     video_path: Optional[str] = None
     nori_sdk_root: Optional[str] = None
     nori_device_id: Optional[int] = None

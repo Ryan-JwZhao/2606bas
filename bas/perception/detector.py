@@ -13,9 +13,11 @@ from ..config import DetectorConfig
 from .. import runtime_env
 from ..runtime_env import prepare_runtime_environment
 from ..schemas import Detection
-from ..utils import clamp, default_inference_device, iou_xyxy
+from ..utils import clamp, default_inference_device, group_from_class, iou_xyxy
+from .ball_geometry import BallCenterRefiner
 
 LOGGER = logging.getLogger(__name__)
+BALL_CENTER_REFINER = BallCenterRefiner()
 
 
 class Detector(ABC):
@@ -66,15 +68,25 @@ class ColorBallDetector(Detector):
                 x, y, w, h = cv2.boundingRect(contour)
                 if w <= 2 or h <= 2:
                     continue
+                bbox = (float(x), float(y), float(x + w), float(y + h))
+                geometry = BALL_CENTER_REFINER.refine(
+                    frame_bgr,
+                    bbox,
+                    mask_polygon=contour.reshape((-1, 2)),
+                )
                 out.append(
                     Detection(
-                        bbox=(float(x), float(y), float(x + w), float(y + h)),
+                        bbox=bbox,
                         conf=float(clamp(area / 1500.0, 0.25, 0.99)),
                         cls_id=cls_id,
                         cls_name=name,
+                        refined_center_px=geometry.center_px,
+                        refined_radius_px=geometry.radius_px,
+                        geometry_quality=geometry.quality,
+                        geometry_method=geometry.method,
                     )
                 )
-        return out
+        return _filter_ball_geometry_outliers(out)
 
 
 class UltralyticsDetector(Detector):
@@ -184,6 +196,7 @@ class UltralyticsDetector(Detector):
         boxes_all: List[np.ndarray] = []
         scores_all: List[np.ndarray] = []
         cls_all: List[np.ndarray] = []
+        mask_polygons_all: List[Optional[np.ndarray]] = []
         for idx, result in enumerate(results):
             boxes = getattr(result, "boxes", None)
             if boxes is None or len(boxes) == 0:
@@ -195,6 +208,17 @@ class UltralyticsDetector(Detector):
             boxes_all.append(xyxy)
             scores_all.append(boxes.conf.cpu().numpy().astype(np.float32))
             cls_all.append(boxes.cls.cpu().numpy().astype(np.int32))
+            result_masks = getattr(result, "masks", None)
+            mask_xy = getattr(result_masks, "xy", None)
+            for mask_index in range(xyxy.shape[0]):
+                polygon = None
+                if mask_xy is not None and mask_index < len(mask_xy):
+                    candidate = np.asarray(mask_xy[mask_index], dtype=np.float32).reshape((-1, 2))
+                    if candidate.shape[0] >= 5:
+                        candidate[:, 0] += float(x0)
+                        candidate[:, 1] += float(y0)
+                        polygon = candidate
+                mask_polygons_all.append(polygon)
         if not boxes_all:
             return []
         boxes_np = np.concatenate(boxes_all, axis=0)
@@ -215,8 +239,27 @@ class UltralyticsDetector(Detector):
                     continue
             cls_id = int(cls_np[i])
             cls_name = self.class_names[cls_id] if 0 <= cls_id < len(self.class_names) else str(cls_id)
-            out.append(Detection(bbox=(x1, y1, x2, y2), conf=float(scores_np[i]), cls_id=cls_id, cls_name=cls_name))
-        return out
+            geometry = None
+            if group_from_class(cls_name) in {"cue", "solid", "stripe", "black"}:
+                polygon = mask_polygons_all[i] if i < len(mask_polygons_all) else None
+                geometry = BALL_CENTER_REFINER.refine(
+                    frame_bgr,
+                    (x1, y1, x2, y2),
+                    mask_polygon=polygon,
+                )
+            out.append(
+                Detection(
+                    bbox=(x1, y1, x2, y2),
+                    conf=float(scores_np[i]),
+                    cls_id=cls_id,
+                    cls_name=cls_name,
+                    refined_center_px=geometry.center_px if geometry is not None else None,
+                    refined_radius_px=geometry.radius_px if geometry is not None else None,
+                    geometry_quality=geometry.quality if geometry is not None else 0.45,
+                    geometry_method=geometry.method if geometry is not None else "bbox",
+                )
+            )
+        return _filter_ball_geometry_outliers(out)
 
 
 def create_detector(config: DetectorConfig) -> Detector:
@@ -243,6 +286,36 @@ def create_detector(config: DetectorConfig) -> Detector:
             batch_size=config.batch_size,
         )
     raise ValueError(f"Unsupported detector backend: {config.backend}")
+
+
+def _filter_ball_geometry_outliers(detections: List[Detection]) -> List[Detection]:
+    ball_detections = [
+        detection
+        for detection in detections
+        if group_from_class(detection.cls_name) in {"cue", "solid", "stripe", "black"}
+        and float(detection.geometry_quality) >= 0.4
+        and float(detection.conf) >= 0.6
+    ]
+    if len(ball_detections) < 5:
+        return detections
+    median_radius = float(np.median([detection.radius_px for detection in ball_detections]))
+    if median_radius <= 2.0:
+        return detections
+    filtered: List[Detection] = []
+    for detection in detections:
+        if group_from_class(detection.cls_name) not in {"cue", "solid", "stripe", "black"}:
+            filtered.append(detection)
+            continue
+        ratio = float(detection.radius_px) / median_radius
+        if 0.55 <= ratio <= 1.5:
+            filtered.append(detection)
+            continue
+        if float(detection.conf) < 0.8:
+            continue
+        detection.geometry_quality = min(float(detection.geometry_quality), 0.2)
+        detection.geometry_method = f"{detection.geometry_method}:size_outlier"
+        filtered.append(detection)
+    return filtered
 
 
 def _resolve_ultralytics_device(device: str) -> str:

@@ -44,7 +44,11 @@ def verify_holdout_samples(samples: Iterable[Dict[str, Any]], service: Calibrati
             observed = (
                 service.projector_px_to_table_mm(np.asarray([proj], dtype=np.float32))[0]
                 if proj is not None
-                else service.camera_px_to_table_mm(np.asarray([cam], dtype=np.float32))[0]
+                else (
+                    service.ball_camera_px_to_table_mm(np.asarray([cam], dtype=np.float32))[0]
+                    if _is_ball_sample(sample)
+                    else service.camera_px_to_table_mm(np.asarray([cam], dtype=np.float32))[0]
+                )
             )
             err = float(np.linalg.norm(observed - np.asarray(world, dtype=np.float32)))
             mm_errors.append(err)
@@ -76,6 +80,7 @@ def verify_holdout_samples(samples: Iterable[Dict[str, Any]], service: Calibrati
         },
     }
     report["verdict"] = _verdict(report)
+    report["geometry_model"] = dict(service.geometry_quality_report)
     return report
 
 
@@ -120,6 +125,11 @@ def _distance_cm(sample: Dict[str, Any], world: np.ndarray) -> float:
     if origin.shape[0] < 2:
         origin = np.zeros((2,), dtype=np.float32)
     return float(np.linalg.norm(np.asarray(world, dtype=np.float32) - origin[:2]) / 10.0)
+
+
+def _is_ball_sample(sample: Dict[str, Any]) -> bool:
+    kind = str(sample.get("kind", sample.get("surface", sample.get("observation_type", "")))).strip().lower()
+    return kind in {"ball", "ball_center", "sphere_center"}
 
 
 def _stats(values: List[float]) -> Dict[str, float]:

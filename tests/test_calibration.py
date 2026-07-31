@@ -7,6 +7,7 @@ import cv2
 import pytest
 
 from bas.calibration.camera import CameraCalibration
+from bas.calibration.ball_compensation import BallCompensationModel
 from bas.calibration.charuco import CharucoBoardSpec, detect_charuco_corners, render_charuco_board
 from bas.calibration.projector import ProjectionCalibration
 from bas.calibration.service import (
@@ -291,6 +292,47 @@ def test_holdout_verification_reports_mm_and_image_errors() -> None:
     assert report["table_error_mm"]["p95"] < 1e-3
     assert report["verdict"]["formal"]
     assert "正式: 通过" in format_holdout_report(report)
+
+
+def test_holdout_ball_samples_use_ball_center_geometry() -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [100, 0], [100, 50], [0, 50]], dtype=np.float64),
+        np.array([[0, 0], [100, 0], [100, 50], [0, 50]], dtype=np.float64),
+        projector_size=(100, 50),
+    )
+    projection.table_polygon_cam = np.array([[0, 0], [100, 0], [100, 50], [0, 50]], dtype=np.float64)
+    projection.table_polygon_proj = projection.table_polygon_cam.copy()
+    controls = np.asarray(
+        [[0, 0], [100, 0], [0, 50], [100, 50], [50, 25], [25, 25]],
+        dtype=np.float64,
+    )
+    targets = controls + np.asarray([2.0, 3.0], dtype=np.float64)
+    service = CalibrationService(
+        camera=CameraCalibration(metadata={}),
+        projection=projection,
+        table=TableModel(
+            width_mm=100,
+            height_mm=50,
+            ball_diameter_mm=57.15,
+            inner_polygon_mm=[(0, 0), (100, 0), (100, 50), (0, 50)],
+            pockets_mm=[],
+        ),
+        projection_mode="engineered",
+        ball_compensation_model=BallCompensationModel(
+            mode="direct",
+            control_points_camera_px=controls,
+            delta_table_mm=np.zeros_like(controls),
+            target_table_mm=targets,
+        ),
+    )
+
+    report = verify_holdout_samples(
+        [{"camera_px": [50, 25], "world_mm": [52, 28], "kind": "ball_center"}],
+        service,
+    )
+
+    assert report["table_error_mm"]["p95"] < 1e-3
+    assert report["geometry_model"]["camera_extrinsics_used"] == 0
 
 
 def test_engineered_calibration_service_loads_plane_and_ball_compensation(tmp_path) -> None:

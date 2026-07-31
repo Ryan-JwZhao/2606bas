@@ -11,6 +11,7 @@ from bas.calibration.linked import (
     projection_output_summary,
     solve_linked_projection_calibration,
 )
+from bas.calibration.projector import ProjectionCalibration
 from bas.geometry import TableGeometry
 
 
@@ -74,7 +75,7 @@ def test_render_charuco_board_handles_problematic_roi_dimensions() -> None:
 
 
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
-def test_linked_calibration_can_recover_projector_mapping_from_warped_patterns() -> None:
+def test_linked_calibration_can_recover_projector_mapping_from_warped_patterns(tmp_path) -> None:
     projector_size = (1280, 800)
     patterns = [pattern for pattern in build_linked_patterns(_sample_geometry(), projector_size) if pattern.collect_for_solver][:3]
     camera_size = (1600, 1000)
@@ -96,5 +97,14 @@ def test_linked_calibration_can_recover_projector_mapping_from_warped_patterns()
     assert "匹配角点" in summary
     assert result.projection.is_valid
     assert result.projection.table_polygon_proj.shape[0] == 4
+    assert result.projection.table_control_points_norm.shape[0] >= 12
+    assert result.projection.table_control_points_proj.shape == result.projection.table_control_points_norm.shape
+    assert result.summary["geometry_model"] == "independent_2d"
+    assert result.summary["camera_extrinsics_used"] is False
+    saved_path = tmp_path / "independent_projection.json"
+    result.projection.save(saved_path)
+    restored = ProjectionCalibration.load_json(saved_path)
+    np.testing.assert_allclose(restored.table_control_points_norm, result.projection.table_control_points_norm)
+    np.testing.assert_allclose(restored.table_control_points_proj, result.projection.table_control_points_proj)
     pred = result.projection.camera_to_projector_points(observations[0].camera_points)
     assert np.max(np.linalg.norm(pred - observations[0].projector_points, axis=1)) < 2.0

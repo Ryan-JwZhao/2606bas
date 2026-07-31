@@ -8,6 +8,7 @@ from .ball_compensation_sampling import (
     update_calibration_table_boundaries_from_geometry_frame,
 )
 from .camera import CameraCalibration
+from .geometry import IndependentGeometry
 from .linked import (
     LinkedCalibrationObservation,
     LinkedCalibrationPattern,
@@ -29,6 +30,7 @@ __all__ = [
     "BallCompensationModel",
     "BallCompensationSample",
     "CameraCalibration",
+    "IndependentGeometry",
     "ProjectionCalibration",
     "CalibrationService",
     "create_calibration_service",

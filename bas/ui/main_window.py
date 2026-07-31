@@ -45,7 +45,13 @@ from ..calibration import (
 )
 from ..calibration.charuco import CharucoBoardSpec, render_charuco_board
 from ..calibration.verification import format_holdout_report, verify_holdout_file
-from ..capture import VideoTimelineState, capture_frames_are_distortion_corrected, create_capture_service, probe_cameras
+from ..capture import (
+    VideoTimelineState,
+    capture_frames_are_distortion_corrected,
+    create_capture_service,
+    normalize_frame_rotation_degrees,
+    probe_cameras,
+)
 from ..capture.nori_sdk import NoriProtocolController
 from ..geometry import TableGeometryLoader
 from ..logging_config import configure_logging
@@ -196,6 +202,14 @@ class SettingsDialog(QtWidgets.QDialog):
         learning_collect_layout.addWidget(self.learning_samples_directory, 1)
         self.video_path = self._path_row(config.camera.video_path, "视频文件 (*.mp4 *.avi *.mov *.mkv);;所有文件 (*.*)")
         self.nori_sdk_root = self._dir_row(config.camera.nori_sdk_root)
+        self.frame_rotation_degrees = QtWidgets.QComboBox()
+        for degrees in (0, 90, 180, 270):
+            label = "不旋转" if degrees == 0 else f"顺时针 {degrees}°"
+            self.frame_rotation_degrees.addItem(label, degrees)
+        rotation_index = self.frame_rotation_degrees.findData(
+            normalize_frame_rotation_degrees(config.camera.frame_rotation_degrees)
+        )
+        self.frame_rotation_degrees.setCurrentIndex(max(0, rotation_index))
         self.distortion_enabled = QtWidgets.QCheckBox("启用")
         self.distortion_enabled.setChecked(bool(config.camera.distortion_correction_enabled))
         self.distortion_file = self._path_row(config.camera.distortion_correction_file, "OpenCV 标定文件 (*.yaml *.yml *.xml);;所有文件 (*.*)")
@@ -533,6 +547,7 @@ class SettingsDialog(QtWidgets.QDialog):
             [
                 ("视频文件路径", self.video_path),
                 ("Nori SDK 目录", self.nori_sdk_root),
+                ("相机安装方向归一化", self.frame_rotation_degrees),
                 ("工业相机畸变矫正", distortion_box),
                 ("工业相机曝光", exposure_box),
                 ("工业相机白平衡", white_balance_box),
@@ -768,6 +783,9 @@ class SettingsDialog(QtWidgets.QDialog):
         config.learning.samples_directory = self.learning_samples_directory.line_edit.text().strip() or "rl/data/samples"  # type: ignore[attr-defined]
         config.camera.video_path = self.video_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.camera.nori_sdk_root = self.nori_sdk_root.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        config.camera.frame_rotation_degrees = normalize_frame_rotation_degrees(
+            self.frame_rotation_degrees.currentData()
+        )
         config.camera.distortion_correction_enabled = self.distortion_enabled.isChecked()
         config.camera.distortion_correction_file = self.distortion_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.camera.exposure_control = normalize_exposure_control(self.exposure_control.currentData())
@@ -1359,6 +1377,8 @@ class LinkedProjectorCalibrationDialog(QtWidgets.QDialog):
                 outer_px, _, _ = geometry.scaled(frame_w, frame_h)
                 if outer_px.shape[0] >= 3:
                     table_polygon_cam = outer_px.astype(np.float32)
+                    if undistort is not None:
+                        table_polygon_cam = undistort(table_polygon_cam)
             self._result = solve_linked_projection_calibration(
                 observations,
                 (int(self.operator.config.projection.projector_width), int(self.operator.config.projection.projector_height)),
@@ -2857,6 +2877,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.config.camera.width,
             self.config.camera.height,
             self.config.camera.fps,
+            self.config.camera.frame_rotation_degrees,
             self.config.camera.video_path,
             self.config.camera.nori_sdk_root,
             self.config.camera.exposure_auto,

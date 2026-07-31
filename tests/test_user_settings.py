@@ -40,6 +40,18 @@ def test_invalid_exposure_control_mode_falls_back_to_auto(tmp_path) -> None:
     assert restored.camera.exposure_control == "auto"
 
 
+def test_camera_frame_rotation_roundtrips_through_user_settings(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    cfg = AppConfig()
+    cfg.camera.frame_rotation_degrees = 180
+
+    UserSettings.from_config(cfg).save(path)
+    restored = UserSettings.load(path).apply_to_config(AppConfig())
+
+    assert restored.camera.frame_rotation_degrees == 180
+    assert json.loads(path.read_text(encoding="utf-8"))["frame_rotation_degrees"] == 180
+
+
 def test_user_settings_can_clear_default_paths_and_save_false_values(tmp_path) -> None:
     path = tmp_path / "user_settings.json"
     path.write_text(

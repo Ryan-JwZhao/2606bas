@@ -19,6 +19,7 @@ class _Track:
     center: np.ndarray
     radius_px: float
     confidence: float
+    geometry_quality: float
     votes: Deque[str]
     last_ts_ns: int
     velocity: np.ndarray = field(default_factory=lambda: np.zeros((2,), dtype=np.float32))
@@ -84,6 +85,7 @@ class TemporalTracker:
                 center=center,
                 radius_px=float(det.radius_px),
                 confidence=float(det.conf),
+                geometry_quality=float(np.clip(det.geometry_quality, 0.0, 1.0)),
                 votes=deque([det.cls_name], maxlen=int(self.config.vote_window)),
                 last_ts_ns=detections_frame.ts_cam_ns,
             )
@@ -140,7 +142,14 @@ class TemporalTracker:
         return matches, unmatched_tracks, unmatched_dets
 
     def _update_track(self, track: _Track, det: Detection, ts_ns: int) -> None:
-        new_center = np.asarray(det.center, dtype=np.float32)
+        measured_center = np.asarray(det.center, dtype=np.float32)
+        displacement = float(np.linalg.norm(measured_center - track.center))
+        radius = max(2.0, float(track.radius_px), float(det.radius_px))
+        if displacement <= 0.35 * radius:
+            measurement_alpha = 0.35 + 0.40 * float(np.clip(det.geometry_quality, 0.0, 1.0))
+        else:
+            measurement_alpha = 1.0
+        new_center = track.center + float(measurement_alpha) * (measured_center - track.center)
         dt = max(1e-6, (ts_ns - track.last_ts_ns) / 1e9)
         instant_v = (new_center - track.center) / dt
         alpha = float(clamp(self.config.velocity_smoothing, 0.0, 1.0))
@@ -149,6 +158,7 @@ class TemporalTracker:
         track.bbox = tuple(float(v) for v in det.bbox)
         track.radius_px = float(det.radius_px)
         track.confidence = float(det.conf)
+        track.geometry_quality = float(np.clip(det.geometry_quality, 0.0, 1.0))
         track.votes.append(det.cls_name)
         track.last_ts_ns = int(ts_ns)
         track.age += 1
@@ -156,7 +166,8 @@ class TemporalTracker:
 
     def _to_observation(self, track: _Track) -> TrackObservation:
         stable = track.stable_class
-        quality = float(track.confidence) * (0.72 ** max(0, track.lost_frames))
+        geometry_factor = 0.65 + 0.35 * float(np.clip(track.geometry_quality, 0.0, 1.0))
+        quality = float(track.confidence) * geometry_factor * (0.72 ** max(0, track.lost_frames))
         visibility = "visible" if track.lost_frames == 0 else "occluded"
         return TrackObservation(
             track_id=track.track_id,

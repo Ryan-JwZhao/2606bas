@@ -81,3 +81,43 @@ def test_tracker_prunes_overlapping_duplicate_ball_detections() -> None:
     out = tracker.update(frame)
 
     assert len(out.tracks) == 1
+
+
+def test_tracker_dampens_small_stationary_center_jitter() -> None:
+    tracker = TemporalTracker(TrackerConfig(match_distance_px=50))
+    tracker.update(
+        DetectionsFrame(
+            frame_id=1,
+            ts_cam_ns=1_000_000_000,
+            detections=[
+                Detection(
+                    bbox=(10, 10, 30, 30),
+                    conf=0.9,
+                    cls_id=0,
+                    cls_name="cue",
+                    refined_center_px=(20.0, 20.0),
+                    refined_radius_px=10.0,
+                    geometry_quality=0.9,
+                )
+            ],
+        )
+    )
+    out = tracker.update(
+        DetectionsFrame(
+            frame_id=2,
+            ts_cam_ns=1_033_000_000,
+            detections=[
+                Detection(
+                    bbox=(12, 10, 32, 30),
+                    conf=0.9,
+                    cls_id=0,
+                    cls_name="cue",
+                    refined_center_px=(22.0, 20.0),
+                    refined_radius_px=10.0,
+                    geometry_quality=0.9,
+                )
+            ],
+        )
+    )
+
+    assert 20.0 < out.tracks[0].center_px[0] < 22.0

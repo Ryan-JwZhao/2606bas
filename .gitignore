@@ -94,6 +94,10 @@ weights/
 *.wmv
 *.h264
 *.h265
+*.mjpg
+*.mjpeg
+*.yuv
+*.raw
 *.png
 *.jpg
 *.jpeg

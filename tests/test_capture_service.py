@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from bas.capture import service as capture_service
 from bas.capture.base import CaptureInfo, VideoTimelineState
@@ -75,6 +76,14 @@ class _StubOpenCVCapture(_StubVideoCapture):
         self.kwargs = kwargs
 
 
+class _SingleFrameCapture(_StubVideoCapture):
+    def __init__(self, frame: np.ndarray) -> None:
+        self._frame = frame
+
+    def read(self):
+        return True, self._frame.copy(), {"source": "test"}
+
+
 def test_create_capture_service_applies_nori_white_balance_controls(monkeypatch) -> None:
     controller = _StubController()
     nori = _StubNoriCapture(controller)
@@ -98,6 +107,72 @@ def test_create_capture_service_applies_nori_white_balance_controls(monkeypatch)
         ("white_balance_auto", 3, False),
         ("white_balance_value", 3, 5200),
     ]
+
+
+def test_capture_service_normalizes_inverted_camera_before_building_packet(monkeypatch) -> None:
+    raw = np.arange(18, dtype=np.uint8).reshape(2, 3, 3)
+    source = _SingleFrameCapture(raw)
+    monkeypatch.setattr(capture_service, "OpenCVCapture", lambda *args, **kwargs: source)
+    service = capture_service.create_capture_service(
+        CameraConfig(
+            backend="opencv",
+            camera_id="inverted_camera",
+            frame_rotation_degrees=180,
+            distortion_correction_enabled=False,
+        )
+    )
+
+    packet = service.read()
+
+    assert packet is not None
+    np.testing.assert_array_equal(packet.image, raw[::-1, ::-1])
+    assert packet.exposure_meta == {"source": "test", "frame_rotation_degrees": 180}
+
+
+def test_camera_orientation_is_normalized_before_runtime_undistortion(monkeypatch) -> None:
+    raw = np.arange(18, dtype=np.uint8).reshape(2, 3, 3)
+    source = _SingleFrameCapture(raw)
+    calibration = CameraCalibration(
+        image_size=(3, 2),
+        camera_matrix=np.eye(3, dtype=np.float64),
+        distortion_coefficients=np.zeros((1, 5), dtype=np.float64),
+        source_path="camera.yaml",
+        metadata={},
+    )
+    undistortion_inputs: list[np.ndarray] = []
+
+    monkeypatch.setattr(capture_service, "OpenCVCapture", lambda *args, **kwargs: source)
+    monkeypatch.setattr(capture_service.CameraCalibration, "load_opencv_yaml", lambda _path: calibration)
+
+    def record_undistortion_input(_self, frame: np.ndarray) -> np.ndarray:
+        undistortion_inputs.append(frame.copy())
+        return frame
+
+    monkeypatch.setattr(capture_service.DistortionCorrectedCapture, "_undistort", record_undistortion_input)
+    service = capture_service.create_capture_service(
+        CameraConfig(
+            backend="opencv",
+            frame_rotation_degrees=180,
+            distortion_correction_enabled=True,
+            distortion_correction_file="camera.yaml",
+        )
+    )
+
+    assert service.read() is not None
+    np.testing.assert_array_equal(undistortion_inputs[0], raw[::-1, ::-1])
+
+
+def test_capture_service_rejects_non_orthogonal_frame_rotation(monkeypatch) -> None:
+    monkeypatch.setattr(capture_service, "OpenCVCapture", lambda *args, **kwargs: _StubOpenCVCapture())
+
+    with pytest.raises(ValueError, match="one of"):
+        capture_service.create_capture_service(
+            CameraConfig(
+                backend="opencv",
+                frame_rotation_degrees=45,
+                distortion_correction_enabled=False,
+            )
+        )
 
 
 def test_create_capture_service_applies_exposure_to_opencv_fallback(monkeypatch) -> None:

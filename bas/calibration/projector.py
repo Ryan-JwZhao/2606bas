@@ -44,6 +44,8 @@ class ProjectionCalibration:
     cam_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
     proj_points: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
     residual_field: ResidualField = field(default_factory=ResidualField)
+    table_control_points_norm: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
+    table_control_points_proj: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
     table_polygon_cam: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
     table_polygon_proj: np.ndarray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
     projector_size: Tuple[int, int] = (0, 0)
@@ -70,6 +72,14 @@ class ProjectionCalibration:
             cam_points=np.asarray(data.get("cam_points", []), dtype=np.float64).reshape((-1, 2)),
             proj_points=np.asarray(data.get("proj_points", []), dtype=np.float64).reshape((-1, 2)),
             residual_field=residual,
+            table_control_points_norm=np.asarray(
+                data.get("table_control_points_norm", []),
+                dtype=np.float64,
+            ).reshape((-1, 2)),
+            table_control_points_proj=np.asarray(
+                data.get("table_control_points_proj", []),
+                dtype=np.float64,
+            ).reshape((-1, 2)),
             table_polygon_cam=np.asarray(data.get("table_polygon_cam", []), dtype=np.float64).reshape((-1, 2)),
             table_polygon_proj=np.asarray(data.get("table_polygon_proj", []), dtype=np.float64).reshape((-1, 2)),
             projector_size=(int(proj_size[0]), int(proj_size[1])) if len(proj_size) >= 2 else (0, 0),
@@ -165,6 +175,8 @@ class ProjectionCalibration:
             "proj_points": self.proj_points.tolist(),
             "residual_cam_points": self.residual_field.control_points_cam.tolist(),
             "residual_proj_offsets": self.residual_field.offsets_proj.tolist(),
+            "table_control_points_norm": self.table_control_points_norm.tolist(),
+            "table_control_points_proj": self.table_control_points_proj.tolist(),
             "table_polygon_cam": self.table_polygon_cam.tolist(),
             "table_polygon_proj": self.table_polygon_proj.tolist(),
             "projector_size": list(self.projector_size),

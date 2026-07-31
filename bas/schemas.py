@@ -44,14 +44,22 @@ class Detection:
     conf: float
     cls_id: int
     cls_name: str
+    refined_center_px: Optional[Point] = None
+    refined_radius_px: Optional[float] = None
+    geometry_quality: float = 0.45
+    geometry_method: str = "bbox"
 
     @property
     def center(self) -> Point:
+        if self.refined_center_px is not None:
+            return (float(self.refined_center_px[0]), float(self.refined_center_px[1]))
         x1, y1, x2, y2 = self.bbox
         return ((x1 + x2) * 0.5, (y1 + y2) * 0.5)
 
     @property
     def radius_px(self) -> float:
+        if self.refined_radius_px is not None:
+            return max(2.0, float(self.refined_radius_px))
         x1, y1, x2, y2 = self.bbox
         return max(2.0, 0.25 * ((x2 - x1) + (y2 - y1)))
 

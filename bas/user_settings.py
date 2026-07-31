@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .capture.orientation import normalize_frame_rotation_degrees
 from .config import AppConfig, normalize_exposure_control
 from .paths import PROJECT_ROOT
 
@@ -21,6 +22,7 @@ class UserSettings:
     width: Optional[int] = None
     height: Optional[int] = None
     fps: Optional[int] = None
+    frame_rotation_degrees: Optional[int] = None
     video_path: Optional[str] = None
     nori_sdk_root: Optional[str] = None
     exposure_auto: Optional[bool] = None
@@ -162,6 +164,8 @@ class UserSettings:
             config.camera.height = int(self.height)
         if self.fps is not None:
             config.camera.fps = int(self.fps)
+        if self.frame_rotation_degrees is not None:
+            config.camera.frame_rotation_degrees = normalize_frame_rotation_degrees(self.frame_rotation_degrees)
         if self._has("video_path"):
             config.camera.video_path = _clean_optional_text(self.video_path)
         if self._has("nori_sdk_root"):
@@ -385,6 +389,7 @@ class UserSettings:
             width=config.camera.width,
             height=config.camera.height,
             fps=config.camera.fps,
+            frame_rotation_degrees=normalize_frame_rotation_degrees(config.camera.frame_rotation_degrees),
             video_path=config.camera.video_path,
             nori_sdk_root=config.camera.nori_sdk_root,
             exposure_auto=config.camera.exposure_auto,

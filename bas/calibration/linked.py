@@ -175,12 +175,31 @@ def solve_linked_projection_calibration(
     if cam_poly.shape[0] >= 3:
         projection.table_polygon_cam = cam_poly.astype(np.float64)
         projection.table_polygon_proj = projection.camera_to_projector_points(cam_poly).astype(np.float64)
+    if cam_poly.shape[0] == 4 and projection.residual_field.control_points_cam.shape[0] >= 4:
+        normalized_rect = np.asarray(
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            dtype=np.float32,
+        )
+        camera_to_normalized = cv2.getPerspectiveTransform(
+            cam_poly.astype(np.float32),
+            normalized_rect,
+        )
+        controls_camera = projection.residual_field.control_points_cam.astype(np.float64)
+        projection.table_control_points_norm = cv2.perspectiveTransform(
+            controls_camera.reshape((-1, 1, 2)),
+            camera_to_normalized,
+        ).reshape((-1, 2)).astype(np.float64)
+        projection.table_control_points_proj = projection.camera_to_projector_points(
+            controls_camera,
+        ).astype(np.float64)
     summary = {
         "patterns_total": len(observations),
         "patterns_used": len(usable),
         "matched_points_total": int(camera_points.shape[0]),
         "matched_points_by_pattern": {obs.pattern_id: int(obs.matched_count) for obs in usable},
         "zones": sorted({obs.emphasis_zone for obs in usable}),
+        "geometry_model": "independent_2d",
+        "camera_extrinsics_used": False,
     }
     projection.quality_report.update({
         "workflow": "linked_hybrid_charuco",

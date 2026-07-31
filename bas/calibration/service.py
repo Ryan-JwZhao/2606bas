@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List
 
-import cv2
 import numpy as np
 
 from ..config import CalibrationConfig, CameraConfig
@@ -11,7 +10,8 @@ from ..schemas import Point, TableModel
 from ..utils import ensure_numpy_points
 from .ball_compensation import BallCompensationModel
 from .camera import CameraCalibration
-from .projector import ProjectionCalibration, table_bbox_from_polygon
+from .geometry import IndependentGeometry
+from .projector import ProjectionCalibration
 
 
 def default_pockets(width_mm: float, height_mm: float) -> List[Point]:
@@ -60,6 +60,17 @@ class CalibrationService:
     projection_mode: str = "legacy"
     ball_compensation_model: BallCompensationModel = field(default_factory=BallCompensationModel)
     ball_center_compensation: BallCenterCompensation = field(default_factory=BallCenterCompensation)
+    _geometry: IndependentGeometry = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._rebuild_geometry()
+
+    def _rebuild_geometry(self) -> None:
+        self._geometry = IndependentGeometry(
+            projection=self.projection,
+            table=self.table,
+            ball_compensation=self.ball_compensation_model,
+        )
 
     def sync_ball_center_compensation(self, config: CalibrationConfig) -> None:
         self.ball_center_compensation = BallCenterCompensation.from_config(config)
@@ -78,13 +89,8 @@ class CalibrationService:
         return self.camera.undistort(frame)
 
     def camera_px_to_projector_px(self, points: np.ndarray) -> np.ndarray:
-        should_undistort_points = (
-            self.distortion_correction_enabled
-            and self.camera.is_valid
-            and not self.frame_undistorted
-        )
-        undistorted = self.camera.undistort_points(points) if should_undistort_points else ensure_numpy_points(points)
-        return self.projection.camera_to_projector_points(undistorted)
+        camera_points = self._camera_geometry_points(points)
+        return self._geometry.camera_to_projector(camera_points)
 
     def compensate_ball_image_points(self, points: np.ndarray) -> np.ndarray:
         pts = ensure_numpy_points(points).astype(np.float32)
@@ -102,61 +108,31 @@ class CalibrationService:
         return out
 
     def ball_camera_px_to_projector_px(self, points: np.ndarray) -> np.ndarray:
-        if self.is_engineered_projection:
-            return self.table_mm_to_projector_px(self.ball_camera_px_to_table_mm(points))
-        return self.camera_px_to_projector_px(self.compensate_ball_image_points(points))
+        return self.table_mm_to_projector_px(self.ball_camera_px_to_table_mm(points))
 
     def camera_px_to_table_mm(self, points: np.ndarray) -> np.ndarray:
-        proj = self.camera_px_to_projector_px(points).astype(np.float32)
-        return self.projector_px_to_table_mm(proj)
+        return self._geometry.camera_to_table(self._camera_geometry_points(points))
 
     def ball_camera_px_to_table_mm(self, points: np.ndarray) -> np.ndarray:
-        pts = ensure_numpy_points(points)
-        base_pts = self._ball_base_camera_points(pts)
-        proj = self.camera_px_to_projector_px(base_pts).astype(np.float32)
-        table_mm = self.projector_px_to_table_mm(proj)
+        pts = ensure_numpy_points(points).astype(np.float32)
+        if not self.is_engineered_projection or not self.ball_compensation_model.is_valid:
+            pts = self.compensate_ball_image_points(pts)
+        camera_points = self._camera_geometry_points(pts)
         if self.is_engineered_projection and self.ball_compensation_model.is_valid:
-            table_mm = table_mm + self.ball_compensation_model.offsets_for_camera_points(base_pts).astype(np.float32)
-        return table_mm
+            return self._geometry.ball_to_table(camera_points)
+        return self._geometry.camera_to_table(camera_points)
 
     def projector_px_to_table_mm(self, points: np.ndarray) -> np.ndarray:
-        pts = ensure_numpy_points(points)
-        if pts.size == 0:
-            return pts
-        _, projector_to_table = self._table_projector_homographies()
-        if projector_to_table is not None:
-            return cv2.perspectiveTransform(pts.reshape((-1, 1, 2)).astype(np.float32), projector_to_table).reshape((-1, 2))
-        x1, y1, x2, y2 = table_bbox_from_polygon(self.projection.table_polygon_proj, self.projection.projector_size)
-        w = max(1e-6, x2 - x1)
-        h = max(1e-6, y2 - y1)
-        out = pts.copy().astype(np.float32)
-        out[:, 0] = (out[:, 0] - x1) / w * float(self.table.width_mm)
-        out[:, 1] = (out[:, 1] - y1) / h * float(self.table.height_mm)
-        return out
+        return self._geometry.projector_to_table(points)
 
     def table_mm_to_projector_px(self, points: np.ndarray) -> np.ndarray:
-        pts = ensure_numpy_points(points)
-        if pts.size == 0:
-            return pts
-        table_to_projector, _ = self._table_projector_homographies()
-        if table_to_projector is not None:
-            return cv2.perspectiveTransform(pts.reshape((-1, 1, 2)).astype(np.float32), table_to_projector).reshape((-1, 2))
-        x1, y1, x2, y2 = table_bbox_from_polygon(self.projection.table_polygon_proj, self.projection.projector_size)
-        out = pts.copy().astype(np.float32)
-        out[:, 0] = x1 + out[:, 0] / max(1e-6, float(self.table.width_mm)) * (x2 - x1)
-        out[:, 1] = y1 + out[:, 1] / max(1e-6, float(self.table.height_mm)) * (y2 - y1)
-        return out
+        return self._geometry.table_to_projector(points)
 
     def table_mm_to_camera_px(self, points: np.ndarray) -> np.ndarray:
-        proj = self.table_mm_to_projector_px(points).astype(np.float32)
-        if proj.size == 0:
-            return proj
-        homography = self.projection.homography
-        if homography is None:
-            return proj
-        inv_h = np.linalg.inv(np.asarray(homography, dtype=np.float64))
-        cam = cv2.perspectiveTransform(proj.reshape((-1, 1, 2)), inv_h).reshape((-1, 2))
-        return cam.astype(np.float32)
+        camera_points = self._geometry.table_to_camera(points)
+        if self._should_undistort_camera_points():
+            return self.camera.distort_points(camera_points)
+        return camera_points
 
     def table_inner_polygon_projector(self) -> np.ndarray:
         return self.table_mm_to_projector_px(np.asarray(self.table.inner_polygon_mm, dtype=np.float32))
@@ -201,25 +177,6 @@ class CalibrationService:
         ry = float(np.linalg.norm(proj[2] - proj[0]))
         return max(1.0, 0.5 * (rx + ry))
 
-    def _table_projector_homographies(self) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        poly = ensure_numpy_points(self.projection.table_polygon_proj).astype(np.float32)
-        if poly.shape[0] != 4:
-            return None, None
-        width = max(1e-3, float(self.table.width_mm))
-        height = max(1e-3, float(self.table.height_mm))
-        rect = np.asarray(
-            [
-                [0.0, 0.0],
-                [width, 0.0],
-                [width, height],
-                [0.0, height],
-            ],
-            dtype=np.float32,
-        )
-        table_to_projector = cv2.getPerspectiveTransform(rect, poly)
-        projector_to_table = cv2.getPerspectiveTransform(poly, rect)
-        return table_to_projector, projector_to_table
-
     def _ball_center_reference_px(self) -> tuple[float, float]:
         cfg = self.ball_center_compensation
         if not bool(cfg.auto_reference):
@@ -231,11 +188,22 @@ class CalibrationService:
             return float(np.mean(poly[:, 0])), float(np.mean(poly[:, 1]))
         return 960.0, 540.0
 
-    def _ball_base_camera_points(self, points: np.ndarray) -> np.ndarray:
-        pts = ensure_numpy_points(points).astype(np.float32)
-        if self.is_engineered_projection and self.ball_compensation_model.is_valid:
-            return pts
-        return self.compensate_ball_image_points(pts)
+    @property
+    def geometry_quality_report(self) -> dict[str, float | int | str]:
+        return self._geometry.quality_report
+
+    def _should_undistort_camera_points(self) -> bool:
+        return (
+            self.distortion_correction_enabled
+            and self.camera.is_valid
+            and not self.frame_undistorted
+        )
+
+    def _camera_geometry_points(self, points: np.ndarray) -> np.ndarray:
+        pts = ensure_numpy_points(points)
+        if self._should_undistort_camera_points():
+            return self.camera.undistort_points(pts)
+        return pts.astype(np.float32)
 
 
 def create_calibration_service(

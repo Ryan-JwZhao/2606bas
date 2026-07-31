@@ -134,6 +134,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "ball_compensation_valid": service.ball_compensation_model.is_valid,
                 "ball_compensation_source": service.ball_compensation_model.source_path,
                 "ball_compensation_mode": service.ball_compensation_model.mode,
+                "geometry_model": service.geometry_quality_report,
                 "table": to_jsonable(service.table),
             }
             print(json.dumps(summary, ensure_ascii=False, indent=2))
