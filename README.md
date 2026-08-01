@@ -23,6 +23,14 @@ BAS 是一个台球辅助系统，主要能力包括：
 - `inline` / `pocket` 几何未就绪时，工程球体采样退回内框并至少内缩半个球直径，避免把默认矩形误当作安全球心区域。
 - 新生成的球心补偿必须通过空间交叉验证和台面覆盖率门禁；未通过的产物不会保存为可用模型。
 
+### 测试维护原则
+
+测试按模块接口和风险场景保留，不以测试数量作为目标。新增功能应优先扩展现有测试或替换失效测试；只有出现新的独立风险时才新增测试。重复验证同一数学性质、只锁定内部字段存在性、或对应功能已经删除的测试应同步合并或删除。全量回归可运行：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --basetemp=.tmp/pytest-full
+```
+
 现场使用方式、阈值和验证命令见 [`docs/calibration_geometry/README.md`](docs/calibration_geometry/README.md)。
 
 ## 目录结构

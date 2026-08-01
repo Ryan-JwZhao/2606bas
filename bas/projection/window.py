@@ -51,11 +51,6 @@ class ProjectionWindow(QtWidgets.QWidget):
     def set_star_formula(self, config: StarFormulaConfig) -> None:
         self.star_formula = config
 
-    def set_calibration_mode(self, enabled: bool) -> None:
-        """Compatibility hook; calibration and runtime share projector coordinates."""
-
-        del enabled
-
     def set_image(self, image_bgr: np.ndarray) -> None:
         self._source_image_bgr = np.ascontiguousarray(image_bgr).copy()
         self._render_source_image()

@@ -5,13 +5,6 @@ from bas.geometry_contract import projection_calibration_context
 from bas.user_settings import UserSettings
 
 
-def test_projector_has_no_independent_discrete_rotation_settings() -> None:
-    config = AppConfig()
-
-    assert not hasattr(config.projection, "calibration_rotation_degrees")
-    assert not hasattr(config.projection, "output_rotation_degrees")
-
-
 def test_legacy_projector_rotation_settings_are_ignored(tmp_path) -> None:
     path = tmp_path / "settings.json"
     path.write_text(

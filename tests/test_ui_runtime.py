@@ -1017,29 +1017,6 @@ def test_refresh_projection_uses_composed_interaction_frame() -> None:
     assert int(captured[0][0, 0, 0]) == 77
 
 
-def test_operator_switches_projection_window_between_calibration_and_output_modes() -> None:
-    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
-    mode_changes: list[bool] = []
-
-    class _ProjectionWindow:
-        def set_calibration_mode(self, enabled: bool) -> None:
-            mode_changes.append(enabled)
-
-    window.projection_window = _ProjectionWindow()
-    window._projection_calibration_mode = False
-    window.projection_btn = SimpleNamespace(setText=lambda _text: None)
-    window.last_output = None
-    window._ensure_projection_window = lambda: None
-    window._refresh_projection = lambda: None
-    window._append_log = lambda _message: None
-    window._update_module_status = lambda _output: None
-
-    main_window.OperatorWindow.ensure_projection_window_for_operator(window)
-    main_window.OperatorWindow.resume_runtime_projection(window)
-
-    assert mode_changes == [True, False]
-
-
 def test_web_target_state_is_cleared_after_shot_started() -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())

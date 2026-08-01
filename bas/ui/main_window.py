@@ -3714,16 +3714,12 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
     def ensure_projection_window_for_operator(self) -> None:
         self._projection_calibration_mode = True
         self._ensure_projection_window()
-        if self.projection_window is not None:
-            self.projection_window.set_calibration_mode(True)
         self.projection_btn.setText("停止投影")
         self._append_log("投影窗口已打开，当前处于校正模式")
         self._update_module_status(self.last_output)
 
     def resume_runtime_projection(self) -> None:
         self._projection_calibration_mode = False
-        if self.projection_window is not None:
-            self.projection_window.set_calibration_mode(False)
         self._refresh_projection()
         self._append_log("投影已恢复实时 overlay")
         self._update_module_status(self.last_output)
@@ -4232,7 +4228,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if self.projection_window is not None:
             return
         self.projection_window = ProjectionWindow(self.config.projection)
-        self.projection_window.set_calibration_mode(self._projection_calibration_mode)
         self.projection_window.set_star_formula(self.star_formula)
         self.projection_window.show_on_configured_screen()
         self._projection_interaction.notify_boot_ready()

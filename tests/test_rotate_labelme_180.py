@@ -16,13 +16,3 @@ def test_rotate_labelme_document_180_uses_pixel_center_coordinates() -> None:
     assert rotated["shapes"][0]["points"] == [[1919.0, 1079.0], [0.0, 0.0]]
     assert rotated["shapes"][1]["points"] == [[1598.5, 838.75]]
     assert document["shapes"][0]["points"][0] == [0.0, 0.0]
-
-
-def test_rotate_labelme_document_180_is_an_involution() -> None:
-    document = {
-        "imageWidth": 4,
-        "imageHeight": 3,
-        "shapes": [{"label": "outline", "points": [[0.25, 1.5], [3.0, 2.0]]}],
-    }
-
-    assert rotate_labelme_document_180(rotate_labelme_document_180(document)) == document
