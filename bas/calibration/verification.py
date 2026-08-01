@@ -44,17 +44,21 @@ def verify_holdout_samples(samples: Iterable[Dict[str, Any]], service: Calibrati
 
         sample_used = False
         if cam is not None and proj is not None:
-            pred = service.camera_px_to_projector_px(np.asarray([cam], dtype=np.float32))[0]
+            pred = (
+                service.ball_camera_px_to_projector_px(np.asarray([cam], dtype=np.float32))[0]
+                if _is_ball_sample(sample)
+                else service.camera_px_to_projector_px(np.asarray([cam], dtype=np.float32))[0]
+            )
             img_errors.append(float(np.linalg.norm(pred - np.asarray(proj, dtype=np.float32))))
             sample_used = True
 
         if world is not None and (proj is not None or cam is not None):
             observed = (
-                service.projector_px_to_table_mm(np.asarray([proj], dtype=np.float32))[0]
-                if proj is not None
+                service.ball_camera_px_to_table_mm(np.asarray([cam], dtype=np.float32))[0]
+                if cam is not None and _is_ball_sample(sample)
                 else (
-                    service.ball_camera_px_to_table_mm(np.asarray([cam], dtype=np.float32))[0]
-                    if _is_ball_sample(sample)
+                    service.projector_px_to_table_mm(np.asarray([proj], dtype=np.float32))[0]
+                    if proj is not None
                     else service.camera_px_to_table_mm(np.asarray([cam], dtype=np.float32))[0]
                 )
             )

@@ -166,6 +166,11 @@ def solve_linked_projection_calibration(
     table_polygon_cam: Optional[np.ndarray] = None,
     minimum_pocket_zones: int = 4,
 ) -> LinkedCalibrationResult:
+    cam_poly = polygon_quad(ensure_numpy_points(table_polygon_cam))
+    if cam_poly.shape[0] != 4:
+        raise ValueError(
+            "Linked calibration requires a valid four-corner camera table polygon anchor."
+        )
     usable = [obs for obs in observations if obs.matched_count >= 6]
     if len(usable) < 2:
         raise ValueError("联动校正至少需要两个有效采样图样。")
@@ -207,11 +212,9 @@ def solve_linked_projection_calibration(
             "Linked calibration rejected: leave-one-pattern-out P95 "
             f"{pattern_cv_p95:.2f}px exceeds {MAX_LINKED_PATTERN_CV_P95_PX:.2f}px."
         )
-    cam_poly = polygon_quad(ensure_numpy_points(table_polygon_cam))
-    if cam_poly.shape[0] == 4:
-        projection.table_polygon_cam = cam_poly.astype(np.float64)
-        projection.table_polygon_proj = projection.camera_to_projector_points(cam_poly).astype(np.float64)
-    if cam_poly.shape[0] == 4 and projection.residual_field.control_points_cam.shape[0] >= 4:
+    projection.table_polygon_cam = cam_poly.astype(np.float64)
+    projection.table_polygon_proj = projection.camera_to_projector_points(cam_poly).astype(np.float64)
+    if projection.residual_field.control_points_cam.shape[0] >= 4:
         normalized_rect = np.asarray(
             [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             dtype=np.float32,

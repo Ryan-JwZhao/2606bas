@@ -544,6 +544,13 @@ node --test tests\web_control_coordinates.test.js
 .\.venv\Scripts\python.exe -m pytest tests\test_training_mode.py tests\test_planner.py -q --basetemp=pytest_tmp_training_routes -o cache_dir=pytest_cache_local\training_routes
 ```
 
+## 校准产物安全与 Holdout 规则
+
+- 联合校准必须读取到有效的相机台面四边形。`outline` 缺失、损坏或不足以形成四角锚点时，校准会直接停止，不再使用投影画面的固定边距猜测台面毫米坐标。
+- `kind=ball`、`ball_center` 或 `sphere_center` 的 Holdout 样本始终使用球心补偿链路。样本即使同时提供 `projector_px`，图像误差和台面毫米误差也不会退回普通平面映射。
+- 投影校准和工程球心补偿 JSON 使用同目录临时文件写入，完整落盘后再原子替换正式文件。写入失败会保留上一份可用文件，不会留下被截断的正式产物。
+- 加载损坏 JSON、错误数组形状或包含 `NaN`/`Infinity` 的产物时，系统会把该产物标记为无效并记录 `quality_report.load_error`，不会因此中断应用启动。
+
 ## 更换台面几何文件后的区域规则
 
 运行时会读取设置中的 `outline.json`、`inline.json` 和 `pocket.json`。系统使用文件内容哈希检查变化；即使新旧文件大小和修改时间相同，只要内容变化也会自动重载。校验成功后会重建边界，并清空检测缓存、跟踪历史、袋口观察历史、状态机历史和规划锁定，避免旧轨迹继续绑定旧袋位。六个袋口会统一规范为 `左上、上中、右上、右下、下中、左下`，因此 `pocket.json` 中 shape 的书写顺序不会改变袋号。

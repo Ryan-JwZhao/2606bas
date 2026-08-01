@@ -133,3 +133,23 @@ def test_linked_calibration_rejects_excessive_ransac_outliers() -> None:
             (1280, 800),
             table_polygon_cam=np.asarray([[100, 100], [700, 100], [700, 500], [100, 500]], dtype=np.float32),
         )
+
+
+def test_linked_calibration_requires_table_polygon_anchor() -> None:
+    camera = np.asarray(
+        [[x, y] for y in (100.0, 300.0, 500.0) for x in (100.0, 300.0, 500.0, 700.0)],
+        dtype=np.float32,
+    )
+    projector = camera * np.asarray([1.2, 1.1], dtype=np.float32) + np.asarray([20.0, 30.0], dtype=np.float32)
+    observations = [
+        LinkedCalibrationObservation("full", "full", "full", camera, projector, np.arange(12), 12, 12),
+        LinkedCalibrationObservation("center", "center", "center", camera, projector, np.arange(12), 12, 12),
+    ]
+
+    with pytest.raises(ValueError, match="table polygon"):
+        solve_linked_projection_calibration(
+            observations,
+            (1280, 800),
+            table_polygon_cam=None,
+            minimum_pocket_zones=0,
+        )

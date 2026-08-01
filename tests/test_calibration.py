@@ -414,10 +414,18 @@ def test_holdout_ball_samples_use_ball_center_geometry() -> None:
     )
 
     report = verify_holdout_samples(
-        [{"camera_px": [50, 25], "world_mm": [52, 28], "kind": "ball_center"}],
+        [
+            {
+                "camera_px": [50, 25],
+                "projector_px": [52, 28],
+                "world_mm": [52, 28],
+                "kind": "ball_center",
+            }
+        ],
         service,
     )
 
+    assert report["image_error_px"]["p95"] < 1e-3
     assert report["table_error_mm"]["p95"] < 1e-3
     assert report["geometry_model"]["camera_extrinsics_used"] == 0
 
@@ -448,6 +456,44 @@ def test_projection_loader_rejects_null_homography(tmp_path) -> None:
     projection = ProjectionCalibration.load_json(path)
 
     assert projection.is_valid is False
+
+
+@pytest.mark.parametrize("payload", ["{", '{"cam_points": [1, 2, 3]}'])
+def test_projection_loader_degrades_corrupt_artifact_to_invalid_model(tmp_path, payload) -> None:
+    path = tmp_path / "corrupt_projection.json"
+    path.write_text(payload, encoding="utf-8")
+
+    projection = ProjectionCalibration.load_json(path)
+
+    assert projection.is_valid is False
+    assert projection.source_path == str(path)
+    assert projection.quality_report["load_error"]
+
+
+def test_ball_compensation_loader_degrades_corrupt_artifact_to_invalid_model(tmp_path) -> None:
+    path = tmp_path / "corrupt_ball_compensation.json"
+    path.write_text('{"control_camera_points": [1, 2, 3]}', encoding="utf-8")
+
+    model = BallCompensationModel.load_json(path)
+
+    assert model.is_valid is False
+    assert model.source_path == str(path)
+    assert model.quality_report["load_error"]
+
+
+def test_projection_save_does_not_replace_last_good_file_when_serialization_fails(tmp_path) -> None:
+    path = tmp_path / "projection.json"
+    path.write_text("last-good", encoding="utf-8")
+    projection = ProjectionCalibration(
+        homography=np.eye(3, dtype=np.float64),
+        quality_report={"not_json_serializable": object()},
+    )
+
+    with pytest.raises(TypeError):
+        projection.save(path)
+
+    assert path.read_text(encoding="utf-8") == "last-good"
+    assert list(tmp_path.glob(".projection.json.*.tmp")) == []
 
 
 def test_projection_context_mismatch_rejects_rotated_camera_artifact(tmp_path) -> None:

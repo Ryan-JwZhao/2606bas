@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +11,7 @@ import numpy as np
 from ..schemas import Point
 from ..geometry_contract import context_compatibility_errors
 from ..utils import ensure_numpy_points, percentile
+from .artifact_io import atomic_write_json, load_json_object
 
 
 MIN_PROJECTION_INLIER_RATIO = 0.80
@@ -71,36 +71,48 @@ class ProjectionCalibration:
         p = Path(path)
         if not p.exists():
             return cls(source_path=str(p), quality_report={"missing": True})
-        with p.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        residual = ResidualField(
-            control_points_cam=np.asarray(data.get("residual_cam_points", []), dtype=np.float64).reshape((-1, 2)),
-            offsets_proj=np.asarray(data.get("residual_proj_offsets", []), dtype=np.float64).reshape((-1, 2)),
-        )
-        proj_size = data.get("projector_size") or [0, 0]
-        stored_context = dict(data.get("calibration_context", {}))
-        return cls(
-            mode=str(data.get("mode", "none")),
-            homography=_validated_homography(data.get("homography")),
-            cam_points=np.asarray(data.get("cam_points", []), dtype=np.float64).reshape((-1, 2)),
-            proj_points=np.asarray(data.get("proj_points", []), dtype=np.float64).reshape((-1, 2)),
-            residual_field=residual,
-            table_control_points_norm=np.asarray(
-                data.get("table_control_points_norm", []),
-                dtype=np.float64,
-            ).reshape((-1, 2)),
-            table_control_points_proj=np.asarray(
-                data.get("table_control_points_proj", []),
-                dtype=np.float64,
-            ).reshape((-1, 2)),
-            table_polygon_cam=np.asarray(data.get("table_polygon_cam", []), dtype=np.float64).reshape((-1, 2)),
-            table_polygon_proj=np.asarray(data.get("table_polygon_proj", []), dtype=np.float64).reshape((-1, 2)),
-            projector_size=(int(proj_size[0]), int(proj_size[1])) if len(proj_size) >= 2 else (0, 0),
-            source_path=str(p),
-            quality_report=dict(data.get("quality_report", {})),
-            calibration_context=stored_context,
-            compatibility_errors=context_compatibility_errors(stored_context, expected_context),
-        )
+        try:
+            data = load_json_object(p)
+            residual_camera = _finite_points(data.get("residual_cam_points", []), "residual_cam_points")
+            residual_offsets = _finite_points(data.get("residual_proj_offsets", []), "residual_proj_offsets")
+            if residual_camera.shape != residual_offsets.shape:
+                raise ValueError("residual camera points and projector offsets must have matching shapes")
+            residual = ResidualField(
+                control_points_cam=residual_camera,
+                offsets_proj=residual_offsets,
+            )
+            proj_size = data.get("projector_size") or [0, 0]
+            stored_context = dict(data.get("calibration_context", {}))
+            camera_points = _finite_points(data.get("cam_points", []), "cam_points")
+            projector_points = _finite_points(data.get("proj_points", []), "proj_points")
+            if camera_points.shape != projector_points.shape:
+                raise ValueError("camera and projector correspondence points must have matching shapes")
+            normalized_controls = _finite_points(
+                data.get("table_control_points_norm", []), "table_control_points_norm"
+            )
+            projector_controls = _finite_points(
+                data.get("table_control_points_proj", []), "table_control_points_proj"
+            )
+            if normalized_controls.shape != projector_controls.shape:
+                raise ValueError("table control points must have matching shapes")
+            return cls(
+                mode=str(data.get("mode", "none")),
+                homography=_validated_homography(data.get("homography")),
+                cam_points=camera_points,
+                proj_points=projector_points,
+                residual_field=residual,
+                table_control_points_norm=normalized_controls,
+                table_control_points_proj=projector_controls,
+                table_polygon_cam=_finite_points(data.get("table_polygon_cam", []), "table_polygon_cam"),
+                table_polygon_proj=_finite_points(data.get("table_polygon_proj", []), "table_polygon_proj"),
+                projector_size=(int(proj_size[0]), int(proj_size[1])) if len(proj_size) >= 2 else (0, 0),
+                source_path=str(p),
+                quality_report=dict(data.get("quality_report", {})),
+                calibration_context=stored_context,
+                compatibility_errors=context_compatibility_errors(stored_context, expected_context),
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            return cls(source_path=str(p), quality_report={"load_error": str(exc)})
 
     @classmethod
     def fit_from_correspondences(
@@ -247,8 +259,7 @@ class ProjectionCalibration:
             "quality_report": quality_report,
             "calibration_context": dict(self.calibration_context),
         }
-        with p.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_write_json(p, data)
 
 
 def _perspective_transform(points: np.ndarray, H: np.ndarray) -> np.ndarray:
@@ -269,6 +280,13 @@ def _validated_homography(value: Any) -> Optional[np.ndarray]:
     if int(np.linalg.matrix_rank(matrix)) < 3 or abs(float(np.linalg.det(matrix))) < 1e-12:
         return None
     return matrix
+
+
+def _finite_points(value: Any, field_name: str) -> np.ndarray:
+    points = np.asarray(value, dtype=np.float64).reshape((-1, 2))
+    if not np.all(np.isfinite(points)):
+        raise ValueError(f"{field_name} contains non-finite coordinates")
+    return points
 
 
 def _normalize_homography_mask(mask: Optional[np.ndarray], count: int) -> np.ndarray:

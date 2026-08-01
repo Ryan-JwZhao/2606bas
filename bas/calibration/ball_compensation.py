@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -8,6 +7,7 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 from ..geometry_contract import context_compatibility_errors
+from .artifact_io import atomic_write_json, load_json_object
 
 
 @dataclass
@@ -35,33 +35,46 @@ class BallCompensationModel:
         p = Path(path)
         if not p.exists():
             return cls(source_path=str(p), quality_report={"missing": True})
-        with p.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        samples = data.get("samples", [])
-        targets = data.get("target_table_mm", [])
-        weights = data.get("sample_weights", [])
-        if isinstance(samples, list) and samples:
-            if not targets:
-                targets = [sample.get("target_table_mm", []) for sample in samples]
-            if not weights:
-                weights = [_sample_weight(sample) for sample in samples]
-        stored_context = dict(data.get("calibration_context", {}))
-        compatibility_errors = context_compatibility_errors(stored_context, expected_context)
-        return cls(
-            mode=str(data.get("mode", "none")),
-            control_points_camera_px=np.asarray(
+        try:
+            data = load_json_object(p)
+            samples = data.get("samples", [])
+            targets = data.get("target_table_mm", [])
+            weights = data.get("sample_weights", [])
+            if isinstance(samples, list) and samples:
+                if not targets:
+                    targets = [sample.get("target_table_mm", []) for sample in samples]
+                if not weights:
+                    weights = [_sample_weight(sample) for sample in samples]
+            stored_context = dict(data.get("calibration_context", {}))
+            compatibility_errors = context_compatibility_errors(stored_context, expected_context)
+            controls = _finite_array(
                 data.get("control_camera_points", data.get("control_points_camera_px", [])),
-                dtype=np.float64,
-            ).reshape((-1, 2)),
-            delta_table_mm=np.asarray(data.get("delta_table_mm", []), dtype=np.float64).reshape((-1, 2)),
-            target_table_mm=np.asarray(targets, dtype=np.float64).reshape((-1, 2)),
-            sample_weights=np.asarray(weights, dtype=np.float64).reshape((-1,)),
-            max_neighbors=max(1, int(data.get("max_neighbors", 8) or 8)),
-            source_path=str(p),
-            quality_report=dict(data.get("quality_report", {})),
-            calibration_context=stored_context,
-            compatibility_errors=compatibility_errors,
-        )
+                (-1, 2),
+                "control_camera_points",
+            )
+            deltas = _finite_array(data.get("delta_table_mm", []), (-1, 2), "delta_table_mm")
+            target_points = _finite_array(targets, (-1, 2), "target_table_mm")
+            sample_weights = _finite_array(weights, (-1,), "sample_weights")
+            if deltas.shape[0] not in {0, controls.shape[0]}:
+                raise ValueError("delta_table_mm must be empty or match control point count")
+            if target_points.shape[0] not in {0, controls.shape[0]}:
+                raise ValueError("target_table_mm must be empty or match control point count")
+            if sample_weights.shape[0] not in {0, controls.shape[0]}:
+                raise ValueError("sample_weights must be empty or match control point count")
+            return cls(
+                mode=str(data.get("mode", "none")),
+                control_points_camera_px=controls,
+                delta_table_mm=deltas,
+                target_table_mm=target_points,
+                sample_weights=sample_weights,
+                max_neighbors=max(1, int(data.get("max_neighbors", 8) or 8)),
+                source_path=str(p),
+                quality_report=dict(data.get("quality_report", {})),
+                calibration_context=stored_context,
+                compatibility_errors=compatibility_errors,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            return cls(source_path=str(p), quality_report={"load_error": str(exc)})
 
     @property
     def is_valid(self) -> bool:
@@ -98,9 +111,7 @@ class BallCompensationModel:
 
     def save_json(self, path: str | Path, extra_data: Optional[Dict[str, Any]] = None) -> None:
         p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("w", encoding="utf-8") as f:
-            json.dump(self.to_dict(extra_data=extra_data), f, ensure_ascii=False, indent=2)
+        atomic_write_json(p, self.to_dict(extra_data=extra_data))
         self.source_path = str(p)
 
     def offsets_for_camera_points(self, points_camera_px: np.ndarray) -> np.ndarray:
@@ -132,3 +143,10 @@ def _sample_weight(sample: Dict[str, Any]) -> float:
     method = str(sample.get("geometry_method", "unknown")).strip().lower()
     method_weight = 1.0 if method.startswith("segmentation_ellipse") else 0.85 if method.startswith("appearance_ellipse") else 0.25
     return float(np.clip(confidence * geometry_quality * geometry_quality * method_weight / (1.0 + spread * spread), 0.01, 1.0))
+
+
+def _finite_array(value: Any, shape: tuple[int, ...], field_name: str) -> np.ndarray:
+    array = np.asarray(value, dtype=np.float64).reshape(shape)
+    if not np.all(np.isfinite(array)):
+        raise ValueError(f"{field_name} contains non-finite values")
+    return array
