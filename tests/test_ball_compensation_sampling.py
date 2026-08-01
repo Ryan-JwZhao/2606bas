@@ -17,14 +17,55 @@ from bas.calibration.camera import CameraCalibration
 from bas.calibration.projector import ProjectionCalibration
 from bas.calibration.service import CalibrationService
 from bas.geometry import TableGeometry
-from bas.schemas import TableModel
+from bas.schemas import Detection, TableModel
 from bas.table_boundaries import EdgeInsets
 from bas.ui.engineered_ball_compensation_wizard import (
+    _pick_ball_candidate,
+    _render_target_image,
     ball_compensation_path_or_default,
     ball_compensation_path_from_input,
     resolve_ball_sampling_region,
     timestamped_ball_compensation_output_path,
 )
+
+
+def test_ball_sampling_accepts_detector_bbox_fallback_near_target() -> None:
+    detection = Detection(
+        bbox=(470.0, 370.0, 530.0, 430.0),
+        conf=0.92,
+        cls_id=2,
+        cls_name="sob",
+        geometry_quality=0.45,
+        geometry_method="bbox",
+    )
+
+    candidate, candidate_count, distance_px = _pick_ball_candidate(
+        [detection],
+        np.asarray([500.0, 400.0], dtype=np.float32),
+        expected_radius_px=30.0,
+    )
+
+    assert candidate is detection
+    assert candidate_count == 1
+    assert distance_px == 0.0
+
+
+def test_ball_sampling_target_keeps_ball_interior_dark() -> None:
+    target = type(
+        "TargetEllipse",
+        (),
+        {
+            "center_px": (320.0, 240.0),
+            "radius_x_px": 28.0,
+            "radius_y_px": 24.0,
+            "rotation_deg": 0.0,
+        },
+    )()
+
+    image = _render_target_image((640, 480), target, 1, 30)
+    interior = image[228:253, 306:335]
+
+    assert int(np.max(interior)) <= 20
 
 
 def test_build_engineered_ball_sampling_grid_covers_table_interior() -> None:

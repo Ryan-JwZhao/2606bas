@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -544,6 +545,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         history: list[tuple[np.ndarray, float, float, float, str]] = []
         detection_regions = None
         settle_started_at: float | None = None
+        last_diagnostic_log_at = 0.0
         while time.perf_counter() < deadline:
             if self._abort_requested:
                 raise _SamplingAborted()
@@ -556,22 +558,37 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             if detection_regions is None:
                 detection_regions = _detection_regions_for_frame(frame, geometry, calibration)
             mask_polygon = detection_regions.global_polygon if detection_regions is not None else None
-            detections = detector.detect(frame, mask_polygon=mask_polygon)
-            detections = filter_detections_by_region(detections, detection_regions)
+            raw_detections = detector.detect(frame, mask_polygon=mask_polygon)
+            raw_ball_count = sum(1 for detection in raw_detections if _looks_like_ball_detection(detection))
+            detections = filter_detections_by_region(raw_detections, detection_regions)
+            region_ball_count = sum(1 for detection in detections if _looks_like_ball_detection(detection))
             expected_radius_px = _expected_camera_ball_radius(calibration, target_table_mm)
-            candidate, candidate_count, distance_px = _pick_ball_candidate(
+            selection = _select_ball_candidate(
                 detections,
                 expected_cam,
                 expected_radius_px=expected_radius_px,
             )
+            candidate = selection.candidate
+            candidate_count = selection.size_accepted_count
+            distance_px = selection.nearest_distance_px
             if candidate is None:
                 history.clear()
                 settle_started_at = None
+                diagnostic = _ball_candidate_diagnostic_text(
+                    selection,
+                    raw_ball_count=raw_ball_count,
+                    region_ball_count=region_ball_count,
+                    expected_radius_px=expected_radius_px,
+                )
                 self.summary.setText(
-                    f"第 {sample_index + 1}/{total_count} 个点等待中：未检测到接近目标圈的球。"
+                    f"第 {sample_index + 1}/{total_count} 个点等待中：{diagnostic}"
                 )
                 self._set_preview_image(_annotate_preview(frame, expected_cam, None, candidate_count, distance_px))
                 self._pump_ui()
+                now = time.perf_counter()
+                if now - last_diagnostic_log_at >= 5.0:
+                    self._append_log(f"采样点 {sample_index + 1}/{total_count} 候选诊断：{diagnostic}")
+                    last_diagnostic_log_at = now
                 time.sleep(0.03)
                 continue
 
@@ -663,10 +680,12 @@ def _render_target_image(
     image = np.zeros((max(1, height), max(1, width), 3), dtype=np.uint8)
     image[:] = (8, 14, 10)
     center = (int(round(float(target_ellipse.center_px[0]))), int(round(float(target_ellipse.center_px[1]))))
-    radius_x = int(round(max(18.0, float(target_ellipse.radius_x_px))))
-    radius_y = int(round(max(18.0, float(target_ellipse.radius_y_px))))
-    outer_radius = max(radius_x, radius_y)
-    inner_radius = max(6, int(round(outer_radius * 0.35)))
+    # Keep projected light off the ball itself. A cross through the center
+    # changes a solid ball's appearance and can make both YOLO segmentation and
+    # contour refinement fail. The surrounding ring and ticks still provide a
+    # precise physical centering guide.
+    radius_x = int(round(max(22.0, float(target_ellipse.radius_x_px) * 1.35)))
+    radius_y = int(round(max(22.0, float(target_ellipse.radius_y_px) * 1.35)))
     cv2.ellipse(
         image,
         center,
@@ -678,8 +697,14 @@ def _render_target_image(
         3,
         cv2.LINE_AA,
     )
-    cv2.circle(image, center, inner_radius, (255, 255, 255), 1, cv2.LINE_AA)
-    cv2.drawMarker(image, center, (255, 255, 255), cv2.MARKER_CROSS, max(22, outer_radius + 10), 2, cv2.LINE_AA)
+    cx, cy = center
+    tick_gap = 7
+    tick_length = 14
+    tick_color = (255, 255, 255)
+    cv2.line(image, (cx - radius_x - tick_gap - tick_length, cy), (cx - radius_x - tick_gap, cy), tick_color, 2, cv2.LINE_AA)
+    cv2.line(image, (cx + radius_x + tick_gap, cy), (cx + radius_x + tick_gap + tick_length, cy), tick_color, 2, cv2.LINE_AA)
+    cv2.line(image, (cx, cy - radius_y - tick_gap - tick_length), (cx, cy - radius_y - tick_gap), tick_color, 2, cv2.LINE_AA)
+    cv2.line(image, (cx, cy + radius_y + tick_gap), (cx, cy + radius_y + tick_gap + tick_length), tick_color, 2, cv2.LINE_AA)
     cv2.putText(
         image,
         f"Sample {index}/{total}",
@@ -730,36 +755,102 @@ def _expected_camera_ball_radius(calibration, target_table_mm: np.ndarray) -> fl
     return max(2.0, float(np.median(radii)))
 
 
+@dataclass(frozen=True)
+class BallCandidateSelection:
+    candidate: Optional[Detection]
+    ball_class_count: int
+    geometry_accepted_count: int
+    size_accepted_count: int
+    nearest_distance_px: float
+
+
+def _select_ball_candidate(
+    detections: list[Detection],
+    expected_cam: np.ndarray,
+    *,
+    expected_radius_px: float,
+) -> BallCandidateSelection:
+    ball_detections = [detection for detection in detections if _looks_like_ball_detection(detection)]
+    geometry_accepted = [detection for detection in ball_detections if _ball_geometry_is_usable(detection)]
+    size_accepted = [
+        detection
+        for detection in geometry_accepted
+        if 0.50 <= float(detection.radius_px) / max(2.0, float(expected_radius_px)) <= 1.70
+    ]
+    if not size_accepted:
+        return BallCandidateSelection(
+            candidate=None,
+            ball_class_count=len(ball_detections),
+            geometry_accepted_count=len(geometry_accepted),
+            size_accepted_count=0,
+            nearest_distance_px=float("inf"),
+        )
+    expected = np.asarray(expected_cam, dtype=np.float32).reshape((2,))
+    best = None
+    best_distance = float("inf")
+    for detection in size_accepted:
+        center = np.asarray(detection.center, dtype=np.float32)
+        distance = float(np.linalg.norm(center - expected))
+        if distance < best_distance:
+            best = detection
+            best_distance = distance
+    max_distance = max(140.0, 6.0 * float(best.radius_px)) if best is not None else 140.0
+    if best_distance > max_distance:
+        best = None
+    return BallCandidateSelection(
+        candidate=best,
+        ball_class_count=len(ball_detections),
+        geometry_accepted_count=len(geometry_accepted),
+        size_accepted_count=len(size_accepted),
+        nearest_distance_px=best_distance,
+    )
+
+
 def _pick_ball_candidate(
     detections: list[Detection],
     expected_cam: np.ndarray,
     *,
     expected_radius_px: float,
 ) -> tuple[Optional[Detection], int, float]:
-    ball_detections = [
-        detection
-        for detection in detections
-        if _looks_like_ball_detection(detection)
-        and float(detection.geometry_quality) >= 0.55
-        and 0.65 <= float(detection.radius_px) / max(2.0, float(expected_radius_px)) <= 1.35
-    ]
-    if not ball_detections:
-        return None, 0, float("inf")
-    expected = np.asarray(expected_cam, dtype=np.float32).reshape((2,))
-    best = None
-    best_distance = float("inf")
-    for detection in ball_detections:
-        center = np.asarray(detection.center, dtype=np.float32)
-        distance = float(np.linalg.norm(center - expected))
-        if distance < best_distance:
-            best = detection
-            best_distance = distance
-    if best is None:
-        return None, len(ball_detections), float("inf")
-    max_distance = max(75.0, 4.0 * float(best.radius_px))
-    if best_distance > max_distance:
-        return None, len(ball_detections), best_distance
-    return best, len(ball_detections), best_distance
+    selection = _select_ball_candidate(
+        detections,
+        expected_cam,
+        expected_radius_px=expected_radius_px,
+    )
+    return selection.candidate, selection.size_accepted_count, selection.nearest_distance_px
+
+
+def _ball_geometry_is_usable(detection: Detection) -> bool:
+    method = str(detection.geometry_method or "").strip().lower()
+    quality = float(detection.geometry_quality)
+    confidence = float(detection.conf)
+    if method.startswith("bbox"):
+        return quality >= 0.40 and confidence >= 0.50
+    return quality >= 0.40
+
+
+def _ball_candidate_diagnostic_text(
+    selection: BallCandidateSelection,
+    *,
+    raw_ball_count: int,
+    region_ball_count: int,
+    expected_radius_px: float,
+) -> str:
+    prefix = (
+        f"YOLO球={raw_ball_count}，区域内={region_ball_count}，"
+        f"几何可用={selection.geometry_accepted_count}，尺寸可用={selection.size_accepted_count}"
+    )
+    if raw_ball_count <= 0:
+        return prefix + "；模型没有识别到球，请确认球体未被投影亮线覆盖并检查检测模型。"
+    if region_ball_count <= 0:
+        return prefix + "；球被台面检测区域过滤，请检查几何标注。"
+    if selection.geometry_accepted_count <= 0:
+        return prefix + "；球框存在但中心/轮廓质量不足。"
+    if selection.size_accepted_count <= 0:
+        return prefix + f"；检测球半径与预期 {expected_radius_px:.1f}px 不匹配。"
+    if np.isfinite(selection.nearest_distance_px):
+        return prefix + f"；最近球距预期点 {selection.nearest_distance_px:.1f}px，尚未进入采样范围。"
+    return prefix + "；没有可用候选球。"
 
 
 def _looks_like_ball_detection(detection: Detection) -> bool:
