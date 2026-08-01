@@ -146,7 +146,7 @@ def build_linked_patterns(
         dtype=np.float32,
     )
 
-    coarse_spec = CharucoBoardSpec(squares_x=10, squares_y=7, square_length_m=0.035, marker_length_m=0.026)
+    coarse_spec = CharucoBoardSpec(squares_x=9, squares_y=6, square_length_m=0.035, marker_length_m=0.027)
     dense_spec = CharucoBoardSpec(squares_x=8, squares_y=6, square_length_m=0.030, marker_length_m=0.022)
 
     patterns: List[LinkedCalibrationPattern] = []
@@ -160,11 +160,14 @@ def build_linked_patterns(
         )
     )
 
-    full_roi = _expand_roi(projector_bbox, -0.01, width, height)
-    patterns.append(_make_charuco_pattern("full_cover", "全域 ChArUco", coarse_spec, width, height, full_roi, "full", projector_bbox, outline_proj, inner_proj, pockets_proj, center))
-
     center_roi = _roi_around_point(center, projector_bbox, width, height, width_ratio=0.58, height_ratio=0.50)
-    patterns.append(_make_charuco_pattern("center_focus", "台面中心细化", dense_spec, width, height, center_roi, "center", projector_bbox, outline_proj, inner_proj, pockets_proj, center))
+    patterns.append(_make_charuco_pattern("center_focus", "台面中心预检与细化", dense_spec, width, height, center_roi, "center", projector_bbox, outline_proj, inner_proj, pockets_proj, center))
+
+    # Keep the large board on the cloth instead of extending across reflective
+    # rails and the extreme projector boundary. Pocket boards provide the edge
+    # constraints separately.
+    full_roi = _expand_roi(projector_bbox, -0.07, width, height)
+    patterns.append(_make_charuco_pattern("full_cover", "台布全域 ChArUco", coarse_spec, width, height, full_roi, "full", projector_bbox, outline_proj, inner_proj, pockets_proj, center))
 
     names = ["pocket_lt", "pocket_mt", "pocket_rt", "pocket_rb", "pocket_mb", "pocket_lb"]
     for idx, point in enumerate(pocket_centers[:6]):
@@ -521,13 +524,19 @@ def _roi_around_point(
     height_ratio: float,
 ) -> Tuple[int, int, int, int]:
     x1, y1, x2, y2 = bbox
-    bw = max(140.0, (x2 - x1) * float(width_ratio))
-    bh = max(140.0, (y2 - y1) * float(height_ratio))
+    available_w = max(2.0, min(float(width), x2) - max(0.0, x1))
+    available_h = max(2.0, min(float(height), y2) - max(0.0, y1))
+    bw = min(available_w, max(140.0, (x2 - x1) * float(width_ratio)))
+    bh = min(available_h, max(140.0, (y2 - y1) * float(height_ratio)))
     cx, cy = [float(v) for v in point[:2]]
-    rx1 = clamp(cx - bw * 0.5, 0.0, float(width - 2))
-    ry1 = clamp(cy - bh * 0.5, 0.0, float(height - 2))
-    rx2 = clamp(rx1 + bw, rx1 + 1.0, float(width))
-    ry2 = clamp(ry1 + bh, ry1 + 1.0, float(height))
+    min_x = clamp(x1, 0.0, float(width - 2))
+    min_y = clamp(y1, 0.0, float(height - 2))
+    max_x = clamp(x2, min_x + 1.0, float(width))
+    max_y = clamp(y2, min_y + 1.0, float(height))
+    rx1 = clamp(cx - bw * 0.5, min_x, max(min_x, max_x - bw))
+    ry1 = clamp(cy - bh * 0.5, min_y, max(min_y, max_y - bh))
+    rx2 = min(max_x, rx1 + bw)
+    ry2 = min(max_y, ry1 + bh)
     return (int(round(rx1)), int(round(ry1)), int(round(rx2)), int(round(ry2)))
 
 

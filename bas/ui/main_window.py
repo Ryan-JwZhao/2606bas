@@ -1209,6 +1209,34 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                 )
                 best = capture_result.observation
 
+                if pattern.emphasis_zone == "center" and best is None:
+                    retry = QtWidgets.QMessageBox.warning(
+                        self,
+                        "中心 ChArUco 预检失败",
+                        "相机没有识别到投影在台面中心的黑白校准板。\n\n"
+                        "请关闭或调暗球桌照明灯，确认投影清晰对焦且黑白方格没有过曝，"
+                        "然后选择“重试”。如果仍失败，可把相机曝光从当前值调低1～2档后再次校准。",
+                        QtWidgets.QMessageBox.Retry | QtWidgets.QMessageBox.Cancel,
+                        QtWidgets.QMessageBox.Retry,
+                    )
+                    if retry == QtWidgets.QMessageBox.Retry:
+                        self._append_log("中心图样预检失败，等待现场调整照明/曝光后重试。")
+                        capture_result = collect_linked_pattern_observation(
+                            pattern,
+                            read_calibration_frame,
+                            undistort_points=undistort,
+                            transition_frames=8,
+                            max_detection_frames=30,
+                            inter_frame_delay_seconds=0.03,
+                            on_frame=show_calibration_frame,
+                        )
+                        best = capture_result.observation
+                    if best is None:
+                        raise RuntimeError(
+                            "中心 ChArUco 预检失败。请关闭球桌照明灯、检查投影和相机焦点，"
+                            "并将相机曝光适当调低后重试；中心图样可识别前不会继续采集边缘图样。"
+                        )
+
                 if not pattern.collect_for_solver:
                     continue
                 if best is None:

@@ -65,6 +65,38 @@ def test_build_linked_patterns_covers_full_and_focus_zones() -> None:
     assert any(pattern.emphasis_zone.startswith("pocket_") for pattern in patterns)
 
 
+def test_linked_focus_patterns_keep_full_board_size_at_projector_edges() -> None:
+    patterns = build_linked_patterns(_sample_geometry(), (1280, 800))
+    pocket_rois = [pattern.roi_proj for pattern in patterns if pattern.emphasis_zone.startswith("pocket_")]
+    widths = [x2 - x1 for x1, _y1, x2, _y2 in pocket_rois]
+    heights = [y2 - y1 for _x1, y1, _x2, y2 in pocket_rois]
+
+    assert max(widths) - min(widths) <= 1
+    assert max(heights) - min(heights) <= 1
+    assert min(x1 for x1, _y1, _x2, _y2 in pocket_rois) >= 64
+    assert min(y1 for _x1, y1, _x2, _y2 in pocket_rois) >= 64
+    assert max(x2 for _x1, _y1, x2, _y2 in pocket_rois) <= 1216
+    assert max(y2 for _x1, _y1, _x2, y2 in pocket_rois) <= 736
+
+
+@pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
+def test_all_linked_patterns_remain_detectable_after_camera_blur() -> None:
+    patterns = [
+        pattern
+        for pattern in build_linked_patterns(_sample_geometry(), (1280, 800))
+        if pattern.collect_for_solver
+    ]
+
+    matched_counts = []
+    for pattern in patterns:
+        blurred = cv2.GaussianBlur(pattern.image, (5, 5), 1.5)
+        observation = match_linked_pattern_observation(pattern, blurred)
+        matched_counts.append(0 if observation is None else observation.matched_count)
+
+    assert len(matched_counts) == 8
+    assert min(matched_counts) >= 6
+
+
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
 def test_render_charuco_board_handles_problematic_roi_dimensions() -> None:
     spec = CharucoBoardSpec(squares_x=8, squares_y=6, square_length_m=0.030, marker_length_m=0.022)
