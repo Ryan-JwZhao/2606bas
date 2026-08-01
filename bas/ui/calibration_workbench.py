@@ -125,15 +125,17 @@ class CalibrationWorkbenchDialog(QtWidgets.QDialog):
         self.settings_btn = QtWidgets.QPushButton("打开采集与几何设置")
         self.joint_btn = QtWidgets.QPushButton("开始联合校准")
         self.ball_btn = QtWidgets.QPushButton("开始球心补偿")
+        self.complete_btn = QtWidgets.QPushButton("开始完整校准向导（推荐）")
         self.show_result_btn = QtWidgets.QPushButton("投影显示校准结果")
         self.refresh_btn = QtWidgets.QPushButton("刷新校准状态")
         workflow.addWidget(self.start_camera_btn, 0, 0)
         workflow.addWidget(self.stop_camera_btn, 0, 1)
         workflow.addWidget(self.settings_btn, 0, 2)
-        workflow.addWidget(self.joint_btn, 1, 0)
-        workflow.addWidget(self.ball_btn, 1, 1)
-        workflow.addWidget(self.show_result_btn, 1, 2)
-        workflow.addWidget(self.refresh_btn, 2, 0, 1, 3)
+        workflow.addWidget(self.complete_btn, 1, 0, 1, 3)
+        workflow.addWidget(self.joint_btn, 2, 0)
+        workflow.addWidget(self.ball_btn, 2, 1)
+        workflow.addWidget(self.show_result_btn, 2, 2)
+        workflow.addWidget(self.refresh_btn, 3, 0, 1, 3)
         root.addWidget(workflow_box)
 
         verify_box = QtWidgets.QGroupBox("独立 Holdout 验收")
@@ -162,6 +164,7 @@ class CalibrationWorkbenchDialog(QtWidgets.QDialog):
         self.settings_btn.clicked.connect(self._open_settings)
         self.joint_btn.clicked.connect(self._run_joint_calibration)
         self.ball_btn.clicked.connect(self._run_ball_compensation)
+        self.complete_btn.clicked.connect(self._run_complete_calibration)
         self.show_result_btn.clicked.connect(self._show_result)
         self.refresh_btn.clicked.connect(self.refresh)
         self.browse_holdout_btn.clicked.connect(self._browse_holdout)
@@ -268,6 +271,10 @@ class CalibrationWorkbenchDialog(QtWidgets.QDialog):
 
     def _run_joint_calibration(self) -> None:
         self.operator.run_linked_projector_calibration()
+        self.refresh()
+
+    def _run_complete_calibration(self) -> None:
+        self.operator.run_complete_calibration_wizard()
         self.refresh()
 
     def _run_ball_compensation(self) -> None:

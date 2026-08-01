@@ -2,8 +2,21 @@
 
 工业相机旋转、相机—投影仪联合校准与球心补偿的完整现场重标定步骤见
 [`docs/recalibration/README.md`](docs/recalibration/README.md)。
+从首次安装开始执行的详细现场 SOP 见
+[`docs/industrial_camera_calibration_sop.md`](docs/industrial_camera_calibration_sop.md)。
 新的纯图形化校准入口说明见
 [`docs/calibration_workbench/README.md`](docs/calibration_workbench/README.md)。
+
+### 完整几何校准向导
+
+主界面打开“校准工作台”，点击“开始完整校准向导（推荐）”，即可从一个入口连续完成：
+
+1. 相机—投影仪联合校准；
+2. 清空台面并保留一颗标准球；
+3. 球心补偿自动采样与质量验收。
+
+联合校准完成后，向导会暂停提示现场切换台面状态，确认后自动进入球心补偿。
+两个阶段仍分别生成校准文件；任一阶段失败或取消时不会显示为完整校准成功，已成功保存的联合校准可稍后继续用于单独执行球心补偿。
 
 ## 简介
 

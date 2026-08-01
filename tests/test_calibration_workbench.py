@@ -17,6 +17,7 @@ from bas import runtime_env
 runtime_env.preload_torch_for_backend = lambda _backend: None
 
 from bas.ui.calibration_workbench import CalibrationWorkbenchDialog, assess_calibration_workbench
+from bas.ui.complete_calibration_wizard import run_complete_calibration_steps
 
 
 def _app() -> QtWidgets.QApplication:
@@ -62,6 +63,7 @@ def test_workbench_gui_disables_only_geometry_dependent_actions_before_calibrati
         open_settings=lambda: calls.append("settings"),
         run_linked_projector_calibration=lambda: calls.append("joint"),
         run_engineered_ball_compensation_wizard=lambda: calls.append("ball"),
+        run_complete_calibration_wizard=lambda: calls.append("complete"),
         show_projector_calibration_result=lambda _calibration: calls.append("show"),
         show_projector_residual_overlay=lambda _calibration: calls.append("residual"),
     )
@@ -74,9 +76,13 @@ def test_workbench_gui_disables_only_geometry_dependent_actions_before_calibrati
 
     assert dialog.start_camera_btn.isEnabled() is True
     assert dialog.joint_btn.isEnabled() is True
+    assert dialog.complete_btn.isEnabled() is True
     assert dialog.ball_btn.isEnabled() is False
     assert dialog.verify_btn.isEnabled() is False
     assert "180" not in dialog.projection_state.text()
+
+    dialog.complete_btn.click()
+    assert calls == ["complete"]
 
     dialog.close()
     parent.close()
@@ -128,6 +134,7 @@ def test_workbench_reuses_last_actual_capture_size_after_pipeline_stops(tmp_path
         open_settings=lambda: None,
         run_linked_projector_calibration=lambda: None,
         run_engineered_ball_compensation_wizard=lambda: None,
+        run_complete_calibration_wizard=lambda: None,
         show_projector_calibration_result=lambda _calibration: None,
         show_projector_residual_overlay=lambda _calibration: None,
     )
@@ -141,3 +148,43 @@ def test_workbench_reuses_last_actual_capture_size_after_pipeline_stops(tmp_path
     dialog.close()
     parent.close()
     app.processEvents()
+
+
+def test_complete_calibration_runs_both_phases_in_order() -> None:
+    calls: list[str] = []
+
+    result = run_complete_calibration_steps(
+        lambda: calls.append("projection") or True,
+        lambda: calls.append("prepare_ball") or True,
+        lambda: calls.append("ball") or True,
+    )
+
+    assert result.completed is True
+    assert calls == ["projection", "prepare_ball", "ball"]
+
+
+def test_complete_calibration_stops_when_projection_fails() -> None:
+    calls: list[str] = []
+
+    result = run_complete_calibration_steps(
+        lambda: calls.append("projection") or False,
+        lambda: calls.append("prepare_ball") or True,
+        lambda: calls.append("ball") or True,
+    )
+
+    assert result.stage == "projection_failed"
+    assert calls == ["projection"]
+
+
+def test_complete_calibration_can_pause_after_projection_for_table_setup() -> None:
+    calls: list[str] = []
+
+    result = run_complete_calibration_steps(
+        lambda: calls.append("projection") or True,
+        lambda: calls.append("prepare_ball") or False,
+        lambda: calls.append("ball") or True,
+    )
+
+    assert result.stage == "ball_setup_cancelled"
+    assert result.projection_completed is True
+    assert calls == ["projection", "prepare_ball"]

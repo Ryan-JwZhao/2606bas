@@ -92,13 +92,21 @@ def timestamped_ball_compensation_output_path(path_value: Optional[str]) -> Path
 
 
 class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
-    def __init__(self, operator, parent: Optional[QtWidgets.QWidget] = None):
+    def __init__(
+        self,
+        operator,
+        parent: Optional[QtWidgets.QWidget] = None,
+        *,
+        auto_start: bool = False,
+        auto_close_on_success: bool = False,
+    ):
         super().__init__(parent or operator)
         self.operator = operator
         self._busy = False
         self._abort_requested = False
         self._saved_path: Optional[Path] = None
         self._samples: list[BallCompensationSample] = []
+        self._auto_close_on_success = bool(auto_close_on_success)
         self.setWindowTitle("工程球体补偿自动采样向导")
         self.resize(980, 820)
 
@@ -171,6 +179,8 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         close_btn.clicked.connect(self.reject)
         button_row.addWidget(close_btn)
         layout.addLayout(button_row)
+        if auto_start:
+            QtCore.QTimer.singleShot(0, self.run_sampling)
 
     def reject(self) -> None:
         if self._busy:
@@ -448,6 +458,8 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             )
             self.output_path_edit.setText(str(save_path))
             self._append_log(f"工程球体补偿文件已生成并写回当前设置: {save_path}")
+            if self._auto_close_on_success:
+                QtCore.QTimer.singleShot(0, self.accept)
         except _SamplingAborted:
             self.summary.setText("工程球体补偿采样已停止，未生成新的补偿文件。")
             self._append_log("工程球体补偿采样已停止。")

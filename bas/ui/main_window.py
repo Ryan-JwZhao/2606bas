@@ -81,6 +81,7 @@ from ..training import (
 from ..web_control import PocketNoticeTracker, WebControlServer
 from .cue_sector_preview import draw_cue_sector_candidate_box
 from .calibration_workbench import CalibrationWorkbenchDialog
+from .complete_calibration_wizard import CompleteCalibrationWizardDialog
 from .engineered_ball_compensation_wizard import EngineeredBallCompensationWizardDialog
 from .geometry_reference import draw_geometry_reference_lines
 from .projection_debug import append_projected_ball_overlays, append_projected_boundary_overlays
@@ -1033,12 +1034,20 @@ class SettingsDialog(QtWidgets.QDialog):
 
 
 class JointCalibrationWizardDialog(QtWidgets.QDialog):
-    def __init__(self, operator: "OperatorWindow", parent: Optional[QtWidgets.QWidget] = None):
+    def __init__(
+        self,
+        operator: "OperatorWindow",
+        parent: Optional[QtWidgets.QWidget] = None,
+        *,
+        auto_start: bool = False,
+        auto_close_on_success: bool = False,
+    ):
         super().__init__(parent or operator)
         self.operator = operator
         self._busy = False
         self._result = None
         self._saved_path: Optional[Path] = None
+        self._auto_close_on_success = bool(auto_close_on_success)
         self.setWindowTitle("一键联动校正")
         self.resize(920, 760)
 
@@ -1082,6 +1091,8 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
         close_btn.clicked.connect(self.reject)
         button_row.addWidget(close_btn)
         layout.addLayout(button_row)
+        if auto_start:
+            QtCore.QTimer.singleShot(0, self.run_calibration)
 
     def _append_log(self, text: str) -> None:
         stamp = time.strftime("%H:%M:%S")
@@ -1242,6 +1253,8 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
             )
             self._append_log(f"联动校正完成，结果已保存并加载: {self._saved_path}")
             self.show_result(calibration)
+            if self._auto_close_on_success:
+                QtCore.QTimer.singleShot(0, self.accept)
         except Exception as exc:
             self.summary.setText(f"联动校正失败: {exc}")
             self._append_log(f"联动校正失败: {exc}")
@@ -3863,13 +3876,30 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, "校准工作台打开失败", str(exc))
 
     @QtCore.pyqtSlot()
-    def run_linked_projector_calibration(self) -> None:
-        dialog = JointCalibrationWizardDialog(self, self)
+    def run_linked_projector_calibration(self, *, auto_start: bool = False) -> bool:
+        dialog = JointCalibrationWizardDialog(
+            self,
+            self,
+            auto_start=auto_start,
+            auto_close_on_success=auto_start,
+        )
         dialog.exec_()
+        return dialog._saved_path is not None and dialog._result is not None
 
     @QtCore.pyqtSlot()
-    def run_engineered_ball_compensation_wizard(self) -> None:
-        dialog = EngineeredBallCompensationWizardDialog(self, self)
+    def run_engineered_ball_compensation_wizard(self, *, auto_start: bool = False) -> bool:
+        dialog = EngineeredBallCompensationWizardDialog(
+            self,
+            self,
+            auto_start=auto_start,
+            auto_close_on_success=auto_start,
+        )
+        dialog.exec_()
+        return dialog._saved_path is not None
+
+    @QtCore.pyqtSlot()
+    def run_complete_calibration_wizard(self) -> None:
+        dialog = CompleteCalibrationWizardDialog(self, self)
         dialog.exec_()
 
     def _projector_calibration_overlay(self, calibration) -> ProjectionOverlay:
