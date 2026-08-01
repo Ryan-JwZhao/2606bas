@@ -8,6 +8,7 @@ from bas.calibration.charuco import CharucoBoardSpec, detect_charuco_corners, re
 from bas.calibration.linked import (
     LinkedCalibrationObservation,
     build_linked_patterns,
+    collect_linked_pattern_observation,
     match_linked_pattern_observation,
     projection_output_summary,
     solve_linked_projection_calibration,
@@ -73,6 +74,28 @@ def test_render_charuco_board_handles_problematic_roi_dimensions() -> None:
     assert image.shape == (209, 384, 3)
     assert points.shape[0] >= 4
     assert ids.size == points.shape[0]
+
+
+@pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
+def test_linked_pattern_collection_survives_delayed_camera_frames() -> None:
+    pattern = next(
+        pattern
+        for pattern in build_linked_patterns(_sample_geometry(), (1280, 800))
+        if pattern.emphasis_zone == "full"
+    )
+    stale = np.zeros_like(pattern.image)
+    frames = iter([stale] * 8 + [pattern.image] * 4)
+
+    capture = collect_linked_pattern_observation(
+        pattern,
+        lambda: next(frames, None),
+        transition_frames=8,
+        max_detection_frames=4,
+    )
+
+    assert capture.observation is not None
+    assert capture.observation.matched_count >= 6
+    assert capture.transition_frames_read == 8
 
 
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")

@@ -38,8 +38,8 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from ..app import PipelineOutput, RuntimePipeline
 from ..calibration import (
     build_linked_patterns,
+    collect_linked_pattern_observation,
     create_setting_aware_calibration_service,
-    match_linked_pattern_observation,
     projection_output_summary,
     solve_linked_projection_calibration,
 )
@@ -1181,32 +1181,61 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                     self.operator.projection_window.set_image(pattern.image)
                 self._append_log(f"切换图样: {pattern.title}")
                 self._pump_ui()
-                time.sleep(0.25)
+                if self.operator.projection_window is not None:
+                    self.operator.projection_window.repaint()
+                time.sleep(0.12)
 
-                best = None
-                for _ in range(6):
+                def read_calibration_frame() -> Optional[np.ndarray]:
                     packet = capture.read()
                     if packet is None or packet.image is None:
-                        continue
+                        return None
+                    return packet.image
+
+                def show_calibration_frame(frame: np.ndarray) -> None:
+                    nonlocal first_frame_shape
                     if first_frame_shape is None:
-                        first_frame_shape = packet.image.shape[:2]
-                    self._set_preview_image(packet.image)
+                        first_frame_shape = frame.shape[:2]
+                    self._set_preview_image(frame)
                     self._pump_ui()
-                    observation = match_linked_pattern_observation(pattern, packet.image, undistort_points=undistort)
-                    if observation is not None and (best is None or observation.matched_count > best.matched_count):
-                        best = observation
-                    time.sleep(0.05)
+
+                capture_result = collect_linked_pattern_observation(
+                    pattern,
+                    read_calibration_frame,
+                    undistort_points=undistort,
+                    transition_frames=8,
+                    max_detection_frames=18 if pattern.collect_for_solver else 2,
+                    inter_frame_delay_seconds=0.03,
+                    on_frame=show_calibration_frame,
+                )
+                best = capture_result.observation
 
                 if not pattern.collect_for_solver:
                     continue
                 if best is None:
-                    self._append_log(f"{pattern.title} 未检测到足够的 ChArUco 角点，跳过该图样。")
+                    self._append_log(
+                        f"{pattern.title} 未检测到足够的 ChArUco 角点，跳过该图样；"
+                        f"已刷新 {capture_result.transition_frames_read} 帧，"
+                        f"识别 {capture_result.detection_frames_read} 帧，匹配成功 0 帧。"
+                    )
                     continue
                 observations.append(best)
-                self._append_log(f"{pattern.title} 匹配角点 {best.matched_count} 个，重点区域 {best.emphasis_zone}。")
+                point_state = "有效" if best.matched_count >= 6 else "不足6个，不能参与求解"
+                self._append_log(
+                    f"{pattern.title} 匹配角点 {best.matched_count} 个（{point_state}），"
+                    f"重点区域 {best.emphasis_zone}；已刷新 {capture_result.transition_frames_read} 帧，"
+                    f"识别 {capture_result.detection_frames_read} 帧，"
+                    f"匹配成功 {capture_result.matched_frames} 帧。"
+                )
 
             if first_frame_shape is None:
                 raise RuntimeError("未能从相机读取任何画面，联动校正中止。")
+            usable_observations = [observation for observation in observations if observation.matched_count >= 6]
+            if len(usable_observations) < 2:
+                raise RuntimeError(
+                    "联动校正有效图样不足："
+                    f"{len(usable_observations)}/8。请查看上方每个图样的刷新帧、识别帧和匹配成功帧；"
+                    "若匹配始终为0，请检查投影画面是否完整落在台面、相机曝光和焦点是否能清楚看到黑白方格。"
+                )
             table_polygon_cam = None
             if not geometry.is_empty:
                 frame_h, frame_w = first_frame_shape

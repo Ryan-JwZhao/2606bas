@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import cv2
@@ -52,6 +53,77 @@ class LinkedCalibrationResult:
     projection: ProjectionCalibration
     observations: List[LinkedCalibrationObservation]
     summary: Dict[str, Any]
+
+
+@dataclass
+class LinkedPatternCaptureResult:
+    observation: Optional[LinkedCalibrationObservation]
+    transition_frames_read: int
+    detection_frames_read: int
+    matched_frames: int
+
+
+def collect_linked_pattern_observation(
+    pattern: LinkedCalibrationPattern,
+    read_frame: Callable[[], Optional[np.ndarray]],
+    *,
+    undistort_points: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+    transition_frames: int = 8,
+    max_detection_frames: int = 18,
+    inter_frame_delay_seconds: float = 0.0,
+    on_frame: Optional[Callable[[np.ndarray], None]] = None,
+) -> LinkedPatternCaptureResult:
+    """Flush transition frames, then retain the strongest pattern observation.
+
+    Camera backends may return buffered frames after the projector switches to a
+    new image. Those frames must not be associated with the new projector
+    coordinates, especially because adjacent focus patterns reuse ChArUco IDs.
+    """
+    transition_read = 0
+    delay = max(0.0, float(inter_frame_delay_seconds))
+    for _ in range(max(0, int(transition_frames))):
+        frame = read_frame()
+        if frame is None or frame.size == 0:
+            if delay > 0.0:
+                time.sleep(delay)
+            continue
+        transition_read += 1
+        if on_frame is not None:
+            on_frame(frame)
+        if delay > 0.0:
+            time.sleep(delay)
+
+    best: Optional[LinkedCalibrationObservation] = None
+    detection_read = 0
+    matched_frames = 0
+    for _ in range(max(1, int(max_detection_frames))):
+        frame = read_frame()
+        if frame is None or frame.size == 0:
+            if delay > 0.0:
+                time.sleep(delay)
+            continue
+        detection_read += 1
+        if on_frame is not None:
+            on_frame(frame)
+        observation = match_linked_pattern_observation(
+            pattern,
+            frame,
+            undistort_points=undistort_points,
+        )
+        if delay > 0.0:
+            time.sleep(delay)
+        if observation is None:
+            continue
+        matched_frames += 1
+        if best is None or observation.matched_count > best.matched_count:
+            best = observation
+
+    return LinkedPatternCaptureResult(
+        observation=best,
+        transition_frames_read=transition_read,
+        detection_frames_read=detection_read,
+        matched_frames=matched_frames,
+    )
 
 
 def build_linked_patterns(
