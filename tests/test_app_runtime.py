@@ -165,3 +165,33 @@ def test_uncalibrated_pipeline_returns_camera_frame_with_dense_geometry() -> Non
     assert output.frame.image.shape == (180, 320, 3)
     assert output.state.phase == "CALIBRATION_REQUIRED"
     assert pipeline.calibration.projection.is_valid is False
+
+
+def test_uncalibrated_training_pipeline_returns_calibration_required_preview() -> None:
+    config = AppConfig()
+    config.camera.backend = "synthetic"
+    config.camera.width = 320
+    config.camera.height = 180
+    config.camera.distortion_correction_enabled = False
+    config.detector.backend = "disabled"
+    config.training_detector.backend = "disabled"
+    config.training.operating_mode = "training"
+    config.training.scenario_id = "ordered_line_1_7"
+    config.calibration.camera_file = None
+    config.calibration.projection_file = None
+    config.calibration.legacy_projection_file = None
+    config.calibration.engineered_plane_projection_file = None
+    config.calibration.projection_mode = "engineered"
+    pipeline = RuntimePipeline(config)
+    pipeline.planner.plan = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("uncalibrated training must not call the geometry planner")
+    )
+    try:
+        output = pipeline.step()
+    finally:
+        pipeline.close()
+
+    assert output is not None
+    assert output.frame.image is not None
+    assert output.state.phase == "CALIBRATION_REQUIRED"
+    assert output.training is None

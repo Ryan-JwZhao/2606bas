@@ -23,7 +23,9 @@
 4. 在“颗星公式 → Rotation”保留现场小角度值；当前为 `-1.7°`。
 5. 保存后，相机方向与颗星公式参数会写入本机用户设置并在下次启动恢复。
 
-旧用户设置中的 `projection_calibration_rotation_degrees` 和 `projection_output_rotation_degrees` 会被安全忽略；重新保存设置后不会再写出这两个字段。
+旧用户设置中的 `projection_calibration_rotation_degrees` 和 `projection_output_rotation_degrees` 不再静默丢弃：当相机安装方向仍为 `0°` 时，程序在最终投影帧边界启用隐藏兼容层，分别保持旧校准画面和运行输出方向。兼容值会继续写回本机设置，避免仅保存一次设置就导致投影翻转。
+
+当相机安装方向已经迁移为非 `0°`（当前现场为 `180°`）时，旧投影旋转兼容层自动清零，防止双重旋转。新安装不会生成非零兼容值，也不重新开放投影旋转 GUI。
 
 ## 标注旋转
 

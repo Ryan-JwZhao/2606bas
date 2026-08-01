@@ -284,6 +284,10 @@ class ProjectionConfig:
     projector_height: int = 800
     screen_index: int = 1
     fullscreen: bool = True
+    # Hidden upgrade bridge for 0.11.16-era user settings. New installations
+    # keep both values at zero and use the canonical camera orientation.
+    legacy_calibration_rotation_degrees: int = 0
+    legacy_output_rotation_degrees: int = 0
     geometry_reference_enabled: bool = True
     auto_pocket_animation_enabled: bool = True
     auto_victory_animation_enabled: bool = True

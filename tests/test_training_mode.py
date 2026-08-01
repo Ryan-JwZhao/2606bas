@@ -713,6 +713,7 @@ def test_runtime_pipeline_routes_training_scenarios_through_existing_planners() 
     config.training.operating_mode = "training"
     config.replay.enabled = False
     pipeline = RuntimePipeline(config)
+    pipeline.calibration.projection.homography = np.eye(3, dtype=np.float64)
     try:
         observed_modes: list[str] = []
         guard = PocketGuardRegion(

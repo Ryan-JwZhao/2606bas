@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from .capture.orientation import normalize_frame_rotation_degrees
 from .config import AppConfig, normalize_exposure_control
 from .paths import PROJECT_ROOT
+from .projection.frame_transform import normalize_projection_rotation_degrees
 
 
 SETTINGS_PATH = PROJECT_ROOT / "local_settings" / "user_settings.json"
@@ -52,6 +53,8 @@ class UserSettings:
     projection_screen_index: Optional[int] = None
     projection_width: Optional[int] = None
     projection_height: Optional[int] = None
+    projection_calibration_rotation_degrees: Optional[int] = None
+    projection_output_rotation_degrees: Optional[int] = None
     projection_visible_inset_top_mm: Optional[float] = None
     projection_visible_inset_right_mm: Optional[float] = None
     projection_visible_inset_bottom_mm: Optional[float] = None
@@ -166,6 +169,18 @@ class UserSettings:
             config.camera.fps = int(self.fps)
         if self.frame_rotation_degrees is not None:
             config.camera.frame_rotation_degrees = normalize_frame_rotation_degrees(self.frame_rotation_degrees)
+        if config.camera.frame_rotation_degrees == 0:
+            if self.projection_calibration_rotation_degrees is not None:
+                config.projection.legacy_calibration_rotation_degrees = normalize_projection_rotation_degrees(
+                    self.projection_calibration_rotation_degrees
+                )
+            if self.projection_output_rotation_degrees is not None:
+                config.projection.legacy_output_rotation_degrees = normalize_projection_rotation_degrees(
+                    self.projection_output_rotation_degrees
+                )
+        else:
+            config.projection.legacy_calibration_rotation_degrees = 0
+            config.projection.legacy_output_rotation_degrees = 0
         if self._has("video_path"):
             config.camera.video_path = _clean_optional_text(self.video_path)
         if self._has("nori_sdk_root"):
@@ -419,6 +434,12 @@ class UserSettings:
             projection_screen_index=config.projection.screen_index,
             projection_width=config.projection.projector_width,
             projection_height=config.projection.projector_height,
+            projection_calibration_rotation_degrees=normalize_projection_rotation_degrees(
+                config.projection.legacy_calibration_rotation_degrees
+            ),
+            projection_output_rotation_degrees=normalize_projection_rotation_degrees(
+                config.projection.legacy_output_rotation_degrees
+            ),
             projection_visible_inset_top_mm=config.calibration.projection_visible_inset_top_mm,
             projection_visible_inset_right_mm=config.calibration.projection_visible_inset_right_mm,
             projection_visible_inset_bottom_mm=config.calibration.projection_visible_inset_bottom_mm,

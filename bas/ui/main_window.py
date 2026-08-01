@@ -803,6 +803,9 @@ class SettingsDialog(QtWidgets.QDialog):
         config.camera.frame_rotation_degrees = normalize_frame_rotation_degrees(
             self.frame_rotation_degrees.currentData()
         )
+        if config.camera.frame_rotation_degrees != 0:
+            config.projection.legacy_calibration_rotation_degrees = 0
+            config.projection.legacy_output_rotation_degrees = 0
         config.camera.distortion_correction_enabled = self.distortion_enabled.isChecked()
         config.camera.distortion_correction_file = self.distortion_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.camera.exposure_control = normalize_exposure_control(self.exposure_control.currentData())
@@ -1177,6 +1180,7 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
             capture = create_capture_service(self.operator.config.camera)
             capture_info = capture.info()
             actual_frame_size = (int(capture_info.width), int(capture_info.height))
+            self.operator.remember_calibration_frame_size(actual_frame_size)
             calibration = _create_calibration_workflow_service(
                 self.operator.config,
                 actual_frame_size=actual_frame_size,
@@ -1332,6 +1336,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.star_formula = StarFormulaConfig.from_mapping(self.user_settings.star_formula)
         self.pipeline: Optional[RuntimePipeline] = None
         self._pipeline_start_pending = False
+        self._last_calibration_frame_size: Optional[tuple[int, int]] = None
+        self._last_calibration_capture_signature: Optional[tuple] = None
         self.projection_window: Optional[ProjectionWindow] = None
         self.last_output: Optional[PipelineOutput] = None
         self._last_preview_bgr: Optional[np.ndarray] = None
@@ -2808,7 +2814,39 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.config.projection.projector_height,
             self.config.projection.screen_index,
             self.config.projection.fullscreen,
+            self.config.projection.legacy_calibration_rotation_degrees,
+            self.config.projection.legacy_output_rotation_degrees,
         )
+
+    def _calibration_capture_signature(self) -> tuple:
+        return (
+            self.config.camera.backend,
+            self.config.camera.device_index,
+            self.config.camera.nori_device_id,
+            self.config.camera.width,
+            self.config.camera.height,
+            self.config.camera.fps,
+            self.config.camera.frame_rotation_degrees,
+            self.config.camera.video_path,
+            self.config.camera.nori_sdk_root,
+            self.config.camera.distortion_correction_enabled,
+            self.config.camera.distortion_correction_file,
+        )
+
+    def remember_calibration_frame_size(self, size: tuple[int, int]) -> None:
+        width, height = int(size[0]), int(size[1])
+        if width <= 0 or height <= 0:
+            return
+        self._last_calibration_frame_size = (width, height)
+        self._last_calibration_capture_signature = self._calibration_capture_signature()
+
+    def calibration_actual_frame_size(self) -> Optional[tuple[int, int]]:
+        if self.pipeline is not None:
+            info = self.pipeline.capture.info()
+            self.remember_calibration_frame_size((int(info.width), int(info.height)))
+        if self._last_calibration_capture_signature != self._calibration_capture_signature():
+            return None
+        return self._last_calibration_frame_size
 
     def _state_machine_or_none(self):
         if self.pipeline is None:
@@ -3714,12 +3752,16 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
     def ensure_projection_window_for_operator(self) -> None:
         self._projection_calibration_mode = True
         self._ensure_projection_window()
+        if self.projection_window is not None:
+            self.projection_window.set_calibration_mode(True)
         self.projection_btn.setText("停止投影")
         self._append_log("投影窗口已打开，当前处于校正模式")
         self._update_module_status(self.last_output)
 
     def resume_runtime_projection(self) -> None:
         self._projection_calibration_mode = False
+        if self.projection_window is not None:
+            self.projection_window.set_calibration_mode(False)
         self._refresh_projection()
         self._append_log("投影已恢复实时 overlay")
         self._update_module_status(self.last_output)
@@ -4093,6 +4135,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
     def _pipeline_started(self, pipeline: RuntimePipeline) -> None:
         self._pipeline_start_pending = False
         self.pipeline = pipeline
+        capture_info = pipeline.capture.info()
+        self.remember_calibration_frame_size((int(capture_info.width), int(capture_info.height)))
         if self._manual_web_target_id is not None:
             self.pipeline.planner.set_manual_target(self._manual_web_target_id)
         self._recording_fps_estimator.reset()
@@ -4228,6 +4272,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if self.projection_window is not None:
             return
         self.projection_window = ProjectionWindow(self.config.projection)
+        self.projection_window.set_calibration_mode(self._projection_calibration_mode)
         self.projection_window.set_star_formula(self.star_formula)
         self.projection_window.show_on_configured_screen()
         self._projection_interaction.notify_boot_ready()

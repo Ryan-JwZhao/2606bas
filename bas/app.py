@@ -204,7 +204,6 @@ class RuntimePipeline:
         uncalibrated_preview_mode = (
             not projection_geometry_ready
             and not projection_only_training
-            and getattr(self, "operating_mode", RULES_MODE) != TRAINING_MODE
         )
         if uncalibrated_preview_mode:
             state = MatchStateFrame(

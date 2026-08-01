@@ -185,6 +185,10 @@ class CalibrationWorkbenchDialog(QtWidgets.QDialog):
             info = capture.info()
             if int(info.width) > 0 and int(info.height) > 0:
                 actual_frame_size = (int(info.width), int(info.height))
+        if actual_frame_size is None:
+            remembered_size = getattr(self.operator, "calibration_actual_frame_size", None)
+            if callable(remembered_size):
+                actual_frame_size = remembered_size()
         return create_setting_aware_calibration_service(
             self.operator.config.calibration,
             self.operator.config.camera,

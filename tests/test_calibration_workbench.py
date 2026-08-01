@@ -3,11 +3,15 @@ from __future__ import annotations
 import os
 from types import SimpleNamespace
 
+import numpy as np
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5 import QtWidgets
 
+from bas.calibration.projector import ProjectionCalibration
 from bas.config import AppConfig
+from bas.geometry_contract import projection_calibration_context
 from bas import runtime_env
 
 runtime_env.preload_torch_for_backend = lambda _backend: None
@@ -89,3 +93,53 @@ def test_workbench_enables_ball_and_holdout_after_joint_calibration() -> None:
     assert status.stage == "ball_compensation"
     assert status.ball_calibration_enabled is True
     assert status.verification_enabled is True
+
+
+def test_workbench_reuses_last_actual_capture_size_after_pipeline_stops(tmp_path) -> None:
+    app = _app()
+    config = AppConfig()
+    config.camera.width = 1920
+    config.camera.height = 1080
+    config.camera.distortion_correction_enabled = False
+    config.detector.backend = "debug_color"
+    config.calibration.projection_mode = "engineered"
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [1280, 0], [1280, 720], [0, 720]], dtype=np.float64),
+        np.array([[0, 0], [1280, 0], [1280, 720], [0, 720]], dtype=np.float64),
+        projector_size=(1280, 800),
+    )
+    projection.calibration_context = projection_calibration_context(
+        frame_width=1280,
+        frame_height=720,
+        frame_rotation_degrees=0,
+        camera_coordinate_domain="raw",
+        distortion_file=None,
+        projector_width=1280,
+        projector_height=800,
+    )
+    path = tmp_path / "projection.json"
+    projection.save(path)
+    config.calibration.engineered_plane_projection_file = str(path)
+    config.calibration.sync_projection_file_alias()
+    operator = SimpleNamespace(
+        config=config,
+        pipeline=None,
+        calibration_actual_frame_size=lambda: (1280, 720),
+        start_pipeline=lambda: None,
+        stop_pipeline=lambda: None,
+        open_settings=lambda: None,
+        run_linked_projector_calibration=lambda: None,
+        run_engineered_ball_compensation_wizard=lambda: None,
+        show_projector_calibration_result=lambda _calibration: None,
+        show_projector_residual_overlay=lambda _calibration: None,
+    )
+    parent = QtWidgets.QWidget()
+    dialog = CalibrationWorkbenchDialog(operator, parent)
+
+    assert dialog.status is not None
+    assert dialog.status.projection_valid is True
+    assert dialog.status.ball_calibration_enabled is True
+
+    dialog.close()
+    parent.close()
+    app.processEvents()
