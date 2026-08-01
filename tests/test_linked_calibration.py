@@ -208,3 +208,53 @@ def test_linked_calibration_requires_table_polygon_anchor() -> None:
             table_polygon_cam=None,
             minimum_pocket_zones=0,
         )
+
+
+def test_linked_calibration_accepts_two_pockets_when_points_cover_table() -> None:
+    def observation(pattern_id: str, zone: str, camera: np.ndarray) -> LinkedCalibrationObservation:
+        projector = camera * np.asarray([1.10, 1.05], dtype=np.float32) + np.asarray([20.0, 30.0], dtype=np.float32)
+        count = int(camera.shape[0])
+        return LinkedCalibrationObservation(pattern_id, pattern_id, zone, camera, projector, np.arange(count), count, count)
+
+    full = np.asarray(
+        [[x, y] for y in (90.0, 300.0, 510.0) for x in (120.0, 380.0, 640.0, 900.0)],
+        dtype=np.float32,
+    )
+    center = np.asarray([[x, y] for y in (230.0, 370.0) for x in (360.0, 500.0, 640.0)], dtype=np.float32)
+    pocket_lt = np.asarray([[x, y] for y in (80.0, 150.0) for x in (90.0, 170.0, 250.0)], dtype=np.float32)
+    pocket_rb = np.asarray([[x, y] for y in (450.0, 530.0) for x in (750.0, 840.0, 930.0)], dtype=np.float32)
+
+    result = solve_linked_projection_calibration(
+        [
+            observation("full", "full", full),
+            observation("center", "center", center),
+            observation("pocket_lt", "pocket_lt", pocket_lt),
+            observation("pocket_rb", "pocket_rb", pocket_rb),
+        ],
+        (1280, 800),
+        table_polygon_cam=np.asarray([[0, 0], [1000, 0], [1000, 600], [0, 600]], dtype=np.float32),
+    )
+
+    assert result.projection.is_valid
+    assert result.summary["pocket_zones_used"] == 2
+    assert result.summary["coverage_gate"] == "geometric"
+
+
+def test_linked_calibration_rejects_named_zones_when_points_are_clustered() -> None:
+    camera = np.asarray(
+        [[x, y] for y in (250.0, 300.0, 350.0) for x in (400.0, 500.0, 600.0)],
+        dtype=np.float32,
+    )
+    projector = camera * np.asarray([1.10, 1.05], dtype=np.float32) + np.asarray([20.0, 30.0], dtype=np.float32)
+    zones = ["full", "center", "pocket_lt", "pocket_rt", "pocket_rb", "pocket_lb"]
+    observations = [
+        LinkedCalibrationObservation(zone, zone, zone, camera, projector, np.arange(9), 9, 9)
+        for zone in zones
+    ]
+
+    with pytest.raises(RuntimeError, match="width="):
+        solve_linked_projection_calibration(
+            observations,
+            (1280, 800),
+            table_polygon_cam=np.asarray([[0, 0], [1000, 0], [1000, 600], [0, 600]], dtype=np.float32),
+        )

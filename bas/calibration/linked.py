@@ -21,6 +21,9 @@ from .projector import (
 
 PointArray = np.ndarray
 MAX_LINKED_PATTERN_CV_P95_PX = 5.0
+MIN_LINKED_COVERAGE_WIDTH_RATIO = 0.65
+MIN_LINKED_COVERAGE_HEIGHT_RATIO = 0.55
+MIN_LINKED_COVERAGE_HULL_AREA_RATIO = 0.30
 
 
 @dataclass
@@ -274,12 +277,29 @@ def solve_linked_projection_calibration(
     zones = {str(obs.emphasis_zone).strip().lower() for obs in usable}
     pocket_zones = {zone for zone in zones if zone.startswith("pocket_")}
     missing_core = [zone for zone in ("full", "center") if zone not in zones]
-    if missing_core or len(pocket_zones) < max(0, int(minimum_pocket_zones)):
+    spatial_coverage = _linked_spatial_coverage(camera_points, cam_poly)
+    geometric_coverage_ok = (
+        spatial_coverage["width_ratio"] >= MIN_LINKED_COVERAGE_WIDTH_RATIO
+        and spatial_coverage["height_ratio"] >= MIN_LINKED_COVERAGE_HEIGHT_RATIO
+        and spatial_coverage["hull_area_ratio"] >= MIN_LINKED_COVERAGE_HULL_AREA_RATIO
+    )
+    if missing_core or not geometric_coverage_ok:
         raise RuntimeError(
             "Linked calibration rejected: insufficient spatial coverage; "
             f"missing core zones={missing_core}, pocket zones={len(pocket_zones)}/"
-            f"{max(0, int(minimum_pocket_zones))}."
+            f"{max(0, int(minimum_pocket_zones))}, "
+            f"width={spatial_coverage['width_ratio']:.1%}/"
+            f"{MIN_LINKED_COVERAGE_WIDTH_RATIO:.0%}, "
+            f"height={spatial_coverage['height_ratio']:.1%}/"
+            f"{MIN_LINKED_COVERAGE_HEIGHT_RATIO:.0%}, "
+            f"hull={spatial_coverage['hull_area_ratio']:.1%}/"
+            f"{MIN_LINKED_COVERAGE_HULL_AREA_RATIO:.0%}."
         )
+    coverage_gate = (
+        "categorical"
+        if len(pocket_zones) >= max(0, int(minimum_pocket_zones))
+        else "geometric"
+    )
     pattern_cv_errors = _leave_one_pattern_out_errors(usable)
     pattern_cv_p95 = float(np.percentile(pattern_cv_errors, 95)) if pattern_cv_errors.size else float("inf")
     if not np.isfinite(pattern_cv_p95) or pattern_cv_p95 > MAX_LINKED_PATTERN_CV_P95_PX:
@@ -313,6 +333,8 @@ def solve_linked_projection_calibration(
         "matched_points_by_pattern": {obs.pattern_id: int(obs.matched_count) for obs in usable},
         "zones": sorted(zones),
         "pocket_zones_used": len(pocket_zones),
+        "coverage_gate": coverage_gate,
+        "spatial_coverage": spatial_coverage,
         "geometry_model": "independent_2d",
         "camera_extrinsics_used": False,
     }
@@ -326,12 +348,45 @@ def solve_linked_projection_calibration(
         "quality_gate_passed": True,
         "minimum_inlier_ratio": float(MIN_PROJECTION_INLIER_RATIO),
         "minimum_pocket_zones": max(0, int(minimum_pocket_zones)),
+        "coverage_gate": coverage_gate,
+        "spatial_coverage": spatial_coverage,
+        "minimum_coverage_width_ratio": float(MIN_LINKED_COVERAGE_WIDTH_RATIO),
+        "minimum_coverage_height_ratio": float(MIN_LINKED_COVERAGE_HEIGHT_RATIO),
+        "minimum_coverage_hull_area_ratio": float(MIN_LINKED_COVERAGE_HULL_AREA_RATIO),
         "maximum_inlier_p95_px": float(MAX_PROJECTION_INLIER_P95_PX),
         "pattern_cv_p95_px": pattern_cv_p95,
         "maximum_pattern_cv_p95_px": float(MAX_LINKED_PATTERN_CV_P95_PX),
     })
     projection.quality_report.update(projection.calibration_error_stats())
     return LinkedCalibrationResult(projection=projection, observations=usable, summary=summary)
+
+
+def _linked_spatial_coverage(camera_points: np.ndarray, table_polygon_cam: np.ndarray) -> Dict[str, float]:
+    points = ensure_numpy_points(camera_points).astype(np.float32)
+    polygon = polygon_quad(ensure_numpy_points(table_polygon_cam)).astype(np.float32)
+    if points.shape[0] < 3 or polygon.shape[0] != 4:
+        return {"width_ratio": 0.0, "height_ratio": 0.0, "hull_area_ratio": 0.0}
+    normalized_rect = np.asarray(
+        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+        dtype=np.float32,
+    )
+    camera_to_normalized = cv2.getPerspectiveTransform(polygon, normalized_rect)
+    normalized = cv2.perspectiveTransform(
+        points.reshape((-1, 1, 2)),
+        camera_to_normalized,
+    ).reshape((-1, 2))
+    normalized = normalized[np.all(np.isfinite(normalized), axis=1)]
+    if normalized.shape[0] < 3:
+        return {"width_ratio": 0.0, "height_ratio": 0.0, "hull_area_ratio": 0.0}
+    width_ratio = float(np.clip(np.max(normalized[:, 0]) - np.min(normalized[:, 0]), 0.0, 1.0))
+    height_ratio = float(np.clip(np.max(normalized[:, 1]) - np.min(normalized[:, 1]), 0.0, 1.0))
+    hull = cv2.convexHull(normalized.astype(np.float32)).reshape((-1, 2))
+    hull_area_ratio = float(np.clip(abs(cv2.contourArea(hull.reshape((-1, 1, 2)))), 0.0, 1.0))
+    return {
+        "width_ratio": width_ratio,
+        "height_ratio": height_ratio,
+        "hull_area_ratio": hull_area_ratio,
+    }
 
 
 def _leave_one_pattern_out_errors(observations: Sequence[LinkedCalibrationObservation]) -> np.ndarray:
