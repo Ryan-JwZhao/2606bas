@@ -40,6 +40,7 @@ from ..calibration import (
     build_linked_patterns,
     collect_linked_pattern_observation,
     create_setting_aware_calibration_service,
+    linked_calibration_runtime_summary,
     projection_output_summary,
     solve_linked_projection_calibration,
 )
@@ -1130,6 +1131,7 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
         self._set_busy(True)
         self.progress.setValue(0)
         self._append_log("联动校正开始，准备同步当前配置。")
+        self._append_log(f"联动校正实现: {linked_calibration_runtime_summary()}")
         try:
             self.operator._sync_config_from_controls()
             if (
@@ -4676,6 +4678,9 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if self.projection_window is not None:
             self.projection_window.close()
         super().closeEvent(event)
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            QtCore.QTimer.singleShot(0, app.quit)
 
 
 def _point_int(point) -> tuple[int, int]:
@@ -4687,6 +4692,7 @@ def run_operator_ui(config: AppConfig) -> int:
     configure_logging(config.logging.directory, config.logging.level)
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     app.setApplicationName("BAS Control Console")
+    app.setQuitOnLastWindowClosed(True)
     app.setStyle("Fusion")
     window = OperatorWindow(config)
     window.showMaximized()

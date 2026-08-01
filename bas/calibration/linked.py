@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import cv2
@@ -24,6 +25,7 @@ MAX_LINKED_PATTERN_CV_P95_PX = 5.0
 MIN_LINKED_COVERAGE_WIDTH_RATIO = 0.55
 MIN_LINKED_COVERAGE_HEIGHT_RATIO = 0.55
 MIN_LINKED_COVERAGE_HULL_AREA_RATIO = 0.25
+LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v5"
 
 
 @dataclass
@@ -64,6 +66,17 @@ class LinkedPatternCaptureResult:
     transition_frames_read: int
     detection_frames_read: int
     matched_frames: int
+
+
+def linked_calibration_runtime_summary() -> str:
+    return (
+        f"{LINKED_CALIBRATION_ALGORITHM_VERSION} | "
+        f"coverage={MIN_LINKED_COVERAGE_WIDTH_RATIO:.0%}/"
+        f"{MIN_LINKED_COVERAGE_HEIGHT_RATIO:.0%}/"
+        f"{MIN_LINKED_COVERAGE_HULL_AREA_RATIO:.0%} | "
+        "middle_pockets=diagonal_inset_v1 | "
+        f"source={Path(__file__).resolve()}"
+    )
 
 
 def collect_linked_pattern_observation(

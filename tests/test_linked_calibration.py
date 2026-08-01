@@ -9,6 +9,7 @@ from bas.calibration.linked import (
     LinkedCalibrationObservation,
     build_linked_patterns,
     collect_linked_pattern_observation,
+    linked_calibration_runtime_summary,
     match_linked_pattern_observation,
     projection_output_summary,
     solve_linked_projection_calibration,
@@ -63,6 +64,15 @@ def test_build_linked_patterns_covers_full_and_focus_zones() -> None:
     assert any(pattern.emphasis_zone == "full" for pattern in patterns)
     assert any(pattern.emphasis_zone == "center" for pattern in patterns)
     assert any(pattern.emphasis_zone.startswith("pocket_") for pattern in patterns)
+
+
+def test_linked_calibration_runtime_summary_identifies_loaded_implementation() -> None:
+    summary = linked_calibration_runtime_summary()
+
+    assert "linked-geometry-v5" in summary
+    assert "coverage=55%/55%/25%" in summary
+    assert "middle_pockets=diagonal_inset_v1" in summary
+    assert "bas" in summary and "linked.py" in summary
 
 
 def test_linked_focus_patterns_keep_full_board_size_at_projector_edges() -> None:
