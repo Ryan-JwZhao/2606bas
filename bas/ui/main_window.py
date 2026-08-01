@@ -66,7 +66,7 @@ from ..projection.window import ProjectionWindow
 from ..recording_fps import RecordingFpsEstimator
 from ..remote_control import RemoteCommand, RemoteCommandQueue
 from ..route_freeze import MotionRouteFreezeController
-from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
+from ..route_geometry import cue_alignment_start, rule_cue_separation_end
 from ..schemas import MatchPhase, OverlayCircle, OverlayLine, ProjectionOverlay, to_jsonable
 from ..state import normalize_state_machine_engine
 from ..state_debug import StateDebugSession, StateDebugSessionResult
@@ -78,7 +78,6 @@ from ..training import (
     list_training_scenarios,
     normalize_operating_mode,
 )
-from ..utils import unit
 from ..web_control import PocketNoticeTracker, WebControlServer
 from .cue_sector_preview import draw_cue_sector_candidate_box
 from .calibration_workbench import CalibrationWorkbenchDialog
@@ -285,27 +284,14 @@ class SettingsDialog(QtWidgets.QDialog):
         self.inline_path = self._path_row(config.geometry.inline_path, "JSON (*.json);;所有文件 (*.*)")
         self.pocket_path = self._path_row(config.geometry.pocket_path, "JSON (*.json);;所有文件 (*.*)")
         self.camera_calibration_file = self._path_row(config.calibration.camera_file, "OpenCV 标定文件 (*.yaml *.yml *.xml);;所有文件 (*.*)")
-        self.projection_mode = QtWidgets.QComboBox()
-        self.projection_mode.addItem("独立二维几何（新）", "engineered")
-        selected_mode = "engineered"
-        selected_index = self.projection_mode.findData(selected_mode)
-        self.projection_mode.setCurrentIndex(max(0, selected_index))
-        self._legacy_projection_file = config.calibration.legacy_projection_file
-        self._engineered_projection_file = config.calibration.engineered_plane_projection_file
-        if not self._legacy_projection_file and selected_mode == "legacy":
-            self._legacy_projection_file = config.calibration.projection_file
-        if not self._engineered_projection_file and selected_mode == "engineered":
-            self._engineered_projection_file = config.calibration.projection_file
-        self._projection_mode_for_path = selected_mode
         self.projection_calibration_file = self._path_row(
-            self._active_projection_path_for_mode(selected_mode),
+            config.calibration.projection_file,
             "投影平面校正文件 (*.json);;所有文件 (*.*)",
         )
         self.engineered_ball_compensation_file = self._path_row(
             config.calibration.engineered_ball_compensation_file,
             "球体补偿文件 (*.json);;所有文件 (*.*)",
         )
-        self.projection_mode.currentIndexChanged.connect(self._projection_mode_changed)
         self.detector_backend = QtWidgets.QComboBox()
         self.detector_backend.addItems(["disabled", "ultralytics", "debug_color"])
         self.detector_backend.setCurrentText(config.detector.backend)
@@ -822,14 +808,10 @@ class SettingsDialog(QtWidgets.QDialog):
         config.geometry.inline_path = self.inline_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.geometry.pocket_path = self.pocket_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.calibration.camera_file = self.camera_calibration_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
-        self._store_projection_path_for_current_mode()
-        config.calibration.legacy_projection_file = self._legacy_projection_file
-        config.calibration.engineered_plane_projection_file = self._engineered_projection_file
+        config.calibration.projection_file = self.projection_calibration_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.calibration.engineered_ball_compensation_file = (
             self.engineered_ball_compensation_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
         )
-        config.calibration.set_projection_mode(str(self.projection_mode.currentData() or "legacy"))
-        config.calibration.sync_projection_file_alias()
         config.projection.screen_index = int(self.proj_screen.currentData() or 0)
         config.projection.projector_width = int(self.proj_w.value())
         config.projection.projector_height = int(self.proj_h.value())
@@ -895,25 +877,6 @@ class SettingsDialog(QtWidgets.QDialog):
         self.training_prompt_x_pct.setEnabled(enabled)
         self.training_prompt_y_pct.setEnabled(enabled)
         self.training_prompt_font_size.setEnabled(enabled)
-
-    def _active_projection_path_for_mode(self, mode: str) -> Optional[str]:
-        normalized = "engineered" if str(mode).strip().lower() == "engineered" else "legacy"
-        if normalized == "engineered":
-            return self._engineered_projection_file or self._legacy_projection_file
-        return self._legacy_projection_file or self._engineered_projection_file
-
-    def _store_projection_path_for_current_mode(self) -> None:
-        value = self.projection_calibration_file.line_edit.text().strip() or None  # type: ignore[attr-defined]
-        if self._projection_mode_for_path == "engineered":
-            self._engineered_projection_file = value
-        else:
-            self._legacy_projection_file = value
-
-    def _projection_mode_changed(self, _index: int = 0) -> None:
-        self._store_projection_path_for_current_mode()
-        self._projection_mode_for_path = str(self.projection_mode.currentData() or "legacy")
-        next_path = self._active_projection_path_for_mode(self._projection_mode_for_path) or ""
-        self.projection_calibration_file.line_edit.setText(next_path)  # type: ignore[attr-defined]
 
     def _bind_projection_tuning_preview(self) -> None:
         widgets = [
@@ -1146,7 +1109,7 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
         self.preview.setPixmap(pix.scaled(self.preview.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
 
     def _projection_output_path(self) -> Path:
-        return timestamped_projection_output_path(self.operator.config.calibration.active_projection_file())
+        return timestamped_projection_output_path(self.operator.config.calibration.projection_file)
 
     @QtCore.pyqtSlot()
     def run_calibration(self) -> None:
@@ -1304,8 +1267,7 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
         *,
         actual_frame_size: Optional[tuple[int, int]] = None,
     ):
-        self.operator.config.calibration.set_active_projection_file(str(path))
-        self.operator.config.calibration.sync_projection_file_alias()
+        self.operator.config.calibration.projection_file = str(path)
         self.operator._sync_controls_from_config()
         self.operator._save_user_settings()
         return _create_calibration_workflow_service(
@@ -2212,7 +2174,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.training_scenario_combo.setCurrentIndex(scenario_index)
         self.training_scenario_combo.blockSignals(False)
         mode = str(getattr(self.config.planner, "shot_mode", "rule") or "rule").strip().lower()
-        idx = self.shot_mode_combo.findData("hook" if mode in {"hook", "hook_shot", "free", "free_shot"} else "rule")
+        idx = self.shot_mode_combo.findData("hook" if mode in {"hook", "hook_shot"} else "rule")
         self.shot_mode_combo.blockSignals(True)
         self.shot_mode_combo.setCurrentIndex(max(0, idx))
         self.shot_mode_combo.blockSignals(False)
@@ -2778,8 +2740,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.config.training_detector.detect_fps_limit_hz,
             self.config.training.pocket_proximity_mm,
             self.config.calibration.camera_file,
-            self.config.calibration.normalized_projection_mode(),
-            self.config.calibration.active_projection_file(),
+            self.config.calibration.projection_file,
             self.config.calibration.engineered_ball_compensation_file,
             self.config.calibration.table_width_mm,
             self.config.calibration.table_height_mm,
@@ -3485,10 +3446,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
     def _draw_plan_preview(self, image: np.ndarray, out: PipelineOutput) -> None:
         if self.pipeline is None:
             return
-        if out.plan.shot_mode == "free":
-            if out.plan.free_route is not None:
-                self._draw_free_plan_preview(image, out.plan.free_route)
-            return
         if out.plan.best is not None:
             self._draw_rule_plan_preview(image, out.plan.best)
 
@@ -3576,51 +3533,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         pocket_px = self._table_mm_to_camera_px([pocket])
         if pocket_px.shape[0] >= 1:
             cv2.circle(image, _point_int(pocket_px[0]), max(6, radius_px // 2), route_color, style.circle_width, cv2.LINE_AA)
-
-    def _draw_free_plan_preview(self, image: np.ndarray, route) -> None:
-        route_color = (255, 255, 255)
-        cue_stick_color = route_color
-        radius_mm = float(max(1.0, route.cue_radius))
-        cue = np.asarray(route.cue_ball, dtype=np.float32)
-        tip = np.asarray(route.cue_stick_tip, dtype=np.float32)
-        tail = np.asarray(route.cue_stick_tail, dtype=np.float32)
-        aim_dir = unit(np.asarray(route.aim_direction, dtype=np.float32))
-        style = self._route_preview_stroke_style()
-        radius_px = max(6, int(round(self._camera_radius_px(cue, radius_mm))))
-
-        stick_px = self._table_mm_to_camera_px([tail, tip])
-        if stick_px.shape[0] >= 2:
-            cv2.line(image, _point_int(stick_px[0]), _point_int(stick_px[1]), cue_stick_color, style.solid_line_width, cv2.LINE_AA)
-
-        guide_back = cue - aim_dir * max(26.0, 2.2 * radius_mm)
-        self._draw_segment_trimmed(image, guide_back, cue, route_color, style.solid_line_width, 0.0, radius_mm)
-
-        nodes = [np.asarray(p, dtype=np.float32) for p in route.path_points or []]
-        collision_count = len(route.collision_points or [])
-        for i in range(max(0, len(nodes) - 1)):
-            start_radius = radius_mm if i <= collision_count else 0.0
-            end_radius = radius_mm if (i + 1) <= collision_count else 0.0
-            self._draw_segment_trimmed(image, nodes[i], nodes[i + 1], route_color, style.solid_line_width, start_radius, end_radius)
-
-        collisions = [np.asarray(p, dtype=np.float32) for p in route.collision_points or []]
-        normals = [np.asarray(n, dtype=np.float32) for n in route.collision_normals or []]
-        collision_types = list(route.collision_types or [])
-        for idx, collision in enumerate(collisions):
-            cam = self._table_mm_to_camera_px([collision])
-            if cam.shape[0] >= 1:
-                cv2.circle(image, _point_int(cam[0]), radius_px, route_color, style.circle_width, cv2.LINE_AA)
-            if idx >= len(collision_types) or str(collision_types[idx]) != "ball":
-                continue
-            normal = unit(normals[idx] if idx < len(normals) else aim_dir)
-            hit_center = collision + normal * (2.0 * radius_mm)
-            table = self.pipeline.calibration.table if self.pipeline is not None else None
-            hit_end = estimate_route_end(
-                hit_center,
-                normal,
-                self._inner_polygon_table(),
-                fallback_length_mm=float(np.hypot(table.width_mm, table.height_mm)) if table is not None else 600.0,
-            )
-            self._draw_dashed_segment_trimmed(image, hit_center, hit_end, route_color, style.dashed_line_width, radius_mm, 0.0)
 
     def _camera_radius_px(self, point_mm, radius_mm: float) -> float:
         point = np.asarray(point_mm, dtype=np.float32).reshape((2,))
@@ -3820,7 +3732,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
                 idle_state_detail += f" / debug {self._deep_debug_last_result.session_dir.name}"
             self._set_module_status("状态机", "待机", idle_state_detail)
             self._set_module_status("规划", "待机", "GeometryPhysics")
-            self._set_module_status("标定", "未加载", self.config.calibration.active_projection_file() or "未设置")
+            self._set_module_status("标定", "未加载", self.config.calibration.projection_file or "未设置")
             self.hold_state_btn.setText("冻结状态机")
             self._refresh_review_controls()
             return
@@ -3941,7 +3853,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
     @QtCore.pyqtSlot()
     def open_calibration_workbench(self) -> None:
         self._sync_config_from_controls()
-        self.config.calibration.set_projection_mode("engineered")
         self._save_user_settings()
         self._append_log("正在打开独立几何校准工作台")
         try:
@@ -4548,11 +4459,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if out.plan.shot_mode == "hook" and out.plan.best is None:
             lock_id = f" #{out.plan.locked_target_id}" if out.plan.locked_target_id is not None else ""
             self.best_label.setText(f"勾球模式{lock_id}\n状态 {out.plan.hook_status}\n无理论进球路线")
-            self.candidates.setRowCount(0)
-            return
-        if out.plan.shot_mode == "free":
-            collision_count = len(out.plan.free_route.collision_points) if out.plan.free_route is not None else 0
-            self.best_label.setText(f"自由模式\n状态 {out.plan.free_status}\n碰撞 {collision_count}")
             self.candidates.setRowCount(0)
             return
         if out.plan.shot_mode == "target" and out.plan.best is None:

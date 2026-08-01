@@ -212,16 +212,6 @@ class MotionRouteFreezeController:
 
 def _plan_signature(plan: ShotPlan) -> tuple:
     shot_mode = str(getattr(plan, "shot_mode", "rule") or "rule").strip().lower()
-    if shot_mode == "free":
-        route = getattr(plan, "free_route", None)
-        if route is None:
-            return ("free", None, (), 0)
-        return (
-            "free",
-            getattr(route, "pocket_index", None),
-            tuple(str(v) for v in getattr(route, "collision_types", []) or []),
-            len(getattr(route, "path_points", []) or []),
-        )
     if shot_mode == "target":
         best = getattr(plan, "best", None)
         if best is None:
@@ -256,9 +246,6 @@ def _plan_score(plan: ShotPlan) -> float:
             return float(best.score)
         except (TypeError, ValueError):
             return float("-inf")
-    route = getattr(plan, "free_route", None)
-    if route is not None:
-        return 0.0
     return float("-inf")
 
 
@@ -267,8 +254,6 @@ def _route_delta_mm(first: ShotPlan, second: ShotPlan) -> float:
     second_mode = str(getattr(second, "shot_mode", "rule") or "rule").strip().lower()
     if first_mode != second_mode:
         return float("inf")
-    if first_mode == "free":
-        return _free_route_delta_mm(getattr(first, "free_route", None), getattr(second, "free_route", None))
     if first_mode == "target":
         return _target_route_delta_mm(getattr(first, "best", None), getattr(second, "best", None))
     return _rule_route_delta_mm(getattr(first, "best", None), getattr(second, "best", None))
@@ -306,21 +291,6 @@ def _target_route_delta_mm(first: Optional[ShotCandidate], second: Optional[Shot
     for first_point, second_point in zip(first_points, second_points):
         distances.append(_point_delta_mm(first_point, second_point))
     return max(distances)
-
-
-def _free_route_delta_mm(first, second) -> float:
-    if first is None and second is None:
-        return 0.0
-    if first is None or second is None:
-        return float("inf")
-    distances = [_point_delta_mm(getattr(first, "cue_ball", (0.0, 0.0)), getattr(second, "cue_ball", (0.0, 0.0)))]
-    first_points = list(getattr(first, "path_points", []) or [])
-    second_points = list(getattr(second, "path_points", []) or [])
-    if len(first_points) != len(second_points):
-        return float("inf")
-    for first_point, second_point in zip(first_points, second_points):
-        distances.append(_point_delta_mm(first_point, second_point))
-    return max(distances) if distances else 0.0
 
 
 def _point_delta_mm(first, second) -> float:

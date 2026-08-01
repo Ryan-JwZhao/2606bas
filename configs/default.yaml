@@ -140,7 +140,6 @@ planner:
   cue_path_margin_mm: 3.0
   object_path_margin_mm: 3.0
   collision_padding_mm: 2.0
-  free_max_collisions: 2
   route_freeze_enabled: false
   route_freeze_enter_frames: 2
   route_freeze_release_frames: 8

@@ -116,9 +116,6 @@ class TrackerConfig:
 class CalibrationConfig:
     camera_file: Optional[str] = None
     projection_file: Optional[str] = None
-    projection_mode: str = "legacy"
-    legacy_projection_file: Optional[str] = None
-    engineered_plane_projection_file: Optional[str] = None
     engineered_ball_compensation_file: Optional[str] = None
     table_width_mm: float = 2540.0
     table_height_mm: float = 1270.0
@@ -140,33 +137,6 @@ class CalibrationConfig:
     ball_center_compensation_ref_y_px: float = 0.0
     ball_center_compensation_scale_x_pct: float = 0.0
     ball_center_compensation_scale_y_pct: float = 0.0
-
-    def normalized_projection_mode(self) -> str:
-        mode = str(self.projection_mode or "legacy").strip().lower()
-        return "engineered" if mode in {"engineered", "engineering"} else "legacy"
-
-    def set_projection_mode(self, mode: str | None) -> None:
-        self.projection_mode = "engineered" if str(mode or "").strip().lower() in {"engineered", "engineering"} else "legacy"
-        self.sync_projection_file_alias()
-
-    def active_projection_file(self) -> Optional[str]:
-        if self.normalized_projection_mode() == "engineered":
-            return self.engineered_plane_projection_file or self.projection_file or self.legacy_projection_file
-        return self.legacy_projection_file or self.projection_file or self.engineered_plane_projection_file
-
-    def set_active_projection_file(self, path: Optional[str]) -> None:
-        value = str(path).strip() if path is not None else None
-        value = value or None
-        if self.normalized_projection_mode() == "engineered":
-            self.engineered_plane_projection_file = value
-        else:
-            self.legacy_projection_file = value
-        self.projection_file = value
-
-    def sync_projection_file_alias(self) -> None:
-        self.projection_mode = self.normalized_projection_mode()
-        self.projection_file = self.active_projection_file()
-
 
 @dataclass
 class GeometryConfig:
@@ -227,7 +197,6 @@ class PlannerConfig:
     cue_path_margin_mm: float = 4.0
     object_path_margin_mm: float = 4.0
     collision_padding_mm: float = 2.0
-    free_max_collisions: int = 2
     route_freeze_enabled: bool = False
     route_freeze_enter_frames: int = 2
     route_freeze_release_frames: int = 8
@@ -404,7 +373,6 @@ class AppConfig:
             web_control=section("web_control", WebControlConfig),
             logging=section("logging", LoggingConfig),
         )
-        config.calibration.sync_projection_file_alias()
         return config
 
     def normalize_compat_settings(self) -> "AppConfig":
@@ -478,12 +446,6 @@ class AppConfig:
         if self.calibration.projection_file:
             p = resolve_path(self.calibration.projection_file, base=base)
             self.calibration.projection_file = str(p) if p else None
-        if self.calibration.legacy_projection_file:
-            p = resolve_path(self.calibration.legacy_projection_file, base=base)
-            self.calibration.legacy_projection_file = str(p) if p else None
-        if self.calibration.engineered_plane_projection_file:
-            p = resolve_path(self.calibration.engineered_plane_projection_file, base=base)
-            self.calibration.engineered_plane_projection_file = str(p) if p else None
         if self.calibration.engineered_ball_compensation_file:
             p = resolve_path(self.calibration.engineered_ball_compensation_file, base=base)
             self.calibration.engineered_ball_compensation_file = str(p) if p else None
@@ -505,5 +467,4 @@ class AppConfig:
         self.instant_replay.directory = str(
             resolve_path(self.instant_replay.directory, base=base) or Path(self.instant_replay.directory)
         )
-        self.calibration.sync_projection_file_alias()
         return self

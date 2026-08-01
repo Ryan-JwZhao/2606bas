@@ -105,7 +105,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
 
         intro = QtWidgets.QLabel(
-            "该向导会按预设采样网格自动投影目标圈。请先切到工程模式，并确保工程平面校准文件与球检测模型都有效。"
+            "该向导会按预设采样网格自动投影目标圈。请确保投影平面校准文件与球检测模型都有效。"
             "采样时建议清空台面，仅保留一颗球；把球移动到目标圈后，系统会自动等待位置稳定并记录样本。"
         )
         intro.setWordWrap(True)
@@ -116,7 +116,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         steps.setPlainText(
             "\n".join(
                 [
-                    "1. 在设置中切换到工程模式，并确认当前工程平面校准文件可加载。",
+                    "1. 在设置中确认当前投影平面校准文件可加载。",
                     "2. 启用可用的球检测后端；向导严格沿用当前工业相机畸变校正开关，不会自行开启校正。",
                     "3. 清空台面，仅保留一颗标准球。",
                     "4. 点击“开始自动采样”，按提示把球逐个移动到投影目标圈。",
@@ -250,12 +250,10 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         self._set_busy(True)
         self.progress.setValue(0)
         self.summary.setText("正在准备工程球体补偿采样。")
-        self._append_log("工程球体补偿自动采样开始，正在校验工程模式和检测链路。")
+        self._append_log("工程球体补偿自动采样开始，正在校验校准和检测链路。")
         try:
             self.operator._sync_config_from_controls()
             self.operator._save_user_settings()
-            if self.operator.config.calibration.normalized_projection_mode() != "engineered":
-                raise RuntimeError("请先在设置中切换到工程模式，再运行工程球体补偿向导。")
             if self.operator.pipeline is not None:
                 self._append_log("检测到实时采集正在运行，先自动停止以释放相机。")
                 self.operator.stop_pipeline()
@@ -275,7 +273,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 "严格遵循当前工业相机畸变校正开关"
             )
             if not calibration.projection.is_valid:
-                plane_path = self.operator.config.calibration.engineered_plane_projection_file or self.operator.config.calibration.active_projection_file()
+                plane_path = self.operator.config.calibration.projection_file
                 ball_path = self.operator.config.calibration.engineered_ball_compensation_file
                 same_path_hint = ""
                 if plane_path and ball_path:
@@ -288,7 +286,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     except Exception:
                         pass
                 raise RuntimeError(
-                    "当前工程模式的平面投影校准文件无效，无法继续进行球体补偿采样。"
+                    "当前投影平面校准文件无效，无法继续进行球体补偿采样。"
                     f"{same_path_hint}"
                 )
             detector = create_detector(self.operator.config.detector)
@@ -428,7 +426,6 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 save_path,
                 extra_data={
                     "ball_diameter_mm": float(calibration.table.ball_diameter_mm),
-                    "projection_mode": "engineered",
                     "projection_file": calibration.projection.source_path,
                     "settle_delay_seconds": float(ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS),
                     "samples": [sample.to_dict() for sample in self._samples],
@@ -437,7 +434,6 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             )
             self._saved_path = save_path
             self.operator.config.calibration.engineered_ball_compensation_file = str(save_path)
-            self.operator.config.calibration.sync_projection_file_alias()
             self.operator._sync_controls_from_config()
             self.operator._save_user_settings()
             self.operator._update_module_status()

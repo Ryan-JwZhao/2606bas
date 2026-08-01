@@ -82,11 +82,7 @@ def _append_projected_ball_marker(
     radius_px: float,
 ) -> bool:
     cx, cy = [float(v) for v in center_px]
-    try:
-        proj = calibration.ball_camera_px_to_projector_px(np.asarray([[cx, cy]], dtype=np.float32)).astype(np.float32)
-    except Exception:
-        return False
-    if calibration.is_engineered_projection:
+    if calibration.ball_compensation_model.is_valid:
         try:
             ellipse = calibration.ball_projector_ellipse((cx, cy))
         except Exception:
@@ -101,25 +97,21 @@ def _append_projected_ball_marker(
             )
         )
         return True
-    else:
-        radius = float(max(1.0, radius_px))
-        refs = np.asarray(
-            [
-                [cx, cy],
-                [cx + radius, cy],
-                [cx, cy + radius],
-            ],
-            dtype=np.float32,
-        )
-        try:
-            proj_refs = calibration.ball_camera_px_to_projector_px(refs).astype(np.float32)
-        except Exception:
-            return False
-        rx = float(np.linalg.norm(proj_refs[1] - proj_refs[0]))
-        ry = float(np.linalg.norm(proj_refs[2] - proj_refs[0]))
-        radius_proj = max(4.0, 0.5 * (rx + ry))
-    center = (float(proj[0, 0]), float(proj[0, 1]))
-    overlay.circles.append(OverlayCircle(center=center, radius=radius_proj, color=ROUTE_COLOR))
+    radius = float(max(1.0, radius_px))
+    refs = np.asarray(
+        [[cx, cy], [cx + radius, cy], [cx, cy + radius]],
+        dtype=np.float32,
+    )
+    try:
+        proj_refs = calibration.ball_camera_px_to_projector_px(refs).astype(np.float32)
+    except Exception:
+        return False
+    rx = float(np.linalg.norm(proj_refs[1] - proj_refs[0]))
+    ry = float(np.linalg.norm(proj_refs[2] - proj_refs[0]))
+    center = (float(proj_refs[0, 0]), float(proj_refs[0, 1]))
+    overlay.circles.append(
+        OverlayCircle(center=center, radius=max(4.0, 0.5 * (rx + ry)), color=ROUTE_COLOR)
+    )
     return True
 
 

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from bas.calibration.camera import CameraCalibration
+from bas.calibration.ball_compensation import BallCompensationModel
 from bas.calibration.projector import ProjectionCalibration
 from bas.calibration.service import CalibrationService
 from bas.schemas import Detection, ProjectionOverlay, TableModel, TrackObservation
@@ -32,7 +33,7 @@ def _service() -> CalibrationService:
     )
 
 
-def _engineered_service() -> CalibrationService:
+def _ball_compensated_service() -> CalibrationService:
     projection = ProjectionCalibration.fit_from_correspondences(
         np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
         np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
@@ -42,6 +43,11 @@ def _engineered_service() -> CalibrationService:
     return CalibrationService(
         camera=CameraCalibration(metadata={}),
         projection=projection,
+        ball_compensation_model=BallCompensationModel(
+            mode="engineered_ball_comp_v2",
+            control_points_camera_px=np.array([[100.0, 200.0]], dtype=np.float64),
+            delta_table_mm=np.array([[0.0, 0.0]], dtype=np.float64),
+        ),
         table=TableModel(
             width_mm=1000,
             height_mm=500,
@@ -49,7 +55,6 @@ def _engineered_service() -> CalibrationService:
             inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
             pockets_mm=[],
         ),
-        projection_mode="engineered",
     )
 
 
@@ -102,8 +107,8 @@ def test_projection_debug_falls_back_to_detections_when_tracks_absent() -> None:
     assert not overlay.labels
 
 
-def test_engineered_projection_debug_uses_physical_ball_radius() -> None:
-    service = _engineered_service()
+def test_ball_compensated_projection_debug_uses_physical_ball_radius() -> None:
+    service = _ball_compensated_service()
     overlay_small = ProjectionOverlay(overlay_id="debug_small", frame_id=1, projector_size=(1000, 500))
     overlay_large = ProjectionOverlay(overlay_id="debug_large", frame_id=1, projector_size=(1000, 500))
     track_small = TrackObservation(

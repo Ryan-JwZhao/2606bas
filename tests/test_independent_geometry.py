@@ -108,7 +108,6 @@ def test_ball_map_uses_direct_camera_to_known_table_targets() -> None:
         CameraCalibration(metadata={}),
         projection,
         _table(),
-        projection_mode="engineered",
         ball_compensation_model=model,
     )
     probe = np.asarray([[400.0, 230.0], [800.0, 430.0]], dtype=np.float32)
@@ -145,7 +144,6 @@ def test_ball_map_blends_continuously_at_calibrated_domain_edge() -> None:
         CameraCalibration(metadata={}),
         projection,
         _table(),
-        projection_mode="engineered",
         ball_compensation_model=model,
     )
     # The legacy rectangular support edge is x=36 px for this sample span.

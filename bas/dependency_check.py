@@ -62,9 +62,7 @@ def dependency_report() -> list[dict[str, str]]:
 
     _check_path(rows, "camera.distortion_correction_file", cfg.camera.distortion_correction_file, optional=not cfg.camera.distortion_correction_enabled)
     _check_path(rows, "calibration.camera_file", cfg.calibration.camera_file, optional=True)
-    _check_path(rows, "calibration.projection_file", cfg.calibration.active_projection_file(), optional=True)
-    _check_path(rows, "calibration.legacy_projection_file", cfg.calibration.legacy_projection_file, optional=True)
-    _check_path(rows, "calibration.engineered_plane_projection_file", cfg.calibration.engineered_plane_projection_file, optional=True)
+    _check_path(rows, "calibration.projection_file", cfg.calibration.projection_file, optional=True)
     _check_path(rows, "calibration.engineered_ball_compensation_file", cfg.calibration.engineered_ball_compensation_file, optional=True)
     _check_path(rows, "geometry.outline_path", cfg.geometry.outline_path, optional=True)
     _check_path(rows, "geometry.inline_path", cfg.geometry.inline_path, optional=True)

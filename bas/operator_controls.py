@@ -8,7 +8,7 @@ from .schemas import Event
 
 def normalize_shot_mode(value: str | None) -> str:
     mode = str(value or "rule").strip().lower()
-    return "hook" if mode in {"hook", "hook_shot", "free", "free_shot"} else "rule"
+    return "hook" if mode in {"hook", "hook_shot"} else "rule"
 
 
 def normalize_target_group(value: str | None) -> Optional[str]:

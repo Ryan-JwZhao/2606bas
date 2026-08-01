@@ -10,7 +10,7 @@ from bas.remote_control import RemoteCommandQueue, normalize_remote_action
 def test_remote_command_queue_roundtrip(tmp_path: Path) -> None:
     queue = RemoteCommandQueue(tmp_path / "queue")
 
-    written = queue.enqueue("free-shot-once", source="test")
+    written = queue.enqueue("hook-shot-once", source="test")
     drained = queue.drain()
 
     assert written.exists() is False
@@ -28,6 +28,5 @@ def test_remote_action_normalization_accepts_retro_clip_alias() -> None:
     assert normalize_remote_action("save-retro-clip") == "save_retro_clip"
 
 
-def test_remote_action_normalization_accepts_hook_and_migrates_legacy_free_alias() -> None:
+def test_remote_action_normalization_accepts_hook_alias() -> None:
     assert normalize_remote_action("hook-shot-once") == "hook_shot_once"
-    assert normalize_remote_action("free-shot-once") == "hook_shot_once"

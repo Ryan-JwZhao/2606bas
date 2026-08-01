@@ -102,7 +102,6 @@ def test_workbench_reuses_last_actual_capture_size_after_pipeline_stops(tmp_path
     config.camera.height = 1080
     config.camera.distortion_correction_enabled = False
     config.detector.backend = "debug_color"
-    config.calibration.projection_mode = "engineered"
     projection = ProjectionCalibration.fit_from_correspondences(
         np.array([[0, 0], [1280, 0], [1280, 720], [0, 720]], dtype=np.float64),
         np.array([[0, 0], [1280, 0], [1280, 720], [0, 720]], dtype=np.float64),
@@ -119,8 +118,7 @@ def test_workbench_reuses_last_actual_capture_size_after_pipeline_stops(tmp_path
     )
     path = tmp_path / "projection.json"
     projection.save(path)
-    config.calibration.engineered_plane_projection_file = str(path)
-    config.calibration.sync_projection_file_alias()
+    config.calibration.projection_file = str(path)
     operator = SimpleNamespace(
         config=config,
         pipeline=None,

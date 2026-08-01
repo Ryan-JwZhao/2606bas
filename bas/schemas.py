@@ -184,22 +184,6 @@ class ShotCandidate:
 
 
 @dataclass
-class FreeRouteSuggestion:
-    cue_ball: Point
-    cue_radius: float
-    cue_stick_tip: Point
-    cue_stick_tail: Point
-    aim_direction: Point
-    path_points: List[Point]
-    collision_points: List[Point]
-    collision_normals: List[Point]
-    collision_types: List[str] = field(default_factory=list)
-    collision_track_ids: List[Optional[int]] = field(default_factory=list)
-    pocket_index: Optional[int] = None
-    pocket_point: Optional[Point] = None
-
-
-@dataclass
 class ShotPlan:
     plan_id: str
     frame_id: int
@@ -208,8 +192,6 @@ class ShotPlan:
     best: Optional[ShotCandidate] = None
     shot_mode: str = "rule"
     hook_status: str = "off"
-    free_route: Optional[FreeRouteSuggestion] = None
-    free_status: str = "archived"
     planner_version: str = "geometry_physics_mvp_v1"
     locked_target_id: Optional[int] = None
     target_lock_status: str = "off"

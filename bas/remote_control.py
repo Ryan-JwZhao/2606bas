@@ -33,9 +33,6 @@ REMOTE_ACTION_ALIASES = {
     "toggle-target-group": "toggle_target_group",
     "hook_shot_once": "hook_shot_once",
     "hook-shot-once": "hook_shot_once",
-    # Legacy Stream Deck aliases migrate to hook mode; free-shot code is never invoked.
-    "free_shot_once": "hook_shot_once",
-    "free-shot-once": "hook_shot_once",
     "black_shot_once": "black_shot_once",
     "black-shot-once": "black_shot_once",
     "toggle_star_formula": "toggle_star_formula",

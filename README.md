@@ -42,7 +42,7 @@ BAS 是一个台球辅助系统，主要能力包括：
 - `bas/tracking`：跨帧跟踪
 - `bas/training`：0–15 编号球跟踪、训练项目、摆球校验、进球顺序验证与训练投影
 - `bas/state`：回合状态、进球判定与裁决逻辑
-- `bas/planning`：规则路线、勾球全局选优、target shot、cue sector 等模块；旧 `free_shot.py` 仅作历史封存
+- `bas/planning`：规则路线、勾球全局选优、target shot、cue sector 等模块
 - `bas/projection`：投影叠加与渲染
 - `bas/ui`：桌面控制台
 - `bas/web_control`：局域网 Web 控制服务、HTTP API、MJPEG 与 2604 移动端页面
@@ -391,9 +391,9 @@ state:
 1. 在桌面端或 Web 控制器选择“勾球模式”，即可持续显示当前花色的全局最优路线。
 2. 将球杆稳定对准某颗目标球并达到保持时间，可临时锁定该球；保持计时未完成前仍显示全局最优路线。规则模式原有的球杆范围选择逻辑保持不变，但勾球模式的自动选优不受该范围限制。
 3. 在 Web 实时画面中点击任意非白球，可临时只规划该球；点击白球会被拒绝。状态机确认 `SHOT_STARTED` 后自动解除手动锁定。
-4. Stream Deck 可使用 `scripts/BAS_SD_Toggle_Shot_Mode.cmd` 切换规则/勾球模式，使用 `scripts/BAS_SD_Hook_Shot_Once.cmd` 启用“下一杆勾球”。旧 `BAS_SD_Free_Shot_Once.cmd` 和 `free-shot-once` 命令仅作兼容别名，实际只进入新勾球逻辑。
+4. Stream Deck 可使用 `scripts/BAS_SD_Toggle_Shot_Mode.cmd` 切换规则/勾球模式，使用 `scripts/BAS_SD_Hook_Shot_Once.cmd` 启用“下一杆勾球”。
 
-旧 `bas/planning/free_shot.py`、相关历史数据结构和参数仍保留用于追溯，但主规划器不再导入、实例化或调用旧自由击球规划器。旧设置中的 `free` / `free_shot` 会在读取时迁移为 `hook`。
+已停用的旧自由击球规划器、接口、配置、数据结构和脚本均已删除；当前只维护规则模式与勾球模式。
 
 ## 编号球训练模式（YOLO11s）
 

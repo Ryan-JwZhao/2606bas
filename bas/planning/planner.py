@@ -177,7 +177,7 @@ class GeometryPhysicsPlanner:
 
     def _shot_mode(self, *, forced_shot_mode: Optional[str] = None) -> str:
         mode = str(forced_shot_mode if forced_shot_mode is not None else getattr(self.config, "shot_mode", "rule") or "rule").strip().lower()
-        return "hook" if mode in {"hook", "hook_shot", "free", "free_shot"} else "rule"
+        return "hook" if mode in {"hook", "hook_shot"} else "rule"
 
     def _empty_plan(
         self,

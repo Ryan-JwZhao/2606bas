@@ -145,7 +145,7 @@ class WebControlOperatorMixin:
             return self._web_result(True, "击球模式已切换")
         if action == "shot_mode_set":
             mode = str(payload.get("mode", "")).strip().lower()
-            if mode not in {"rule", "hook", "hook_shot", "free", "free_shot"}:
+            if mode not in {"rule", "hook", "hook_shot"}:
                 return self._web_result(False, f"未知击球模式: {mode}")
             self._set_base_shot_mode(mode, source="web")
             return self._web_result(True, "击球模式已设置")
@@ -153,9 +153,6 @@ class WebControlOperatorMixin:
             "shot_once_hook_arm",
             "shot_once_hook_clear",
             "shot_once_hook_toggle",
-            "shot_once_free_arm",
-            "shot_once_free_clear",
-            "shot_once_free_toggle",
         }:
             enabled = action.endswith("_arm") or (action.endswith("_toggle") and not self.control_state.hook_shot_active)
             if enabled:

@@ -143,9 +143,6 @@ def test_uncalibrated_pipeline_returns_camera_frame_with_dense_geometry() -> Non
     config.detector.backend = "disabled"
     config.calibration.camera_file = None
     config.calibration.projection_file = None
-    config.calibration.legacy_projection_file = None
-    config.calibration.engineered_plane_projection_file = None
-    config.calibration.projection_mode = "engineered"
     pipeline = RuntimePipeline(config)
     pipeline.geometry = SimpleNamespace(
         is_empty=False,
@@ -179,9 +176,6 @@ def test_uncalibrated_training_pipeline_returns_calibration_required_preview() -
     config.training.scenario_id = "ordered_line_1_7"
     config.calibration.camera_file = None
     config.calibration.projection_file = None
-    config.calibration.legacy_projection_file = None
-    config.calibration.engineered_plane_projection_file = None
-    config.calibration.projection_mode = "engineered"
     pipeline = RuntimePipeline(config)
     pipeline.planner.plan = lambda *_args, **_kwargs: (_ for _ in ()).throw(
         RuntimeError("uncalibrated training must not call the geometry planner")

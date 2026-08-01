@@ -9,9 +9,9 @@ import numpy as np
 
 from ..calibration.service import CalibrationService
 from ..config import ProjectionConfig
-from ..route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
-from ..schemas import FreeRouteSuggestion, OverlayCircle, OverlayLine, ProjectionOverlay, ShotCandidate, ShotPlan
-from ..utils import unit, wall_time_id
+from ..route_geometry import cue_alignment_start, rule_cue_separation_end
+from ..schemas import OverlayCircle, OverlayLine, ProjectionOverlay, ShotCandidate, ShotPlan
+from ..utils import wall_time_id
 from .star_formula import StarFormulaConfig, draw_star_formula, star_formula_stroke_metrics
 from .text import draw_overlay_texts
 
@@ -52,10 +52,6 @@ class OverlayBuilder:
             frame_id=plan.frame_id,
             projector_size=size,
         )
-        if plan.shot_mode == "free":
-            if plan.free_route is not None:
-                self._add_free_route(overlay, plan.free_route)
-            return overlay
         if plan.best is None:
             return overlay
         self._add_rule_route(overlay, plan.best)
@@ -126,66 +122,6 @@ class OverlayBuilder:
             )
         label_pos = (float(circles[0, 0] + 14), float(circles[0, 1] - 14))
         overlay.labels.append((label_pos, f"{candidate.score:.2f}", ROUTE_COLOR))
-
-    def _add_free_route(self, overlay: ProjectionOverlay, route: FreeRouteSuggestion) -> None:
-        style = projection_route_stroke_style(overlay.projector_size, self.star_formula)
-        cue = np.asarray(route.cue_ball, dtype=np.float32)
-        radius = float(max(1.0, route.cue_radius))
-        tip = np.asarray(route.cue_stick_tip, dtype=np.float32)
-        tail = np.asarray(route.cue_stick_tail, dtype=np.float32)
-        aim_dir = unit(np.asarray(route.aim_direction, dtype=np.float32))
-
-        self._append_line_mm(overlay, [tail, tip], color=CUE_STICK_COLOR, width=style.solid_line_width, label="cue_stick")
-        guide_back = cue - aim_dir * max(26.0, 2.2 * radius)
-        self._append_line_mm(overlay, [guide_back, cue], width=style.solid_line_width, trim_end_mm=radius, label="cue_guide")
-
-        nodes = [np.asarray(p, dtype=np.float32) for p in route.path_points]
-        collision_count = len(route.collision_points or [])
-        for idx, node in enumerate(nodes[1 : 1 + collision_count]):
-            overlay.circles.append(
-                self._projector_ellipse_circle(node, radius, ROUTE_COLOR, style.circle_width)
-            )
-
-        for i in range(max(0, len(nodes) - 1)):
-            start_radius = radius if i <= collision_count else 0.0
-            end_radius = radius if (i + 1) <= collision_count else 0.0
-            self._append_line_mm(
-                overlay,
-                [nodes[i], nodes[i + 1]],
-                width=style.solid_line_width,
-                trim_start_mm=start_radius,
-                trim_end_mm=end_radius,
-                label="free_path",
-            )
-
-        normals = [np.asarray(n, dtype=np.float32) for n in route.collision_normals or []]
-        collision_types = list(route.collision_types or [])
-        collisions = [np.asarray(p, dtype=np.float32) for p in route.collision_points or []]
-        for idx, collision in enumerate(collisions):
-            if idx >= len(collision_types) or str(collision_types[idx]) != "ball":
-                continue
-            normal = unit(normals[idx] if idx < len(normals) else aim_dir)
-            hit_center = collision + normal * (2.0 * radius)
-            hit_end = estimate_route_end(
-                hit_center,
-                normal,
-                np.asarray(self.calibration.table.projection_visible_polygon_mm or self.calibration.table.inner_polygon_mm, dtype=np.float32).reshape((-1, 2)),
-                fallback_length_mm=math.hypot(float(self.calibration.table.width_mm), float(self.calibration.table.height_mm)),
-            )
-            self._append_line_mm(
-                overlay,
-                [hit_center, hit_end],
-                width=style.dashed_line_width,
-                style="dashed",
-                trim_start_mm=radius,
-                label="free_hit_ball",
-            )
-
-        if route.pocket_point is not None:
-            pocket = np.asarray(route.pocket_point, dtype=np.float32)
-            overlay.circles.append(
-                self._projector_ellipse_circle(pocket, radius, ROUTE_COLOR, style.circle_width, scale=0.45, minimum=8.0)
-            )
 
     def _append_line_mm(
         self,

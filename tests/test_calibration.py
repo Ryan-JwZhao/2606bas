@@ -402,7 +402,6 @@ def test_holdout_ball_samples_use_ball_center_geometry() -> None:
             inner_polygon_mm=[(0, 0), (100, 0), (100, 50), (0, 50)],
             pockets_mm=[],
         ),
-        projection_mode="engineered",
         ball_compensation_model=BallCompensationModel(
             mode="direct",
             control_points_camera_px=controls,
@@ -537,8 +536,7 @@ def test_engineered_calibration_service_loads_plane_and_ball_compensation(tmp_pa
     )
 
     cfg = CalibrationConfig(
-        projection_mode="engineered",
-        engineered_plane_projection_file=str(plane_path),
+        projection_file=str(plane_path),
         engineered_ball_compensation_file=str(ball_path),
         table_width_mm=1000.0,
         table_height_mm=500.0,
@@ -548,7 +546,6 @@ def test_engineered_calibration_service_loads_plane_and_ball_compensation(tmp_pa
     service = create_calibration_service(cfg, distortion_correction_enabled=True)
     out = service.ball_camera_px_to_table_mm(np.array([[100.0, 200.0]], dtype=np.float32))
 
-    assert service.projection_mode == "engineered"
     assert service.projection.source_path == str(plane_path)
     assert service.ball_compensation_model.source_path == str(ball_path)
     assert np.allclose(out[0], [110.0, 195.0], atol=1e-3)
@@ -591,8 +588,7 @@ def test_engineered_service_audits_and_rejects_bad_legacy_full_grid_model(tmp_pa
         encoding="utf-8",
     )
     cfg = CalibrationConfig(
-        projection_mode="engineered",
-        engineered_plane_projection_file=str(plane_path),
+        projection_file=str(plane_path),
         engineered_ball_compensation_file=str(ball_path),
         table_width_mm=2540.0,
         table_height_mm=1270.0,

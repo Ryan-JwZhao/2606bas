@@ -127,7 +127,6 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "camera_coordinate_domain": (
                     "undistorted" if service.distortion_correction_enabled else "raw"
                 ),
-                "projection_runtime_mode": service.projection_mode,
                 "projection_valid": service.projection.is_valid,
                 "projection_source": service.projection.source_path,
                 "projection_mode": service.projection.mode,

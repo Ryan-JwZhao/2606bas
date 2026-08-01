@@ -59,7 +59,6 @@ class CalibrationService:
     table: TableModel
     frame_undistorted: bool = False
     distortion_correction_enabled: bool = True
-    projection_mode: str = "legacy"
     ball_compensation_model: BallCompensationModel = field(default_factory=BallCompensationModel)
     ball_center_compensation: BallCenterCompensation = field(default_factory=BallCenterCompensation)
     _geometry: IndependentGeometry = field(init=False, repr=False)
@@ -80,10 +79,6 @@ class CalibrationService:
     @property
     def calib_version(self) -> str:
         return f"{self.camera.version}+{self.projection.version}+{self.ball_compensation_model.version}"
-
-    @property
-    def is_engineered_projection(self) -> bool:
-        return str(self.projection_mode).strip().lower() == "engineered"
 
     def undistort_frame(self, frame: np.ndarray) -> np.ndarray:
         if not self.distortion_correction_enabled:
@@ -117,10 +112,10 @@ class CalibrationService:
 
     def ball_camera_px_to_table_mm(self, points: np.ndarray) -> np.ndarray:
         pts = ensure_numpy_points(points).astype(np.float32)
-        if not self.is_engineered_projection or not self.ball_compensation_model.is_valid:
+        if not self.ball_compensation_model.is_valid:
             pts = self.compensate_ball_image_points(pts)
         camera_points = self._camera_geometry_points(pts)
-        if self.is_engineered_projection and self.ball_compensation_model.is_valid:
+        if self.ball_compensation_model.is_valid:
             return self._geometry.ball_to_table(camera_points)
         return self._geometry.camera_to_table(camera_points)
 
@@ -160,7 +155,7 @@ class CalibrationService:
         return float(np.linalg.norm(mm[1] - mm[0]))
 
     def ball_pixel_radius_to_mm(self, center_px: Point, radius_px: float) -> float:
-        if self.is_engineered_projection:
+        if self.ball_compensation_model.is_valid:
             return 0.5 * float(self.table.ball_diameter_mm)
         center = np.asarray([center_px], dtype=np.float32)
         edge = np.asarray([[center_px[0] + radius_px, center_px[1]]], dtype=np.float32)
@@ -215,7 +210,6 @@ def create_calibration_service(
     ball_compensation_expected_context: dict[str, object] | None = None,
     projection_expected_context: dict[str, object] | None = None,
 ) -> CalibrationService:
-    config.sync_projection_file_alias()
     correction_enabled = bool(distortion_correction_enabled)
     camera = (
         CameraCalibration.load_opencv_yaml(config.camera_file)
@@ -223,12 +217,11 @@ def create_calibration_service(
         else CameraCalibration(metadata={"disabled": True})
     )
     projection = ProjectionCalibration.load_json(
-        config.active_projection_file(),
+        config.projection_file,
         expected_context=projection_expected_context,
     )
-    projection_mode = config.normalized_projection_mode()
     ball_compensation_model = BallCompensationModel.load_json(
-        config.engineered_ball_compensation_file if projection_mode == "engineered" else None,
+        config.engineered_ball_compensation_file,
         expected_context=ball_compensation_expected_context,
     )
     table = TableModel(
@@ -248,7 +241,6 @@ def create_calibration_service(
         table=table,
         frame_undistorted=bool(frame_undistorted),
         distortion_correction_enabled=correction_enabled,
-        projection_mode=projection_mode,
         ball_compensation_model=ball_compensation_model,
         ball_center_compensation=BallCenterCompensation.from_config(config),
     )
@@ -325,7 +317,7 @@ def create_setting_aware_calibration_service(
         frame_rotation_degrees=rotation_degrees,
         camera_coordinate_domain=coordinate_domain,
         distortion_file=camera_config.distortion_correction_file if coordinate_domain == "undistorted" else None,
-        projection_file=calibration_config.active_projection_file(),
+        projection_file=calibration_config.projection_file,
         detector_model_file=detector_config.model_path if detector_config is not None else None,
         ball_diameter_mm=float(calibration_config.ball_diameter_mm),
     )

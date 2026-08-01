@@ -1686,27 +1686,6 @@ def test_rule_overlay_includes_dashed_object_and_cue_separation_lines() -> None:
     assert all(circle.width == style.circle_width for circle in overlay.circles)
 
 
-def test_legacy_free_mode_migrates_to_hook_without_loading_free_planner() -> None:
-    service = _service()
-    planner = GeometryPhysicsPlanner(PlannerConfig(shot_mode="free", free_max_collisions=2), service)
-    state = MatchStateFrame(
-        frame_id=1,
-        ts_cam_ns=1,
-        phase="STABLE_IDLE",
-        layout=[
-            _obs(1, "cue", 100, 250),
-            _obs(2, "solid", 620, 250),
-        ],
-    )
-    plan = planner.plan(state, frame_bgr=None)
-    assert plan.shot_mode == "hook"
-    assert plan.free_route is None
-    assert plan.free_status == "archived"
-    assert not hasattr(planner, "free_planner")
-    assert plan.best is not None
-    assert plan.best.explanation["hook_shot"] is True
-
-
 def test_planner_can_force_black_target_for_current_turn() -> None:
     planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20), _service())
     state = MatchStateFrame(

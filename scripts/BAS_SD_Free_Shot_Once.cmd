@@ -1,5 +1,0 @@
-@echo off
-setlocal
-rem Legacy filename retained for existing Stream Deck profiles; executes hook mode only.
-call "%~dp0BAS_StreamDeck_Command.cmd" hook-shot-once
-exit /b %ERRORLEVEL%
