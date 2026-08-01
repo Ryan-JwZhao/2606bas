@@ -100,7 +100,20 @@ FOURCC、分辨率和帧率，并在打开后读回 FOURCC；如果驱动返回 
 
 ### 相机坐标与投影方向
 
-已有 `inline`、`outline`、`pocket` 时，相机画面必须保持原坐标域。当前现场在“设置”中使用：相机画面 `0°`、校准画面 `0°`、运行输出 `180°`。校准角与输出角分别记忆，运行输出旋转只作用于投影窗口最终帧，不覆盖联合校准、球心补偿或星图公式中的细调角度。详细说明见 `docs/camera_orientation/README.md`。
+当前现场的新工业相机与投影仪方向相差 `180°`，因此在“设置 → 相机采集 → 工业相机安装方向”中选择“顺时针 `180°`”。相机方向会在采集边界统一归一化，预览、检测、几何和校准始终使用同一坐标域。
+
+投影端不再提供“校准画面旋转”和“运行输出旋转”，校准图样与运行 overlay 共用唯一的投影仪像素坐标系，避免校准正确而实际输出再次翻转。投影仪原有的小角度偏移继续由“颗星公式 → Rotation”保存和调节；当前本机值为 `-1.7°`，不会因相机 `180°` 归一化而被覆盖或叠加。改变相机安装方向、重绘几何标注或更换相机后，必须重新完成联合平面校准和球心补偿。详细说明见 `docs/camera_orientation/README.md`。
+
+`0730_DrawLine` 的 Labelme 标注需要与新相机坐标域同步时，可运行：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\rotate_labelme_180.py `
+  C:\CodeProject\data\0730_DrawLine\0730_inline.json `
+  C:\CodeProject\data\0730_DrawLine\0730_outline.json `
+  C:\CodeProject\data\0730_DrawLine\0730_pocket.json
+```
+
+脚本按 `x' = imageWidth - 1 - x`、`y' = imageHeight - 1 - y` 旋转全部标注点，并为每个原文件保留 `.pre180.bak` 备份。检测到备份已存在时会拒绝再次执行，防止误操作把标注旋转回原方向。
 
 ### 工业相机畸变校正总开关
 

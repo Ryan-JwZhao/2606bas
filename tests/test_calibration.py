@@ -73,7 +73,6 @@ def test_setting_aware_service_uses_actual_capture_size_for_projection_context(t
         distortion_file=None,
         projector_width=1280,
         projector_height=800,
-        projection_calibration_rotation_degrees=0,
     )
     path = tmp_path / "actual_capture_size_projection.json"
     projection.save(path)
@@ -88,7 +87,6 @@ def test_setting_aware_service_uses_actual_capture_size_for_projection_context(t
         projection_config=ProjectionConfig(
             projector_width=1280,
             projector_height=800,
-            calibration_rotation_degrees=0,
         ),
         actual_frame_size=(1280, 720),
     )

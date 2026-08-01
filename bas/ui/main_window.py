@@ -59,7 +59,6 @@ from ..media_capture import FfmpegH264Recorder
 from ..operator_controls import RuntimeControlState, normalize_shot_mode, toggled_object_group
 from ..perception import create_detector
 from ..paths import PROJECT_ROOT
-from ..projection.frame_transform import normalize_projection_rotation_degrees
 from ..projection.interaction import ProjectionInteractionController
 from ..projection.overlay import projection_route_stroke_style
 from ..projection.star_formula import StarFormulaConfig
@@ -227,6 +226,9 @@ class SettingsDialog(QtWidgets.QDialog):
             normalize_frame_rotation_degrees(config.camera.frame_rotation_degrees)
         )
         self.frame_rotation_degrees.setCurrentIndex(max(0, rotation_index))
+        self.frame_rotation_degrees.setToolTip(
+            "工业相机安装方向归一化。新相机与投影仪相差 180° 时选择“顺时针 180°”；修改后需重新校准。"
+        )
         self.distortion_enabled = QtWidgets.QCheckBox("启用")
         self.distortion_enabled.setChecked(bool(config.camera.distortion_correction_enabled))
         self.distortion_file = self._path_row(config.camera.distortion_correction_file, "OpenCV 标定文件 (*.yaml *.yml *.xml);;所有文件 (*.*)")
@@ -335,28 +337,6 @@ class SettingsDialog(QtWidgets.QDialog):
         self.proj_h = QtWidgets.QSpinBox()
         self.proj_h.setRange(240, 4320)
         self.proj_h.setValue(config.projection.projector_height)
-        self.projection_calibration_rotation = QtWidgets.QComboBox()
-        self.projection_output_rotation = QtWidgets.QComboBox()
-        for degrees in (0, 90, 180, 270):
-            label = "不旋转" if degrees == 0 else f"顺时针 {degrees}°"
-            self.projection_calibration_rotation.addItem(label, degrees)
-            self.projection_output_rotation.addItem(label, degrees)
-        calibration_rotation_index = self.projection_calibration_rotation.findData(
-            normalize_projection_rotation_degrees(
-                config.projection.calibration_rotation_degrees
-            )
-        )
-        output_rotation_index = self.projection_output_rotation.findData(
-            normalize_projection_rotation_degrees(config.projection.output_rotation_degrees)
-        )
-        self.projection_calibration_rotation.setCurrentIndex(max(0, calibration_rotation_index))
-        self.projection_output_rotation.setCurrentIndex(max(0, output_rotation_index))
-        self.projection_calibration_rotation.setToolTip(
-            "仅用于联合校准图样、球心补偿目标和校准结果；修改后需重新校准。"
-        )
-        self.projection_output_rotation.setToolTip(
-            "仅旋转正常运行时的最终投影帧，不改变相机坐标、几何标注或校准细调角。"
-        )
         proj_size = QtWidgets.QHBoxLayout()
         proj_size.addWidget(self.proj_w)
         proj_size.addWidget(QtWidgets.QLabel("x"))
@@ -585,7 +565,7 @@ class SettingsDialog(QtWidgets.QDialog):
             [
                 ("视频文件路径", self.video_path),
                 ("Nori SDK 目录", self.nori_sdk_root),
-                ("相机画面旋转（已有标注保持0°）", self.frame_rotation_degrees),
+                ("工业相机安装方向", self.frame_rotation_degrees),
                 ("工业相机畸变矫正", distortion_box),
                 ("工业相机曝光", exposure_box),
                 ("工业相机白平衡", white_balance_box),
@@ -623,8 +603,6 @@ class SettingsDialog(QtWidgets.QDialog):
             [
                 ("默认投影设备", self.proj_screen),
                 ("默认投影分辨率", proj_size),
-                ("校准画面旋转", self.projection_calibration_rotation),
-                ("运行输出旋转", self.projection_output_rotation),
                 ("自动投影动效", projection_effects_box),
                 ("训练中文提示", training_prompt_box),
             ],
@@ -852,12 +830,6 @@ class SettingsDialog(QtWidgets.QDialog):
         config.projection.screen_index = int(self.proj_screen.currentData() or 0)
         config.projection.projector_width = int(self.proj_w.value())
         config.projection.projector_height = int(self.proj_h.value())
-        config.projection.calibration_rotation_degrees = normalize_projection_rotation_degrees(
-            self.projection_calibration_rotation.currentData()
-        )
-        config.projection.output_rotation_degrees = normalize_projection_rotation_degrees(
-            self.projection_output_rotation.currentData()
-        )
         config.projection.auto_pocket_animation_enabled = self.auto_pocket_animation_enabled.isChecked()
         config.projection.auto_victory_animation_enabled = self.auto_victory_animation_enabled.isChecked()
         config.projection.training_prompt_enabled = self.training_prompt_enabled.isChecked()
@@ -1288,9 +1260,6 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                 ),
                 projector_width=int(self.operator.config.projection.projector_width),
                 projector_height=int(self.operator.config.projection.projector_height),
-                projection_calibration_rotation_degrees=int(
-                    self.operator.config.projection.calibration_rotation_degrees
-                ),
             )
             self._saved_path = self._projection_output_path()
             self._result.projection.save(self._saved_path)
@@ -2809,7 +2778,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.config.calibration.table_width_mm,
             self.config.calibration.table_height_mm,
             self.config.calibration.ball_diameter_mm,
-            self.config.projection.calibration_rotation_degrees,
             self.config.geometry.outline_path,
             self.config.geometry.inline_path,
             self.config.geometry.pocket_path,
@@ -2840,8 +2808,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.config.projection.projector_height,
             self.config.projection.screen_index,
             self.config.projection.fullscreen,
-            self.config.projection.calibration_rotation_degrees,
-            self.config.projection.output_rotation_degrees,
         )
 
     def _state_machine_or_none(self):

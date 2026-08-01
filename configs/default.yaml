@@ -175,8 +175,6 @@ projection:
   enabled: true
   projector_width: 1280
   projector_height: 800
-  calibration_rotation_degrees: 0  # 校准图样顺时针旋转角；不改变相机/标注坐标
-  output_rotation_degrees: 180  # 运行投影顺时针旋转角；与校准角独立
   screen_index: 1
   fullscreen: true
   auto_pocket_animation_enabled: true

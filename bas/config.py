@@ -284,8 +284,6 @@ class ProjectionConfig:
     projector_height: int = 800
     screen_index: int = 1
     fullscreen: bool = True
-    calibration_rotation_degrees: int = 0
-    output_rotation_degrees: int = 180
     geometry_reference_enabled: bool = True
     auto_pocket_animation_enabled: bool = True
     auto_victory_animation_enabled: bool = True

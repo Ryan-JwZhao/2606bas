@@ -56,7 +56,6 @@ def projection_calibration_context(
     distortion_file: str | Path | None,
     projector_width: int,
     projector_height: int,
-    projection_calibration_rotation_degrees: int,
 ) -> dict[str, Any]:
     """Describe the 2-D coordinate domains joined by a projection calibration."""
 
@@ -69,7 +68,6 @@ def projection_calibration_context(
         "distortion_fingerprint": file_fingerprint(distortion_file),
         "projector_width": int(projector_width),
         "projector_height": int(projector_height),
-        "projection_calibration_rotation_degrees": int(projection_calibration_rotation_degrees) % 360,
     }
 
 

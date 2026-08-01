@@ -315,16 +315,10 @@ def create_setting_aware_calibration_service(
         distortion_file=camera_config.distortion_correction_file if coordinate_domain == "undistorted" else None,
         projector_width=int(projection_config.projector_width) if projection_config is not None else 0,
         projector_height=int(projection_config.projector_height) if projection_config is not None else 0,
-        projection_calibration_rotation_degrees=(
-            int(projection_config.calibration_rotation_degrees)
-            if projection_config is not None
-            else 0
-        ),
     )
     if projection_config is None:
         projection_context.pop("projector_width", None)
         projection_context.pop("projector_height", None)
-        projection_context.pop("projection_calibration_rotation_degrees", None)
     expected_context = calibration_context(
         frame_width=frame_width,
         frame_height=frame_height,

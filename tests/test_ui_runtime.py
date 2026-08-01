@@ -656,30 +656,24 @@ def test_settings_dialog_applies_desktop_only_training_prompt_controls() -> None
     app.processEvents()
 
 
-def test_settings_dialog_keeps_camera_and_projector_rotations_independent() -> None:
+def test_settings_dialog_controls_camera_direction_and_keeps_projector_fine_angle() -> None:
     app = _app()
     config = AppConfig()
     config.camera.frame_rotation_degrees = 0
-    config.projection.calibration_rotation_degrees = 90
-    config.projection.output_rotation_degrees = 180
     dialog = main_window.SettingsDialog(config, main_window.StarFormulaConfig(angle_deg=-1.7))
 
     assert dialog.frame_rotation_degrees.currentData() == 0
-    assert dialog.projection_calibration_rotation.currentData() == 90
-    assert dialog.projection_output_rotation.currentData() == 180
+    assert not hasattr(dialog, "projection_calibration_rotation")
+    assert not hasattr(dialog, "projection_output_rotation")
     assert dialog.star_angle.value() == -1.7
 
-    dialog.projection_calibration_rotation.setCurrentIndex(
-        dialog.projection_calibration_rotation.findData(0)
-    )
-    dialog.projection_output_rotation.setCurrentIndex(
-        dialog.projection_output_rotation.findData(180)
+    dialog.frame_rotation_degrees.setCurrentIndex(
+        dialog.frame_rotation_degrees.findData(180)
     )
     dialog.apply_to_config(config)
 
-    assert config.camera.frame_rotation_degrees == 0
-    assert config.projection.calibration_rotation_degrees == 0
-    assert config.projection.output_rotation_degrees == 180
+    assert config.camera.frame_rotation_degrees == 180
+    assert dialog.star_formula_config().angle_deg == -1.7
     dialog.close()
     app.processEvents()
 
