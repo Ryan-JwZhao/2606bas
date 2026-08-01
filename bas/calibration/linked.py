@@ -21,9 +21,9 @@ from .projector import (
 
 PointArray = np.ndarray
 MAX_LINKED_PATTERN_CV_P95_PX = 5.0
-MIN_LINKED_COVERAGE_WIDTH_RATIO = 0.65
+MIN_LINKED_COVERAGE_WIDTH_RATIO = 0.55
 MIN_LINKED_COVERAGE_HEIGHT_RATIO = 0.55
-MIN_LINKED_COVERAGE_HULL_AREA_RATIO = 0.30
+MIN_LINKED_COVERAGE_HULL_AREA_RATIO = 0.25
 
 
 @dataclass
@@ -174,7 +174,29 @@ def build_linked_patterns(
 
     names = ["pocket_lt", "pocket_mt", "pocket_rt", "pocket_rb", "pocket_mb", "pocket_lb"]
     for idx, point in enumerate(pocket_centers[:6]):
-        roi = _roi_around_point(point, projector_bbox, width, height, width_ratio=0.30, height_ratio=0.28)
+        focus_point = np.asarray(point, dtype=np.float32).copy()
+        if idx == 1:
+            # The upper middle pocket is commonly affected by the pocket void,
+            # rail reflection and the overhead-light centerline. Move the whole
+            # board diagonally onto cloth while retaining the upper-half zone.
+            focus_point = np.asarray(
+                [
+                    projector_bbox[0] + 0.38 * (projector_bbox[2] - projector_bbox[0]),
+                    projector_bbox[1] + 0.28 * (projector_bbox[3] - projector_bbox[1]),
+                ],
+                dtype=np.float32,
+            )
+        elif idx == 4:
+            # Use the opposite diagonal for the lower middle pocket so the two
+            # boards also improve horizontal solver coverage.
+            focus_point = np.asarray(
+                [
+                    projector_bbox[0] + 0.62 * (projector_bbox[2] - projector_bbox[0]),
+                    projector_bbox[1] + 0.72 * (projector_bbox[3] - projector_bbox[1]),
+                ],
+                dtype=np.float32,
+            )
+        roi = _roi_around_point(focus_point, projector_bbox, width, height, width_ratio=0.30, height_ratio=0.28)
         patterns.append(
             _make_charuco_pattern(
                 f"focus_{idx}",
@@ -188,7 +210,7 @@ def build_linked_patterns(
                 outline_proj,
                 inner_proj,
                 pockets_proj,
-                point,
+                focus_point,
             )
         )
 

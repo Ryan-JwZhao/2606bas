@@ -79,6 +79,19 @@ def test_linked_focus_patterns_keep_full_board_size_at_projector_edges() -> None
     assert max(y2 for _x1, _y1, _x2, y2 in pocket_rois) <= 736
 
 
+def test_middle_pocket_patterns_shift_inward_and_off_center_axis() -> None:
+    patterns = build_linked_patterns(_sample_geometry(), (1280, 800))
+    top = next(pattern for pattern in patterns if pattern.emphasis_zone == "pocket_mt")
+    bottom = next(pattern for pattern in patterns if pattern.emphasis_zone == "pocket_mb")
+    top_center = ((top.roi_proj[0] + top.roi_proj[2]) * 0.5, (top.roi_proj[1] + top.roi_proj[3]) * 0.5)
+    bottom_center = ((bottom.roi_proj[0] + bottom.roi_proj[2]) * 0.5, (bottom.roi_proj[1] + bottom.roi_proj[3]) * 0.5)
+
+    assert top_center[0] < 600.0
+    assert top_center[1] > 230.0
+    assert bottom_center[0] > 680.0
+    assert bottom_center[1] < 570.0
+
+
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
 def test_all_linked_patterns_remain_detectable_after_camera_blur() -> None:
     patterns = [
@@ -238,6 +251,40 @@ def test_linked_calibration_accepts_two_pockets_when_points_cover_table() -> Non
     assert result.projection.is_valid
     assert result.summary["pocket_zones_used"] == 2
     assert result.summary["coverage_gate"] == "geometric"
+
+
+def test_linked_calibration_accepts_measured_field_coverage_with_two_pockets() -> None:
+    normalized = np.asarray(
+        [
+            [0.21, 0.475],
+            [0.365, 0.20],
+            [0.50, 0.10],
+            [0.635, 0.20],
+            [0.79, 0.475],
+            [0.635, 0.75],
+            [0.50, 0.85],
+            [0.365, 0.75],
+        ],
+        dtype=np.float32,
+    )
+    camera = normalized * np.asarray([1000.0, 600.0], dtype=np.float32)
+    projector = camera * np.asarray([1.10, 1.05], dtype=np.float32) + np.asarray([20.0, 30.0], dtype=np.float32)
+    zones = ["full", "center", "pocket_lt", "pocket_rb"]
+    observations = [
+        LinkedCalibrationObservation(zone, zone, zone, camera, projector, np.arange(8), 8, 8)
+        for zone in zones
+    ]
+
+    result = solve_linked_projection_calibration(
+        observations,
+        (1280, 800),
+        table_polygon_cam=np.asarray([[0, 0], [1000, 0], [1000, 600], [0, 600]], dtype=np.float32),
+    )
+
+    coverage = result.summary["spatial_coverage"]
+    assert coverage["width_ratio"] == pytest.approx(0.58, abs=0.01)
+    assert coverage["height_ratio"] == pytest.approx(0.75, abs=0.01)
+    assert coverage["hull_area_ratio"] == pytest.approx(0.261, abs=0.01)
 
 
 def test_linked_calibration_rejects_named_zones_when_points_are_clustered() -> None:
