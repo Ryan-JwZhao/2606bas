@@ -18,14 +18,25 @@ from .projector import (
     polygon_quad,
     table_bbox_from_polygon,
 )
+from .linked_coverage import (
+    MAX_LINKED_HOLE_DISTANCE_RATIO,
+    MIN_LINKED_CORE_GRID_OCCUPIED_RATIO,
+    MIN_LINKED_COVERAGE_HEIGHT_RATIO,
+    MIN_LINKED_COVERAGE_HULL_AREA_RATIO,
+    MIN_LINKED_COVERAGE_WIDTH_RATIO,
+    MIN_LINKED_EDGE_COVERAGE_RATIO,
+    MIN_LINKED_TOTAL_MATCHED_POINTS,
+    dense_linked_pattern_placements,
+    evaluate_linked_point_coverage,
+    linked_coverage_errors,
+)
 
 
 PointArray = np.ndarray
 MAX_LINKED_PATTERN_CV_P95_PX = 5.0
-MIN_LINKED_COVERAGE_WIDTH_RATIO = 0.62
-MIN_LINKED_COVERAGE_HEIGHT_RATIO = 0.62
-MIN_LINKED_COVERAGE_HULL_AREA_RATIO = 0.34
-LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v9"
+MIN_LINKED_PATTERN_MATCHED_POINTS = 4
+MAX_LINKED_RESIDUAL_CONTROL_POINTS = 120
+LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v10"
 
 
 @dataclass
@@ -76,35 +87,14 @@ def linked_calibration_runtime_summary() -> str:
         f"coverage={MIN_LINKED_COVERAGE_WIDTH_RATIO:.0%}/"
         f"{MIN_LINKED_COVERAGE_HEIGHT_RATIO:.0%}/"
         f"{MIN_LINKED_COVERAGE_HULL_AREA_RATIO:.0%} | "
-        "middle_pockets=diagonal_inset_v1 | "
-        "corner_pockets=cloth_inset_v1 | capture_retry=2 | "
-        "optional_pockets=skip_after_4 | "
+        "core_grid=5x4:100% | edges=100% | "
+        f"max_hole={MAX_LINKED_HOLE_DISTANCE_RATIO:.2f} | "
+        "dense_tiles=5x4 | middle_pockets=edge_v2 | "
+        "corner_pockets=edge_v2 | capture_retry=2 | "
+        f"pattern_min={MIN_LINKED_PATTERN_MATCHED_POINTS} total_min={MIN_LINKED_TOTAL_MATCHED_POINTS} | "
         "left_corner_contrast=clahe_v1 | "
         f"source={Path(__file__).resolve()}"
     )
-
-
-def linked_pattern_requires_retry(
-    pattern: LinkedCalibrationPattern,
-    observation: Optional[LinkedCalibrationObservation],
-    accepted_observations: Sequence[LinkedCalibrationObservation],
-    *,
-    minimum_pocket_zones: int = 4,
-) -> bool:
-    """Return whether this failed pattern is still required by the quality gate."""
-    if not pattern.collect_for_solver:
-        return False
-    if observation is not None and observation.matched_count >= 6:
-        return False
-    zone = str(pattern.emphasis_zone).strip().lower()
-    if not zone.startswith("pocket_"):
-        return True
-    accepted_pocket_zones = {
-        str(item.emphasis_zone).strip().lower()
-        for item in accepted_observations
-        if item.matched_count >= 6 and str(item.emphasis_zone).strip().lower().startswith("pocket_")
-    }
-    return len(accepted_pocket_zones) < max(0, int(minimum_pocket_zones))
 
 
 def collect_linked_pattern_observation(
@@ -115,7 +105,7 @@ def collect_linked_pattern_observation(
     transition_frames: int = 8,
     max_detection_frames: int = 18,
     attempts: int = 1,
-    minimum_matched_points: int = 6,
+    minimum_matched_points: int = MIN_LINKED_PATTERN_MATCHED_POINTS,
     inter_frame_delay_seconds: float = 0.0,
     on_frame: Optional[Callable[[np.ndarray], None]] = None,
 ) -> LinkedPatternCaptureResult:
@@ -203,6 +193,7 @@ def build_linked_patterns(
 
     coarse_spec = CharucoBoardSpec(squares_x=9, squares_y=6, square_length_m=0.035, marker_length_m=0.027)
     dense_spec = CharucoBoardSpec(squares_x=8, squares_y=6, square_length_m=0.030, marker_length_m=0.022)
+    tile_spec = CharucoBoardSpec(squares_x=6, squares_y=5, square_length_m=0.030, marker_length_m=0.022)
 
     patterns: List[LinkedCalibrationPattern] = []
     patterns.append(
@@ -225,48 +216,24 @@ def build_linked_patterns(
     patterns.append(_make_charuco_pattern("full_cover", "台布全域 ChArUco", coarse_spec, width, height, full_roi, "full", projector_bbox, outline_proj, inner_proj, pockets_proj, center))
 
     names = ["pocket_lt", "pocket_mt", "pocket_rt", "pocket_rb", "pocket_mb", "pocket_lb"]
-    corner_focus_positions = {
-        0: (0.18, 0.20),
-        2: (0.82, 0.20),
-        3: (0.82, 0.80),
-        5: (0.18, 0.80),
+    edge_focus_positions = {
+        0: (0.10, 0.10),
+        1: (0.50, 0.06),
+        2: (0.90, 0.10),
+        3: (0.90, 0.90),
+        4: (0.50, 0.94),
+        5: (0.10, 0.90),
     }
     for idx, point in enumerate(pocket_centers[:6]):
-        focus_point = np.asarray(point, dtype=np.float32).copy()
-        if idx in corner_focus_positions:
-            # Keep the complete board on matte cloth. A board touching the
-            # projected table boundary is easily destroyed by rail reflection,
-            # pocket voids, or a few clipped marker cells.
-            x_ratio, y_ratio = corner_focus_positions[idx]
-            focus_point = np.asarray(
-                [
-                    projector_bbox[0] + x_ratio * (projector_bbox[2] - projector_bbox[0]),
-                    projector_bbox[1] + y_ratio * (projector_bbox[3] - projector_bbox[1]),
-                ],
-                dtype=np.float32,
-            )
-        elif idx == 1:
-            # The upper middle pocket is commonly affected by the pocket void,
-            # rail reflection and the overhead-light centerline. Move the whole
-            # board diagonally onto cloth while retaining the upper-half zone.
-            focus_point = np.asarray(
-                [
-                    projector_bbox[0] + 0.38 * (projector_bbox[2] - projector_bbox[0]),
-                    projector_bbox[1] + 0.28 * (projector_bbox[3] - projector_bbox[1]),
-                ],
-                dtype=np.float32,
-            )
-        elif idx == 4:
-            # Use the opposite diagonal for the lower middle pocket so the two
-            # boards also improve horizontal solver coverage.
-            focus_point = np.asarray(
-                [
-                    projector_bbox[0] + 0.62 * (projector_bbox[2] - projector_bbox[0]),
-                    projector_bbox[1] + 0.72 * (projector_bbox[3] - projector_bbox[1]),
-                ],
-                dtype=np.float32,
-            )
-        roi = _roi_around_point(focus_point, projector_bbox, width, height, width_ratio=0.30, height_ratio=0.28)
+        x_ratio, y_ratio = edge_focus_positions.get(idx, (0.5, 0.5))
+        focus_point = np.asarray(
+            [
+                projector_bbox[0] + x_ratio * (projector_bbox[2] - projector_bbox[0]),
+                projector_bbox[1] + y_ratio * (projector_bbox[3] - projector_bbox[1]),
+            ],
+            dtype=np.float32,
+        )
+        roi = _roi_around_point(focus_point, projector_bbox, width, height, width_ratio=0.24, height_ratio=0.30)
         patterns.append(
             _make_charuco_pattern(
                 f"focus_{idx}",
@@ -276,6 +243,39 @@ def build_linked_patterns(
                 height,
                 roi,
                 names[idx] if idx < len(names) else f"pocket_{idx}",
+                projector_bbox,
+                outline_proj,
+                inner_proj,
+                pockets_proj,
+                focus_point,
+            )
+        )
+
+    for placement in dense_linked_pattern_placements():
+        focus_point = np.asarray(
+            [
+                projector_bbox[0] + placement.center_x_ratio * (projector_bbox[2] - projector_bbox[0]),
+                projector_bbox[1] + placement.center_y_ratio * (projector_bbox[3] - projector_bbox[1]),
+            ],
+            dtype=np.float32,
+        )
+        roi = _roi_around_point(
+            focus_point,
+            projector_bbox,
+            width,
+            height,
+            width_ratio=placement.width_ratio,
+            height_ratio=placement.height_ratio,
+        )
+        patterns.append(
+            _make_charuco_pattern(
+                placement.pattern_id,
+                placement.title,
+                tile_spec,
+                width,
+                height,
+                roi,
+                placement.emphasis_zone,
                 projector_bbox,
                 outline_proj,
                 inner_proj,
@@ -347,18 +347,21 @@ def solve_linked_projection_calibration(
     table_polygon_cam: Optional[np.ndarray] = None,
     minimum_pocket_zones: int = 4,
 ) -> LinkedCalibrationResult:
+    del minimum_pocket_zones  # Kept in the interface for older callers; names no longer gate coverage.
     cam_poly = polygon_quad(ensure_numpy_points(table_polygon_cam))
     if cam_poly.shape[0] != 4:
         raise ValueError(
             "Linked calibration requires a valid four-corner camera table polygon anchor."
         )
-    usable = [obs for obs in observations if obs.matched_count >= 6]
+    usable = [obs for obs in observations if obs.matched_count >= MIN_LINKED_PATTERN_MATCHED_POINTS]
     if len(usable) < 2:
         raise ValueError("联动校正至少需要两个有效采样图样。")
     camera_points = np.vstack([obs.camera_points for obs in usable]).astype(np.float64)
     projector_points = np.vstack([obs.projector_points for obs in usable]).astype(np.float64)
-    if camera_points.shape[0] < 12 or projector_points.shape[0] < 12:
-        raise ValueError("联动校正有效对应点不足，至少需要 12 个匹配角点。")
+    if camera_points.shape[0] < MIN_LINKED_TOTAL_MATCHED_POINTS or projector_points.shape[0] < MIN_LINKED_TOTAL_MATCHED_POINTS:
+        raise ValueError(
+            f"联动校正有效对应点不足，至少需要 {MIN_LINKED_TOTAL_MATCHED_POINTS} 个累计匹配角点。"
+        )
     projection = ProjectionCalibration.fit_from_correspondences(
         camera_points,
         projector_points,
@@ -379,27 +382,21 @@ def solve_linked_projection_calibration(
         )
     zones = {str(obs.emphasis_zone).strip().lower() for obs in usable}
     pocket_zones = {zone for zone in zones if zone.startswith("pocket_")}
-    missing_core = [zone for zone in ("full", "center") if zone not in zones]
-    spatial_coverage = _linked_spatial_coverage(camera_points, cam_poly)
-    geometric_coverage_ok = (
-        spatial_coverage["width_ratio"] >= MIN_LINKED_COVERAGE_WIDTH_RATIO
-        and spatial_coverage["height_ratio"] >= MIN_LINKED_COVERAGE_HEIGHT_RATIO
-        and spatial_coverage["hull_area_ratio"] >= MIN_LINKED_COVERAGE_HULL_AREA_RATIO
+    base_projection = projection.camera_to_projector_points(camera_points, refined=False)
+    base_errors = np.linalg.norm(base_projection - projector_points, axis=1)
+    coverage_inliers = base_errors <= float(projection.quality_report.get("ransac_threshold_px", 3.0))
+    coverage_camera_points = camera_points[coverage_inliers]
+    spatial_coverage = evaluate_linked_point_coverage(coverage_camera_points, cam_poly)
+    coverage_errors = linked_coverage_errors(
+        spatial_coverage,
+        matched_point_count=int(spatial_coverage.get("evaluated_point_count", 0)),
     )
-    pocket_coverage_ok = len(pocket_zones) >= max(0, int(minimum_pocket_zones))
-    if missing_core or not geometric_coverage_ok or not pocket_coverage_ok:
+    if coverage_errors:
         raise RuntimeError(
-            "Linked calibration rejected: insufficient spatial coverage; "
-            f"missing core zones={missing_core}, pocket zones={len(pocket_zones)}/"
-            f"{max(0, int(minimum_pocket_zones))}, "
-            f"width={spatial_coverage['width_ratio']:.1%}/"
-            f"{MIN_LINKED_COVERAGE_WIDTH_RATIO:.0%}, "
-            f"height={spatial_coverage['height_ratio']:.1%}/"
-            f"{MIN_LINKED_COVERAGE_HEIGHT_RATIO:.0%}, "
-            f"hull={spatial_coverage['hull_area_ratio']:.1%}/"
-            f"{MIN_LINKED_COVERAGE_HULL_AREA_RATIO:.0%}."
+            "Linked calibration rejected: incomplete full-table coverage; "
+            + "; ".join(coverage_errors)
         )
-    coverage_gate = "categorical_and_geometric"
+    coverage_gate = "uniform_grid_and_segmented_edges"
     pattern_cv_errors = _leave_one_pattern_out_errors(usable)
     pattern_cv_p95 = float(np.percentile(pattern_cv_errors, 95)) if pattern_cv_errors.size else float("inf")
     if not np.isfinite(pattern_cv_p95) or pattern_cv_p95 > MAX_LINKED_PATTERN_CV_P95_PX:
@@ -419,17 +416,21 @@ def solve_linked_projection_calibration(
             normalized_rect,
         )
         controls_camera = projection.residual_field.control_points_cam.astype(np.float64)
-        projection.table_control_points_norm = cv2.perspectiveTransform(
+        normalized_controls = cv2.perspectiveTransform(
             controls_camera.reshape((-1, 1, 2)),
             camera_to_normalized,
         ).reshape((-1, 2)).astype(np.float64)
-        projection.table_control_points_proj = projection.camera_to_projector_points(
+        projector_controls = projection.camera_to_projector_points(
             controls_camera,
         ).astype(np.float64)
+        selected = _spread_control_indices(normalized_controls, MAX_LINKED_RESIDUAL_CONTROL_POINTS)
+        projection.table_control_points_norm = normalized_controls[selected]
+        projection.table_control_points_proj = projector_controls[selected]
     summary = {
         "patterns_total": len(observations),
         "patterns_used": len(usable),
         "matched_points_total": int(camera_points.shape[0]),
+        "coverage_inlier_points_total": int(spatial_coverage.get("evaluated_point_count", 0)),
         "matched_points_by_pattern": {obs.pattern_id: int(obs.matched_count) for obs in usable},
         "zones": sorted(zones),
         "pocket_zones_used": len(pocket_zones),
@@ -443,17 +444,22 @@ def solve_linked_projection_calibration(
         "patterns_total": summary["patterns_total"],
         "patterns_used": summary["patterns_used"],
         "matched_points_total": summary["matched_points_total"],
+        "coverage_inlier_points_total": summary["coverage_inlier_points_total"],
         "matched_points_by_pattern": summary["matched_points_by_pattern"],
         "zones": summary["zones"],
         "pocket_zones_used": summary["pocket_zones_used"],
         "quality_gate_passed": True,
         "minimum_inlier_ratio": float(MIN_PROJECTION_INLIER_RATIO),
-        "minimum_pocket_zones": max(0, int(minimum_pocket_zones)),
         "coverage_gate": coverage_gate,
         "spatial_coverage": spatial_coverage,
         "minimum_coverage_width_ratio": float(MIN_LINKED_COVERAGE_WIDTH_RATIO),
         "minimum_coverage_height_ratio": float(MIN_LINKED_COVERAGE_HEIGHT_RATIO),
         "minimum_coverage_hull_area_ratio": float(MIN_LINKED_COVERAGE_HULL_AREA_RATIO),
+        "minimum_core_grid_occupied_ratio": float(MIN_LINKED_CORE_GRID_OCCUPIED_RATIO),
+        "minimum_edge_coverage_ratio": float(MIN_LINKED_EDGE_COVERAGE_RATIO),
+        "maximum_hole_distance_ratio": float(MAX_LINKED_HOLE_DISTANCE_RATIO),
+        "minimum_total_matched_points": int(MIN_LINKED_TOTAL_MATCHED_POINTS),
+        "minimum_pattern_matched_points": int(MIN_LINKED_PATTERN_MATCHED_POINTS),
         "maximum_inlier_p95_px": float(MAX_PROJECTION_INLIER_P95_PX),
         "pattern_cv_p95_px": pattern_cv_p95,
         "maximum_pattern_cv_p95_px": float(MAX_LINKED_PATTERN_CV_P95_PX),
@@ -463,31 +469,7 @@ def solve_linked_projection_calibration(
 
 
 def _linked_spatial_coverage(camera_points: np.ndarray, table_polygon_cam: np.ndarray) -> Dict[str, float]:
-    points = ensure_numpy_points(camera_points).astype(np.float32)
-    polygon = polygon_quad(ensure_numpy_points(table_polygon_cam)).astype(np.float32)
-    if points.shape[0] < 3 or polygon.shape[0] != 4:
-        return {"width_ratio": 0.0, "height_ratio": 0.0, "hull_area_ratio": 0.0}
-    normalized_rect = np.asarray(
-        [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
-        dtype=np.float32,
-    )
-    camera_to_normalized = cv2.getPerspectiveTransform(polygon, normalized_rect)
-    normalized = cv2.perspectiveTransform(
-        points.reshape((-1, 1, 2)),
-        camera_to_normalized,
-    ).reshape((-1, 2))
-    normalized = normalized[np.all(np.isfinite(normalized), axis=1)]
-    if normalized.shape[0] < 3:
-        return {"width_ratio": 0.0, "height_ratio": 0.0, "hull_area_ratio": 0.0}
-    width_ratio = float(np.clip(np.max(normalized[:, 0]) - np.min(normalized[:, 0]), 0.0, 1.0))
-    height_ratio = float(np.clip(np.max(normalized[:, 1]) - np.min(normalized[:, 1]), 0.0, 1.0))
-    hull = cv2.convexHull(normalized.astype(np.float32)).reshape((-1, 2))
-    hull_area_ratio = float(np.clip(abs(cv2.contourArea(hull.reshape((-1, 1, 2)))), 0.0, 1.0))
-    return {
-        "width_ratio": width_ratio,
-        "height_ratio": height_ratio,
-        "hull_area_ratio": hull_area_ratio,
-    }
+    return evaluate_linked_point_coverage(camera_points, table_polygon_cam)  # type: ignore[return-value]
 
 
 def _leave_one_pattern_out_errors(observations: Sequence[LinkedCalibrationObservation]) -> np.ndarray:
@@ -509,6 +491,27 @@ def _leave_one_pattern_out_errors(observations: Sequence[LinkedCalibrationObserv
         ).reshape((-1, 2))
         errors.extend(np.linalg.norm(predicted - validation.projector_points, axis=1).tolist())
     return np.asarray(errors, dtype=np.float64)
+
+
+def _spread_control_indices(points: np.ndarray, maximum_count: int) -> np.ndarray:
+    """Keep a bounded, spatially spread residual support set for runtime fitting."""
+
+    pts = np.asarray(points, dtype=np.float64).reshape((-1, 2))
+    limit = max(4, int(maximum_count))
+    if pts.shape[0] <= limit:
+        return np.arange(pts.shape[0], dtype=np.int32)
+    center = np.mean(pts, axis=0)
+    first = int(np.argmax(np.linalg.norm(pts - center.reshape((1, 2)), axis=1)))
+    selected = [first]
+    minimum_distance = np.linalg.norm(pts - pts[first].reshape((1, 2)), axis=1)
+    minimum_distance[first] = -1.0
+    while len(selected) < limit:
+        index = int(np.argmax(minimum_distance))
+        selected.append(index)
+        distance = np.linalg.norm(pts - pts[index].reshape((1, 2)), axis=1)
+        minimum_distance = np.minimum(minimum_distance, distance)
+        minimum_distance[np.asarray(selected, dtype=np.int32)] = -1.0
+    return np.asarray(selected, dtype=np.int32)
 
 
 def projection_output_summary(
@@ -535,6 +538,18 @@ def projection_output_summary(
             f"凸包={float(coverage.get('hull_area_ratio', 0.0)):.1%} | "
             f"袋口区域={int(report.get('pocket_zones_used', 0))} | "
             f"跨图样CV P95={float(report.get('pattern_cv_p95_px', 0.0)):.2f}px"
+        )
+        edge = coverage.get("edge_coverage", {})
+        if not isinstance(edge, dict):
+            edge = {}
+        lines.append(
+            "均匀覆盖 "
+            f"5×4网格={float(coverage.get('core_grid_occupied_ratio', 0.0)):.1%} | "
+            f"四边=上{float(edge.get('top', 0.0)):.0%}/"
+            f"右{float(edge.get('right', 0.0)):.0%}/"
+            f"下{float(edge.get('bottom', 0.0)):.0%}/"
+            f"左{float(edge.get('left', 0.0)):.0%} | "
+            f"最大空洞={float(coverage.get('maximum_hole_distance_ratio', 0.0)):.1%}"
         )
     runtime = dict(geometry_report or {})
     if "projector_residual_support_grid_ratio" in runtime:
@@ -631,8 +646,10 @@ def _projector_focus_bbox(
         y2 = clamp(y2, y1 + 1.0, float(height))
         if (x2 - x1) > width * 0.2 and (y2 - y1) > height * 0.2:
             return (x1, y1, x2, y2)
-    margin_x = width * 0.05
-    margin_y = height * 0.08
+    # With no prior projection, keep only a tiny safety inset. The dense edge
+    # sweep needs actual control points close to all four table boundaries.
+    margin_x = width * 0.01
+    margin_y = height * 0.01
     return (margin_x, margin_y, float(width) - margin_x, float(height) - margin_y)
 
 

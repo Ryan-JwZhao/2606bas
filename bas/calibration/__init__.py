@@ -19,6 +19,7 @@ from .ball_compensation_sampling import (
 from .camera import CameraCalibration
 from .geometry import CalibrationUnavailableError, IndependentGeometry, ProjectedEllipse
 from .linked import (
+    MIN_LINKED_PATTERN_MATCHED_POINTS,
     LinkedCalibrationObservation,
     LinkedCalibrationPattern,
     LinkedCalibrationResult,
@@ -26,7 +27,6 @@ from .linked import (
     build_linked_patterns,
     collect_linked_pattern_observation,
     linked_calibration_runtime_summary,
-    linked_pattern_requires_retry,
     match_linked_pattern_observation,
     projection_output_summary,
     solve_linked_projection_calibration,
@@ -65,13 +65,13 @@ __all__ = [
     "split_ball_compensation_samples",
     "update_calibration_table_boundaries_from_geometry_frame",
     "LinkedCalibrationPattern",
+    "MIN_LINKED_PATTERN_MATCHED_POINTS",
     "LinkedCalibrationObservation",
     "LinkedCalibrationResult",
     "LinkedPatternCaptureResult",
     "build_linked_patterns",
     "collect_linked_pattern_observation",
     "linked_calibration_runtime_summary",
-    "linked_pattern_requires_retry",
     "match_linked_pattern_observation",
     "solve_linked_projection_calibration",
     "projection_output_summary",

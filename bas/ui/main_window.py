@@ -37,11 +37,11 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ..app import PipelineOutput, RuntimePipeline
 from ..calibration import (
+    MIN_LINKED_PATTERN_MATCHED_POINTS,
     build_linked_patterns,
     collect_linked_pattern_observation,
     create_setting_aware_calibration_service,
     linked_calibration_runtime_summary,
-    linked_pattern_requires_retry,
     projection_output_summary,
     solve_linked_projection_calibration,
     start_calibration_audit,
@@ -1057,9 +1057,9 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
 
         layout = QtWidgets.QVBoxLayout(self)
         intro = QtWidgets.QLabel(
-            "该流程会先基于工业相机畸变校正采集画面，再自动播放总览网格、全域 ChArUco、中心细化和六个袋口重点图样，"
+            "该流程会先基于工业相机畸变校正采集画面，再自动播放总览网格、全域 ChArUco、中心细化、六个贴边袋口图样和5×4重叠覆盖图样，"
             "完成投影仪-相机-程序的一键联动校正。结果必须同时通过重投影误差、跨图样验证、"
-            "台面宽高/凸包覆盖和至少四个袋口区域门禁才会保存。"
+            "5×4内部网格、四边分段、最大空洞和台面宽高/凸包覆盖门禁才会保存。"
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -1246,66 +1246,15 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                 )
                 best = capture_result.observation
 
-                if pattern.emphasis_zone == "center" and (best is None or best.matched_count < 6):
-                    retry = QtWidgets.QMessageBox.warning(
-                        self,
-                        "中心 ChArUco 预检失败",
-                        "相机没有识别到投影在台面中心的黑白校准板。\n\n"
-                        "请关闭或调暗球桌照明灯，确认投影清晰对焦且黑白方格没有过曝，"
-                        "然后选择“重试”。如果仍失败，可把相机曝光从当前值调低1～2档后再次校准。",
-                        QtWidgets.QMessageBox.Retry | QtWidgets.QMessageBox.Cancel,
-                        QtWidgets.QMessageBox.Retry,
+                if best is None or best.matched_count < MIN_LINKED_PATTERN_MATCHED_POINTS:
+                    self._append_log(
+                        f"{pattern.title} 本轮未达到 {MIN_LINKED_PATTERN_MATCHED_POINTS} 点最低贡献条件，"
+                        "不弹窗中断；继续采集后续重叠图样补足该区域。"
                     )
-                    if retry == QtWidgets.QMessageBox.Retry:
-                        self._append_log("中心图样预检失败，等待现场调整照明/曝光后重试。")
-                        capture_result = collect_linked_pattern_observation(
-                            pattern,
-                            read_calibration_frame,
-                            undistort_points=undistort,
-                            transition_frames=8,
-                            max_detection_frames=30,
-                            inter_frame_delay_seconds=0.03,
-                            on_frame=show_calibration_frame,
-                        )
-                        best = capture_result.observation
-                    if best is None or best.matched_count < 6:
-                        raise RuntimeError(
-                            "中心 ChArUco 预检失败。请关闭球桌照明灯、检查投影和相机焦点，"
-                            "并将相机曝光适当调低后重试；中心图样可识别前不会继续采集边缘图样。"
-                        )
-
-                if pattern.emphasis_zone != "center" and linked_pattern_requires_retry(
-                    pattern,
-                    best,
-                    observations,
-                ):
-                    retry = QtWidgets.QMessageBox.warning(
-                        self,
-                        "校准图样识别不足",
-                        f"{pattern.title} 目前只匹配到 "
-                        f"{0 if best is None else best.matched_count} 个角点，至少需要 6 个。\n\n"
-                        "系统已自动补采一次。请确认该图样完整落在台布上，避开袋洞和反光，"
-                        "必要时调暗球桌照明或降低相机曝光，然后选择“重试”。",
-                        QtWidgets.QMessageBox.Retry | QtWidgets.QMessageBox.Cancel,
-                        QtWidgets.QMessageBox.Retry,
-                    )
-                    if retry == QtWidgets.QMessageBox.Retry:
-                        self._append_log(f"{pattern.title} 自动补采仍不足，等待现场调整后重试。")
-                        capture_result = collect_linked_pattern_observation(
-                            pattern,
-                            read_calibration_frame,
-                            undistort_points=undistort,
-                            transition_frames=8,
-                            max_detection_frames=30,
-                            attempts=2,
-                            inter_frame_delay_seconds=0.03,
-                            on_frame=show_calibration_frame,
-                        )
-                        best = capture_result.observation
 
                 capture_ok = (
                     not pattern.collect_for_solver
-                    or (best is not None and best.matched_count >= 6)
+                    or (best is not None and best.matched_count >= MIN_LINKED_PATTERN_MATCHED_POINTS)
                 )
                 diagnostic_path = None
                 if not capture_ok and capture_result.diagnostic_frame is not None:
@@ -1344,7 +1293,11 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                     )
                     continue
                 observations.append(best)
-                point_state = "有效" if best.matched_count >= 6 else "不足6个，不能参与求解"
+                point_state = (
+                    "有效"
+                    if best.matched_count >= MIN_LINKED_PATTERN_MATCHED_POINTS
+                    else f"不足{MIN_LINKED_PATTERN_MATCHED_POINTS}个，不能参与求解"
+                )
                 self._append_log(
                     f"{pattern.title} 匹配角点 {best.matched_count} 个（{point_state}），"
                     f"重点区域 {best.emphasis_zone}；已刷新 {capture_result.transition_frames_read} 帧，"
@@ -1354,11 +1307,16 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
 
             if first_frame_shape is None:
                 raise RuntimeError("未能从相机读取任何画面，联动校正中止。")
-            usable_observations = [observation for observation in observations if observation.matched_count >= 6]
+            usable_observations = [
+                observation
+                for observation in observations
+                if observation.matched_count >= MIN_LINKED_PATTERN_MATCHED_POINTS
+            ]
             if len(usable_observations) < 2:
                 raise RuntimeError(
                     "联动校正有效图样不足："
-                    f"{len(usable_observations)}/8。请查看上方每个图样的刷新帧、识别帧和匹配成功帧；"
+                    f"{len(usable_observations)}/{sum(1 for pattern in patterns if pattern.collect_for_solver)}。"
+                    "请查看上方每个图样的刷新帧、识别帧和匹配成功帧；"
                     "若匹配始终为0，请检查投影画面是否完整落在台面、相机曝光和焦点是否能清楚看到黑白方格。"
                 )
             table_polygon_cam = None

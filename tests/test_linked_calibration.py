@@ -10,7 +10,6 @@ from bas.calibration.linked import (
     build_linked_patterns,
     collect_linked_pattern_observation,
     linked_calibration_runtime_summary,
-    linked_pattern_requires_retry,
     match_linked_pattern_observation,
     projection_output_summary,
     solve_linked_projection_calibration,
@@ -58,10 +57,11 @@ def _sample_geometry() -> TableGeometry:
 def test_build_linked_patterns_covers_full_and_focus_zones() -> None:
     patterns = build_linked_patterns(_sample_geometry(), (1280, 800))
 
-    assert len(patterns) == 10
+    assert len(patterns) == 30
     assert patterns[0].collect_for_solver is False
     assert patterns[-1].collect_for_solver is False
-    assert sum(1 for pattern in patterns if pattern.collect_for_solver) == 8
+    assert sum(1 for pattern in patterns if pattern.collect_for_solver) == 28
+    assert sum(1 for pattern in patterns if pattern.pattern_id.startswith("coverage_")) == 20
     assert any(pattern.emphasis_zone == "full" for pattern in patterns)
     assert any(pattern.emphasis_zone == "center" for pattern in patterns)
     assert any(pattern.emphasis_zone.startswith("pocket_") for pattern in patterns)
@@ -70,12 +70,16 @@ def test_build_linked_patterns_covers_full_and_focus_zones() -> None:
 def test_linked_calibration_runtime_summary_identifies_loaded_implementation() -> None:
     summary = linked_calibration_runtime_summary()
 
-    assert "linked-geometry-v9" in summary
-    assert "coverage=62%/62%/34%" in summary
-    assert "middle_pockets=diagonal_inset_v1" in summary
-    assert "corner_pockets=cloth_inset_v1" in summary
+    assert "linked-geometry-v10" in summary
+    assert "coverage=85%/85%/72%" in summary
+    assert "core_grid=5x4:100%" in summary
+    assert "edges=100%" in summary
+    assert "dense_tiles=5x4" in summary
+    assert "middle_pockets=edge_v2" in summary
+    assert "corner_pockets=edge_v2" in summary
     assert "capture_retry=2" in summary
-    assert "optional_pockets=skip_after_4" in summary
+    assert "pattern_min=4" in summary
+    assert "total_min=80" in summary
     assert "left_corner_contrast=clahe_v1" in summary
     assert "bas" in summary and "linked.py" in summary
 
@@ -88,26 +92,26 @@ def test_linked_focus_patterns_keep_full_board_size_at_projector_edges() -> None
 
     assert max(widths) - min(widths) <= 1
     assert max(heights) - min(heights) <= 1
-    assert min(x1 for x1, _y1, _x2, _y2 in pocket_rois) >= 64
-    assert min(y1 for _x1, y1, _x2, _y2 in pocket_rois) >= 64
-    assert max(x2 for _x1, _y1, x2, _y2 in pocket_rois) <= 1216
-    assert max(y2 for _x1, _y1, _x2, y2 in pocket_rois) <= 736
+    assert min(x1 for x1, _y1, _x2, _y2 in pocket_rois) >= 12
+    assert min(y1 for _x1, y1, _x2, _y2 in pocket_rois) >= 8
+    assert max(x2 for _x1, _y1, x2, _y2 in pocket_rois) <= 1268
+    assert max(y2 for _x1, _y1, _x2, y2 in pocket_rois) <= 792
 
 
-def test_middle_pocket_patterns_shift_inward_and_off_center_axis() -> None:
+def test_middle_pocket_patterns_stay_centered_and_close_to_table_edges() -> None:
     patterns = build_linked_patterns(_sample_geometry(), (1280, 800))
     top = next(pattern for pattern in patterns if pattern.emphasis_zone == "pocket_mt")
     bottom = next(pattern for pattern in patterns if pattern.emphasis_zone == "pocket_mb")
     top_center = ((top.roi_proj[0] + top.roi_proj[2]) * 0.5, (top.roi_proj[1] + top.roi_proj[3]) * 0.5)
     bottom_center = ((bottom.roi_proj[0] + bottom.roi_proj[2]) * 0.5, (bottom.roi_proj[1] + bottom.roi_proj[3]) * 0.5)
 
-    assert top_center[0] < 600.0
-    assert top_center[1] > 230.0
-    assert bottom_center[0] > 680.0
-    assert bottom_center[1] < 570.0
+    assert abs(top_center[0] - 640.0) <= 1.0
+    assert top.roi_proj[1] <= 16
+    assert abs(bottom_center[0] - 640.0) <= 1.0
+    assert bottom.roi_proj[3] >= 784
 
 
-def test_corner_pocket_patterns_do_not_touch_the_reflective_table_boundary() -> None:
+def test_corner_pocket_patterns_reach_the_table_edge_band() -> None:
     patterns = build_linked_patterns(_sample_geometry(), (1280, 800))
     corners = [
         pattern
@@ -116,12 +120,11 @@ def test_corner_pocket_patterns_do_not_touch_the_reflective_table_boundary() -> 
     ]
 
     assert len(corners) == 4
-    for pattern in corners:
-        x1, y1, x2, y2 = pattern.roi_proj
-        assert x1 > 64
-        assert y1 > 64
-        assert x2 < 1216
-        assert y2 < 736
+    by_zone = {pattern.emphasis_zone: pattern.roi_proj for pattern in corners}
+    assert by_zone["pocket_lt"][0] <= 16 and by_zone["pocket_lt"][1] <= 16
+    assert by_zone["pocket_rt"][2] >= 1264 and by_zone["pocket_rt"][1] <= 16
+    assert by_zone["pocket_rb"][2] >= 1264 and by_zone["pocket_rb"][3] >= 784
+    assert by_zone["pocket_lb"][0] <= 16 and by_zone["pocket_lb"][3] >= 784
 
 
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
@@ -138,8 +141,8 @@ def test_all_linked_patterns_remain_detectable_after_camera_blur() -> None:
         observation = match_linked_pattern_observation(pattern, blurred)
         matched_counts.append(0 if observation is None else observation.matched_count)
 
-    assert len(matched_counts) == 8
-    assert min(matched_counts) >= 6
+    assert len(matched_counts) == 28
+    assert min(matched_counts) >= 4
 
 
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
@@ -215,32 +218,6 @@ def test_linked_pattern_collection_retries_a_required_pattern_after_an_empty_att
     assert capture.observation is not None
     assert capture.observation.matched_count >= 6
     assert capture.attempts == 2
-
-
-def test_sixth_pocket_does_not_require_retry_after_four_pocket_zones_succeeded() -> None:
-    camera = np.asarray([[x, y] for y in (100.0, 150.0) for x in (100.0, 150.0, 200.0)], dtype=np.float32)
-
-    def observation(zone: str) -> LinkedCalibrationObservation:
-        return LinkedCalibrationObservation(
-            zone,
-            zone,
-            zone,
-            camera,
-            camera.copy(),
-            np.arange(6),
-            6,
-            6,
-        )
-
-    accepted = [observation(zone) for zone in ("pocket_mt", "pocket_rt", "pocket_rb", "pocket_mb")]
-    sixth = next(
-        pattern
-        for pattern in build_linked_patterns(_sample_geometry(), (1280, 800))
-        if pattern.emphasis_zone == "pocket_lb"
-    )
-
-    assert linked_pattern_requires_retry(sixth, None, accepted[:3], minimum_pocket_zones=4) is True
-    assert linked_pattern_requires_retry(sixth, None, accepted, minimum_pocket_zones=4) is False
 
 
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
@@ -320,6 +297,7 @@ def test_linked_calibration_can_recover_projector_mapping_from_warped_patterns(t
     assert result.projection.is_valid
     assert result.projection.table_polygon_proj.shape[0] == 4
     assert result.projection.table_control_points_norm.shape[0] >= 12
+    assert result.projection.table_control_points_norm.shape[0] <= 120
     assert result.projection.table_control_points_proj.shape == result.projection.table_control_points_norm.shape
     assert result.summary["geometry_model"] == "independent_2d"
     assert result.summary["camera_extrinsics_used"] is False
@@ -371,12 +349,14 @@ def test_projection_summary_exposes_runtime_residual_support() -> None:
 def test_linked_calibration_rejects_excessive_ransac_outliers() -> None:
     camera = np.asarray([[x, y] for y in (100.0, 300.0, 500.0) for x in (100.0, 300.0, 500.0, 700.0)], dtype=np.float32)
     projector = camera * np.asarray([1.2, 1.1], dtype=np.float32) + np.asarray([20.0, 30.0], dtype=np.float32)
+    camera = np.tile(camera, (4, 1))
+    projector = np.tile(projector, (4, 1))
     corrupted = projector.copy()
     corrupted[::2] += np.asarray([400.0, -300.0], dtype=np.float32)
 
     observations = [
-        LinkedCalibrationObservation("clean", "clean", "center", camera, projector, np.arange(12), 12, 12),
-        LinkedCalibrationObservation("bad", "bad", "pocket_lt", camera, corrupted, np.arange(12), 12, 12),
+        LinkedCalibrationObservation("clean", "clean", "center", camera, projector, np.arange(48), 48, 48),
+        LinkedCalibrationObservation("bad", "bad", "pocket_lt", camera, corrupted, np.arange(48), 48, 48),
     ]
 
     with pytest.raises(RuntimeError, match="inlier"):
@@ -407,31 +387,24 @@ def test_linked_calibration_requires_table_polygon_anchor() -> None:
         )
 
 
-def test_linked_calibration_requires_named_pockets_even_when_points_cover_table() -> None:
+def test_linked_calibration_uses_actual_coverage_instead_of_named_pocket_zones() -> None:
     def observation(pattern_id: str, zone: str, camera: np.ndarray) -> LinkedCalibrationObservation:
         projector = camera * np.asarray([1.10, 1.05], dtype=np.float32) + np.asarray([20.0, 30.0], dtype=np.float32)
         count = int(camera.shape[0])
         return LinkedCalibrationObservation(pattern_id, pattern_id, zone, camera, projector, np.arange(count), count, count)
 
-    full = np.asarray(
-        [[x, y] for y in (90.0, 300.0, 510.0) for x in (120.0, 380.0, 640.0, 900.0)],
+    dense = np.asarray(
+        [[x, y] for y in np.linspace(24.0, 576.0, 8) for x in np.linspace(40.0, 960.0, 10)],
         dtype=np.float32,
     )
-    center = np.asarray([[x, y] for y in (230.0, 370.0) for x in (360.0, 500.0, 640.0)], dtype=np.float32)
-    pocket_lt = np.asarray([[x, y] for y in (80.0, 150.0) for x in (90.0, 170.0, 250.0)], dtype=np.float32)
-    pocket_rb = np.asarray([[x, y] for y in (450.0, 530.0) for x in (750.0, 840.0, 930.0)], dtype=np.float32)
+    result = solve_linked_projection_calibration(
+        [observation("full", "full", dense[:40]), observation("center", "center", dense[40:])],
+        (1280, 800),
+        table_polygon_cam=np.asarray([[0, 0], [1000, 0], [1000, 600], [0, 600]], dtype=np.float32),
+    )
 
-    with pytest.raises(RuntimeError, match="pocket zones=2/4"):
-        solve_linked_projection_calibration(
-            [
-                observation("full", "full", full),
-                observation("center", "center", center),
-                observation("pocket_lt", "pocket_lt", pocket_lt),
-                observation("pocket_rb", "pocket_rb", pocket_rb),
-            ],
-            (1280, 800),
-            table_polygon_cam=np.asarray([[0, 0], [1000, 0], [1000, 600], [0, 600]], dtype=np.float32),
-        )
+    assert result.summary["pocket_zones_used"] == 0
+    assert result.projection.is_valid
 
 
 def test_linked_calibration_rejects_legacy_minimum_geometric_coverage() -> None:
@@ -451,12 +424,14 @@ def test_linked_calibration_rejects_legacy_minimum_geometric_coverage() -> None:
     camera = normalized * np.asarray([1000.0, 600.0], dtype=np.float32)
     projector = camera * np.asarray([1.10, 1.05], dtype=np.float32) + np.asarray([20.0, 30.0], dtype=np.float32)
     zones = ["full", "center", "pocket_lt", "pocket_rb"]
+    camera = np.tile(camera, (3, 1))
+    projector = np.tile(projector, (3, 1))
     observations = [
-        LinkedCalibrationObservation(zone, zone, zone, camera, projector, np.arange(8), 8, 8)
+        LinkedCalibrationObservation(zone, zone, zone, camera, projector, np.arange(24), 24, 24)
         for zone in zones
     ]
 
-    with pytest.raises(RuntimeError, match="insufficient spatial coverage"):
+    with pytest.raises(RuntimeError, match="incomplete full-table coverage"):
         solve_linked_projection_calibration(
             observations,
             (1280, 800),
@@ -470,13 +445,15 @@ def test_linked_calibration_rejects_named_zones_when_points_are_clustered() -> N
         dtype=np.float32,
     )
     projector = camera * np.asarray([1.10, 1.05], dtype=np.float32) + np.asarray([20.0, 30.0], dtype=np.float32)
+    camera = np.tile(camera, (2, 1))
+    projector = np.tile(projector, (2, 1))
     zones = ["full", "center", "pocket_lt", "pocket_rt", "pocket_rb", "pocket_lb"]
     observations = [
-        LinkedCalibrationObservation(zone, zone, zone, camera, projector, np.arange(9), 9, 9)
+        LinkedCalibrationObservation(zone, zone, zone, camera, projector, np.arange(18), 18, 18)
         for zone in zones
     ]
 
-    with pytest.raises(RuntimeError, match="width="):
+    with pytest.raises(RuntimeError, match="width coverage"):
         solve_linked_projection_calibration(
             observations,
             (1280, 800),

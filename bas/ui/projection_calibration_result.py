@@ -105,6 +105,9 @@ def _acceptance_summary(report: dict, stats: dict, point_count: int) -> str:
         )
     )
     maximum_px = float(report.get("ransac_inlier_max_px", stats.get("max_px", 0.0)))
+    edge = coverage.get("edge_coverage", {})
+    if not isinstance(edge, dict):
+        edge = {}
     return (
         f"{'PASS' if passed else 'FAIL'} | patterns "
         f"{int(report.get('patterns_used', 0))}/{int(report.get('patterns_total', 0))} | "
@@ -115,5 +118,11 @@ def _acceptance_summary(report: dict, stats: dict, point_count: int) -> str:
         f"hull{float(coverage.get('hull_area_ratio', 0.0)):.0%} | "
         f"pockets {int(report.get('pocket_zones_used', 0))} | "
         f"CV P95 {float(report.get('pattern_cv_p95_px', 0.0)):.2f}px\n"
+        f"grid {float(coverage.get('core_grid_occupied_ratio', 0.0)):.0%} | "
+        f"edges T{float(edge.get('top', 0.0)):.0%} "
+        f"R{float(edge.get('right', 0.0)):.0%} "
+        f"B{float(edge.get('bottom', 0.0)):.0%} "
+        f"L{float(edge.get('left', 0.0)):.0%} | "
+        f"max hole {float(coverage.get('maximum_hole_distance_ratio', 0.0)):.1%}\n"
         "point error: green <=1px, yellow <=3px, red >3px"
     )
