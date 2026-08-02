@@ -22,6 +22,10 @@ from ..calibration import (
     start_calibration_audit,
     update_calibration_table_boundaries_from_geometry_frame,
 )
+from ..calibration.ball_sampling_detection import (
+    BALL_SAMPLING_DETECTION_VERSION,
+    ball_sampling_geometry_is_usable,
+)
 from ..capture import create_capture_service
 from ..geometry import TableGeometryLoader
 from ..geometry_contract import calibration_context
@@ -275,6 +279,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 "detector_model": self.operator.config.detector.model_path,
                 "projection_file": self.operator.config.calibration.projection_file,
                 "sampling_grid": [ENGINEERED_SAMPLING_COLS, ENGINEERED_SAMPLING_ROWS],
+                "sampling_detection": BALL_SAMPLING_DETECTION_VERSION,
             },
         )
         self._abort_requested = False
@@ -958,7 +963,11 @@ def _select_ball_candidate(
     expected_radius_px: float,
 ) -> BallCandidateSelection:
     ball_detections = [detection for detection in detections if _looks_like_ball_detection(detection)]
-    geometry_accepted = [detection for detection in ball_detections if _ball_geometry_is_usable(detection)]
+    geometry_accepted = [
+        detection
+        for detection in ball_detections
+        if ball_sampling_geometry_is_usable(detection, expected_cam, expected_radius_px)
+    ]
     size_accepted = [
         detection
         for detection in geometry_accepted
@@ -1005,15 +1014,6 @@ def _pick_ball_candidate(
         expected_radius_px=expected_radius_px,
     )
     return selection.candidate, selection.size_accepted_count, selection.nearest_distance_px
-
-
-def _ball_geometry_is_usable(detection: Detection) -> bool:
-    method = str(detection.geometry_method or "").strip().lower()
-    quality = float(detection.geometry_quality)
-    confidence = float(detection.conf)
-    if method.startswith("bbox"):
-        return False
-    return quality >= 0.40
 
 
 def _ball_candidate_diagnostic_text(

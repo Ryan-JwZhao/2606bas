@@ -270,6 +270,76 @@ def test_stable_sample_tolerates_isolated_detector_dropouts(monkeypatch) -> None
     assert sample is not None
 
 
+def test_stable_sample_completes_at_unchanged_target_with_bbox_recovery(monkeypatch) -> None:
+    from bas.ui import engineered_ball_compensation_wizard as wizard
+
+    detection = Detection(
+        bbox=(70.0, 70.0, 130.0, 130.0),
+        conf=0.94,
+        cls_id=0,
+        cls_name="cue",
+        geometry_quality=0.45,
+        geometry_method="bbox",
+    )
+
+    class Detector:
+        version = "bbox-recovery-test"
+
+        def detect(self, _frame, *, mask_polygon=None):
+            del mask_polygon
+            return [detection]
+
+    class FakeClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def perf_counter(self) -> float:
+            self.now += 0.02
+            return self.now
+
+    clock = FakeClock()
+    monkeypatch.setattr(wizard.time, "perf_counter", clock.perf_counter)
+    monkeypatch.setattr(wizard.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(wizard, "ENGINEERED_SAMPLE_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(wizard, "ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS", 0.12)
+
+    calibration = SimpleNamespace(
+        table=SimpleNamespace(ball_diameter_mm=60.0),
+        projection=SimpleNamespace(table_polygon_cam=None),
+        table_mm_to_camera_px=lambda points: np.asarray(points, dtype=np.float32),
+        camera_px_to_table_mm=lambda points: np.asarray(points, dtype=np.float32),
+    )
+    dialog = SimpleNamespace(
+        _abort_requested=False,
+        summary=SimpleNamespace(setText=lambda _text: None),
+        _set_preview_image=lambda _image: None,
+        _pump_ui=lambda: None,
+        _append_log=lambda _text: None,
+    )
+    capture = SimpleNamespace(read=lambda: SimpleNamespace(image=np.zeros((240, 320, 3), dtype=np.uint8)))
+    fixed_target = np.asarray([100.0, 100.0], dtype=np.float32)
+    projected_target = np.asarray([240.0, 180.0], dtype=np.float32)
+
+    sample = EngineeredBallCompensationWizardDialog._wait_for_stable_sample(
+        dialog,
+        capture,
+        Detector(),
+        calibration,
+        None,
+        0,
+        56,
+        fixed_target,
+        projected_target,
+        fixed_target,
+    )
+
+    assert sample is not None
+    assert sample.target_table_mm == (100.0, 100.0)
+    assert sample.projected_target_px == (240.0, 180.0)
+    assert sample.detected_camera_px == (100.0, 100.0)
+    assert sample.geometry_method == "bbox"
+
+
 def test_stable_sample_resets_after_sustained_detector_dropout() -> None:
     from bas.ui import engineered_ball_compensation_wizard as wizard
 
@@ -279,7 +349,7 @@ def test_stable_sample_resets_after_sustained_detector_dropout() -> None:
     assert wizard._candidate_dropout_expired(10.0, 10.0 + grace + 0.01) is True
 
 
-def test_ball_sampling_rejects_detector_bbox_fallback_near_target() -> None:
+def test_ball_sampling_accepts_stable_size_matched_bbox_at_fixed_target() -> None:
     detection = Detection(
         bbox=(470.0, 370.0, 530.0, 430.0),
         conf=0.92,
@@ -295,9 +365,29 @@ def test_ball_sampling_rejects_detector_bbox_fallback_near_target() -> None:
         expected_radius_px=30.0,
     )
 
-    assert candidate is None
-    assert candidate_count == 0
-    assert np.isinf(distance_px)
+    assert candidate is detection
+    assert candidate_count == 1
+    assert distance_px == 0.0
+
+
+def test_ball_sampling_still_rejects_unsafe_bbox_fallbacks() -> None:
+    expected = np.asarray([500.0, 400.0], dtype=np.float32)
+    unsafe = [
+        Detection((470.0, 370.0, 530.0, 430.0), 0.20, 2, "sob", geometry_method="bbox"),
+        Detection((450.0, 385.0, 550.0, 415.0), 0.95, 2, "sob", geometry_method="bbox"),
+        Detection((430.0, 330.0, 570.0, 470.0), 0.95, 2, "sob", geometry_method="bbox"),
+        Detection((540.0, 410.0, 600.0, 470.0), 0.95, 2, "sob", geometry_method="bbox"),
+    ]
+
+    for detection in unsafe:
+        candidate, candidate_count, distance_px = _pick_ball_candidate(
+            [detection],
+            expected,
+            expected_radius_px=30.0,
+        )
+        assert candidate is None
+        assert candidate_count == 0
+        assert np.isinf(distance_px)
 
 
 def test_ball_sampling_target_keeps_ball_interior_dark() -> None:
