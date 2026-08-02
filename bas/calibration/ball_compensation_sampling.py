@@ -15,6 +15,10 @@ MIN_BALL_MAP_CV_P95_MM = 8.0
 MIN_BALL_TARGET_WIDTH_RATIO = 0.60
 MIN_BALL_TARGET_HEIGHT_RATIO = 0.55
 MIN_BALL_TARGET_HULL_AREA_RATIO = 0.35
+MAX_BALL_HOLDOUT_P95_BALL_DIAMETER_RATIO = 0.12
+MIN_BALL_HOLDOUT_P95_MM = 5.0
+MAX_BALL_HOLDOUT_BIAS_BALL_DIAMETER_RATIO = 0.05
+MIN_BALL_HOLDOUT_BIAS_MM = 2.0
 
 
 @dataclass
@@ -88,9 +92,8 @@ def build_engineered_ball_sampling_grid(
                     min_spacing=_estimated_sampling_spacing(safe_polygon, cols=cols, rows=rows),
                 )
                 if merged.shape[0] >= 4:
-                    order = np.lexsort((merged[:, 0], merged[:, 1]))
-                    return merged[order].reshape((-1, 2))
-            return polygon_grid
+                    return _efficient_sampling_order(merged)
+            return _efficient_sampling_order(polygon_grid)
 
     margin_x = min(width * 0.16, max(135.0, diameter * 2.4))
     margin_y = min(height * 0.16, max(110.0, diameter * 2.0))
@@ -101,7 +104,26 @@ def build_engineered_ball_sampling_grid(
     xs = np.linspace(x0, x1, cols, dtype=np.float64)
     ys = np.linspace(y0, y1, rows, dtype=np.float64)
     grid = np.asarray([[x, y] for y in ys for x in xs], dtype=np.float64)
-    return grid.reshape((-1, 2))
+    return _efficient_sampling_order(grid)
+
+
+def _efficient_sampling_order(points: np.ndarray) -> np.ndarray:
+    """Order spread points by short moves without changing their coverage."""
+
+    pts = np.asarray(points, dtype=np.float64).reshape((-1, 2))
+    if pts.shape[0] <= 2:
+        return pts.copy()
+    remaining = set(range(pts.shape[0]))
+    current = int(np.lexsort((pts[:, 0], pts[:, 1]))[0])
+    order = [current]
+    remaining.remove(current)
+    while remaining:
+        candidates = np.asarray(sorted(remaining), dtype=np.int32)
+        distances = np.linalg.norm(pts[candidates] - pts[current], axis=1)
+        current = int(candidates[int(np.argmin(distances))])
+        order.append(current)
+        remaining.remove(current)
+    return pts[np.asarray(order, dtype=np.int32)].reshape((-1, 2))
 
 
 def update_calibration_table_boundaries_from_geometry_frame(
@@ -159,7 +181,7 @@ def build_ball_compensation_model(
     samples: Sequence[BallCompensationSample],
     ball_diameter_mm: float,
     max_neighbors: int = 8,
-    mode: str = "engineered_ball_comp_v2",
+    mode: str = "engineered_ball_comp_v3",
     minimum_samples: int = 20,
     table_width_mm: float | None = None,
     table_height_mm: float | None = None,
@@ -218,7 +240,7 @@ def build_ball_compensation_model(
             + "; ".join(str(error) for error in quality_gate["quality_gate_errors"])
         )
     return BallCompensationModel(
-        mode=str(mode or "engineered_ball_comp_v2"),
+        mode=str(mode or "engineered_ball_comp_v3"),
         control_points_camera_px=controls,
         delta_table_mm=deltas,
         target_table_mm=targets,
@@ -226,6 +248,92 @@ def build_ball_compensation_model(
         max_neighbors=max(1, min(int(max_neighbors), len(samples))),
         quality_report=quality_report,
     )
+
+
+def split_ball_compensation_samples(
+    samples: Sequence[BallCompensationSample],
+    *,
+    holdout_ratio: float = 0.18,
+    minimum_holdout: int = 8,
+) -> tuple[list[BallCompensationSample], list[BallCompensationSample]]:
+    """Reserve spatially spread samples for honest end-to-end validation."""
+
+    items = list(samples)
+    if len(items) < 24:
+        return items, []
+    count = min(len(items) - 20, max(int(minimum_holdout), int(round(len(items) * float(holdout_ratio)))))
+    points = np.asarray([sample.target_table_mm for sample in items], dtype=np.float64)
+    scale = np.maximum(np.ptp(points, axis=0), 1.0)
+    normalized = (points - np.min(points, axis=0)) / scale
+    center = np.asarray([0.5, 0.5], dtype=np.float64)
+    selected = [int(np.argmax(np.linalg.norm(normalized - center, axis=1)))]
+    while len(selected) < count:
+        distance = np.min(
+            np.linalg.norm(normalized[:, None, :] - normalized[np.asarray(selected)][None, :, :], axis=2),
+            axis=1,
+        )
+        distance[np.asarray(selected, dtype=np.int32)] = -1.0
+        selected.append(int(np.argmax(distance)))
+    held = set(selected)
+    return [sample for index, sample in enumerate(items) if index not in held], [items[index] for index in selected]
+
+
+def evaluate_ball_compensation_holdout(
+    samples: Sequence[BallCompensationSample],
+    calibration,
+) -> Dict[str, object]:
+    if not samples:
+        return {
+            "sample_count": 0,
+            "error_mm": _stats_report(np.zeros((0,), dtype=np.float64)),
+            "mean_vector_mm": [0.0, 0.0],
+            "quality_gate_passed": False,
+            "quality_gate_errors": ["no holdout samples were reserved"],
+        }
+    camera = np.asarray([sample.detected_camera_px for sample in samples], dtype=np.float32)
+    target = np.asarray([sample.target_table_mm for sample in samples], dtype=np.float64)
+    predicted = calibration.ball_camera_px_to_table_mm(camera).astype(np.float64)
+    vectors = predicted - target
+    error_report = _stats_report(np.linalg.norm(vectors, axis=1))
+    mean_vector = np.mean(vectors, axis=0)
+    ball_diameter_mm = float(calibration.table.ball_diameter_mm)
+    maximum_p95_mm = max(
+        MIN_BALL_HOLDOUT_P95_MM,
+        ball_diameter_mm * MAX_BALL_HOLDOUT_P95_BALL_DIAMETER_RATIO,
+    )
+    maximum_bias_mm = max(
+        MIN_BALL_HOLDOUT_BIAS_MM,
+        ball_diameter_mm * MAX_BALL_HOLDOUT_BIAS_BALL_DIAMETER_RATIO,
+    )
+    quality_errors: list[str] = []
+    if float(error_report["p95"]) > maximum_p95_mm:
+        quality_errors.append(
+            f"holdout P95 {float(error_report['p95']):.2f} mm exceeds {maximum_p95_mm:.2f} mm"
+        )
+    bias_mm = float(np.linalg.norm(mean_vector))
+    if bias_mm > maximum_bias_mm:
+        quality_errors.append(
+            f"holdout mean bias {bias_mm:.2f} mm exceeds {maximum_bias_mm:.2f} mm"
+        )
+    return {
+        "sample_count": int(len(samples)),
+        "error_mm": error_report,
+        "mean_vector_mm": mean_vector.tolist(),
+        "maximum_p95_mm": float(maximum_p95_mm),
+        "maximum_mean_bias_mm": float(maximum_bias_mm),
+        "quality_gate_passed": not quality_errors,
+        "quality_gate_errors": quality_errors,
+        "samples": [
+            {
+                "sample_index": int(sample.sample_index),
+                "target_table_mm": list(sample.target_table_mm),
+                "predicted_table_mm": predicted[index].tolist(),
+                "error_vector_mm": vectors[index].tolist(),
+                "error_mm": float(np.linalg.norm(vectors[index])),
+            }
+            for index, sample in enumerate(samples)
+        ],
+    }
 
 
 def evaluate_ball_compensation_quality(
@@ -245,9 +353,9 @@ def evaluate_ball_compensation_quality(
 
     # Import lazily so the persistence module remains independent while using
     # the exact regularized mapping family selected by IndependentGeometry.
-    from .geometry import regularized_point_map_quality
+    from .geometry import ball_center_map_quality
 
-    mapping_quality = regularized_point_map_quality(
+    mapping_quality = ball_center_map_quality(
         controls,
         targets,
         sample_weights=weights,

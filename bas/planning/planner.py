@@ -282,8 +282,13 @@ class GeometryPhysicsPlanner:
                 continue
             if float(getattr(tr, "quality", 0.0)) <= 0.25:
                 continue
-            center = self.calibration.ball_camera_px_to_table_mm(np.asarray([tr.center_px], dtype=np.float32))[0]
-            radius_mm = self.calibration.ball_pixel_radius_to_mm(tr.center_px, tr.radius_px)
+            located = self.calibration.ball_geometry.locate(
+                tr.center_px,
+                radius_px=tr.radius_px,
+                geometry_quality=tr.quality,
+            )
+            center = np.asarray(located.table_center_mm, dtype=np.float32)
+            radius_mm = float(located.radius_mm)
             if radius_mm <= 1.0 or radius_mm > 80.0:
                 radius_mm = 0.5 * self.calibration.table.ball_diameter_mm
             balls.append(

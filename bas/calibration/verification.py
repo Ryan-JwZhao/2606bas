@@ -33,6 +33,7 @@ def verify_holdout_samples(samples: Iterable[Dict[str, Any]], service: Calibrati
     mm_errors: List[float] = []
     distances_cm: List[float] = []
     zone_errors: Dict[str, List[float]] = {}
+    zone_vectors: Dict[str, List[np.ndarray]] = {}
     used_samples = 0
     skipped_samples = 0
 
@@ -62,9 +63,11 @@ def verify_holdout_samples(samples: Iterable[Dict[str, Any]], service: Calibrati
                     else service.camera_px_to_table_mm(np.asarray([cam], dtype=np.float32))[0]
                 )
             )
-            err = float(np.linalg.norm(observed - np.asarray(world, dtype=np.float32)))
+            error_vector = observed - np.asarray(world, dtype=np.float32)
+            err = float(np.linalg.norm(error_vector))
             mm_errors.append(err)
             zone_errors.setdefault(zone, []).append(err)
+            zone_vectors.setdefault(zone, []).append(error_vector.astype(np.float64))
             distances_cm.append(_distance_cm(sample, world))
             sample_used = True
 
@@ -79,6 +82,11 @@ def verify_holdout_samples(samples: Iterable[Dict[str, Any]], service: Calibrati
         "image_error_px": _stats(img_errors),
         "table_error_mm": _stats(mm_errors),
         "zone_p95_mm": {zone: percentile(values, 95) for zone, values in sorted(zone_errors.items()) if values},
+        "zone_mean_vector_mm": {
+            zone: np.mean(np.asarray(vectors, dtype=np.float64), axis=0).tolist()
+            for zone, vectors in sorted(zone_vectors.items())
+            if vectors
+        },
         "distance_slope_mm_per_cm": _fit_slope(distances_cm, mm_errors),
         "coverage": _coverage_report(used_samples, zone_errors),
         "thresholds": {

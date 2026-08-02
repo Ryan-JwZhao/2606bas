@@ -15,6 +15,9 @@ from ..calibration import (
     build_ball_compensation_model,
     build_engineered_ball_sampling_grid,
     create_setting_aware_calibration_service,
+    evaluate_ball_compensation_holdout,
+    split_ball_compensation_samples,
+    start_calibration_audit,
     update_calibration_table_boundaries_from_geometry_frame,
 )
 from ..capture import create_capture_service
@@ -28,8 +31,8 @@ from ..utils import group_from_class
 
 TIMESTAMPED_BALL_COMPENSATION_FILE_RE = re.compile(r"^(?P<base>.*?)(?:_\d{8}_\d{6})?$")
 DEFAULT_BALL_COMPENSATION_OUTPUT_DIR = PROJECT_ROOT / "local_settings" / "calibrations"
-ENGINEERED_SAMPLING_COLS = 6
-ENGINEERED_SAMPLING_ROWS = 5
+ENGINEERED_SAMPLING_COLS = 8
+ENGINEERED_SAMPLING_ROWS = 7
 ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS = 3.0
 ENGINEERED_SAMPLE_TIMEOUT_SECONDS = 28.0
 ENGINEERED_CENTER_PLAYABLE_SAFE_INSET_MM = 6.0
@@ -255,6 +258,20 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         if self._busy:
             return
         capture = None
+        audit = start_calibration_audit(
+            self.operator.config.logging.directory,
+            "ball_center_compensation",
+            context={
+                "camera_backend": self.operator.config.camera.backend,
+                "camera_id": self.operator.config.camera.camera_id,
+                "camera_device_index": self.operator.config.camera.device_index,
+                "nori_device_id": self.operator.config.camera.nori_device_id,
+                "detector_backend": self.operator.config.detector.backend,
+                "detector_model": self.operator.config.detector.model_path,
+                "projection_file": self.operator.config.calibration.projection_file,
+                "sampling_grid": [ENGINEERED_SAMPLING_COLS, ENGINEERED_SAMPLING_ROWS],
+            },
+        )
         self._abort_requested = False
         self._saved_path = None
         self._samples = []
@@ -277,6 +294,20 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 detector_config=self.operator.config.detector,
                 projection_config=self.operator.config.projection,
                 actual_frame_size=(int(capture_info.width), int(capture_info.height)),
+            )
+            audit.event(
+                "calibration_loaded",
+                metrics={
+                    "frame_width": int(capture_info.width),
+                    "frame_height": int(capture_info.height),
+                    "projection_valid": calibration.projection.is_valid,
+                    "previous_ball_model_valid": calibration.ball_compensation_model.is_valid,
+                },
+                details={
+                    "projection_source": calibration.projection.source_path,
+                    "ball_model_source": calibration.ball_compensation_model.source_path,
+                    "geometry_quality": calibration.geometry_quality_report,
+                },
             )
             self._append_log(
                 "camera_coordinate_domain="
@@ -358,6 +389,16 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 f"grid={ENGINEERED_SAMPLING_COLS}x{ENGINEERED_SAMPLING_ROWS}, "
                 f"edge_safe_inset={edge_safe_inset_mm:.1f}mm"
             )
+            audit.event(
+                "sampling_grid_built",
+                metrics={
+                    "sample_count": len(sample_points),
+                    "columns": ENGINEERED_SAMPLING_COLS,
+                    "rows": ENGINEERED_SAMPLING_ROWS,
+                    "edge_safe_inset_mm": edge_safe_inset_mm,
+                },
+                details={"sampling_region": sampling_region_name},
+            )
             self._append_log(f"已生成 {len(sample_points)} 个工程采样点，请按投影目标圈移动单颗球。")
 
             total = max(1, len(sample_points))
@@ -392,8 +433,31 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     expected_cam.astype(np.float32),
                 )
                 if outcome is None:
+                    audit.event(
+                        "sample_skipped",
+                        status="warning",
+                        metrics={"sample_index": idx + 1, "total": total},
+                        details={"target_table_mm": target_table_mm},
+                    )
                     continue
                 self._samples.append(outcome)
+                audit.event(
+                    "sample_accepted",
+                    metrics={
+                        "sample_index": idx + 1,
+                        "total": total,
+                        "detection_confidence": outcome.detection_confidence,
+                        "stability_spread_px": outcome.stability_spread_px,
+                        "geometry_quality": outcome.geometry_quality,
+                        "delta_norm_mm": float(np.linalg.norm(outcome.delta_table_mm)),
+                    },
+                    details={
+                        "target_table_mm": outcome.target_table_mm,
+                        "detected_camera_px": outcome.detected_camera_px,
+                        "delta_table_mm": outcome.delta_table_mm,
+                        "geometry_method": outcome.geometry_method,
+                    },
+                )
                 self._append_log(
                     "采样成功: "
                     f"camera=({outcome.detected_camera_px[0]:.1f}, {outcome.detected_camera_px[1]:.1f}) px, "
@@ -402,8 +466,17 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
 
             if len(self._samples) < 20:
                 raise RuntimeError(f"有效采样点只有 {len(self._samples)} 个，至少需要 20 个点才能生成可靠补偿文件。")
+            training_samples, holdout_samples = split_ball_compensation_samples(self._samples)
+            audit.event(
+                "samples_split",
+                metrics={
+                    "accepted_count": len(self._samples),
+                    "training_count": len(training_samples),
+                    "holdout_count": len(holdout_samples),
+                },
+            )
             model = build_ball_compensation_model(
-                self._samples,
+                training_samples,
                 ball_diameter_mm=calibration.table.ball_diameter_mm,
                 table_width_mm=calibration.table.width_mm,
                 table_height_mm=calibration.table.height_mm,
@@ -431,6 +504,23 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 detector_model_file=self.operator.config.detector.model_path,
                 ball_diameter_mm=float(calibration.table.ball_diameter_mm),
             )
+            previous_model = calibration.ball_compensation_model
+            calibration.ball_compensation_model = model
+            calibration._rebuild_geometry()
+            holdout_report = evaluate_ball_compensation_holdout(holdout_samples, calibration)
+            audit.event(
+                "holdout_evaluated",
+                status="ok" if bool(holdout_report.get("quality_gate_passed", False)) else "failed",
+                details={
+                    "training_quality": model.quality_report,
+                    "holdout_quality": holdout_report,
+                },
+            )
+            if not bool(holdout_report.get("quality_gate_passed", False)):
+                calibration.ball_compensation_model = previous_model
+                calibration._rebuild_geometry()
+                reasons = "; ".join(str(item) for item in holdout_report.get("quality_gate_errors", []))
+                raise RuntimeError(f"ball compensation holdout validation failed: {reasons}")
             save_template = self._safe_ball_compensation_output_path(calibration)
             save_path = timestamped_ball_compensation_output_path(str(save_template))
             model.save_json(
@@ -439,7 +529,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     "ball_diameter_mm": float(calibration.table.ball_diameter_mm),
                     "projection_file": calibration.projection.source_path,
                     "settle_delay_seconds": float(ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS),
-                    "samples": [sample.to_dict() for sample in self._samples],
+                    "samples": [sample.to_dict() for sample in training_samples],
+                    "holdout_samples": [sample.to_dict() for sample in holdout_samples],
+                    "holdout_quality_report": holdout_report,
                     "sampling_grid_table_mm": np.asarray(sample_points, dtype=np.float64).reshape((-1, 2)).tolist(),
                 },
             )
@@ -459,12 +551,32 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             )
             self.output_path_edit.setText(str(save_path))
             self._append_log(f"工程球体补偿文件已生成并写回当前设置: {save_path}")
+            audit_path = audit.finish(
+                "success",
+                quality={
+                    "training": model.quality_report,
+                    "holdout": holdout_report,
+                },
+                artifacts=[save_path],
+            )
+            self._append_log(f"校准审计报告: {audit_path}")
             if self._auto_close_on_success:
                 QtCore.QTimer.singleShot(0, self.accept)
         except _SamplingAborted:
+            audit_path = audit.finish(
+                "aborted",
+                quality={"accepted_sample_count": len(self._samples)},
+            )
+            self._append_log(f"校准审计报告: {audit_path}")
             self.summary.setText("工程球体补偿采样已停止，未生成新的补偿文件。")
             self._append_log("工程球体补偿采样已停止。")
         except Exception as exc:
+            audit_path = audit.finish(
+                "failed",
+                quality={"accepted_sample_count": len(self._samples)},
+                error=exc,
+            )
+            self._append_log(f"校准审计报告: {audit_path}")
             self.summary.setText(f"工程球体补偿采样失败: {exc}")
             self._append_log(f"工程球体补偿采样失败: {exc}")
             QtWidgets.QMessageBox.critical(self, "工程球体补偿采样失败", str(exc))
@@ -684,19 +796,19 @@ def _render_target_image(
     # changes a solid ball's appearance and can make both YOLO segmentation and
     # contour refinement fail. The surrounding ring and ticks still provide a
     # precise physical centering guide.
-    radius_x = int(round(max(22.0, float(target_ellipse.radius_x_px) * 1.35)))
-    radius_y = int(round(max(22.0, float(target_ellipse.radius_y_px) * 1.35)))
-    cv2.ellipse(
-        image,
-        center,
-        (radius_x, radius_y),
-        float(target_ellipse.rotation_deg),
-        0.0,
-        360.0,
-        (80, 255, 160),
-        3,
-        cv2.LINE_AA,
-    )
+    radius_x, radius_y = _target_guide_radii(target_ellipse)
+    for start, end in ((-12.0, 12.0), (78.0, 102.0), (168.0, 192.0), (258.0, 282.0)):
+        cv2.ellipse(
+            image,
+            center,
+            (radius_x, radius_y),
+            float(target_ellipse.rotation_deg),
+            start,
+            end,
+            (80, 255, 160),
+            3,
+            cv2.LINE_AA,
+        )
     cx, cy = center
     tick_gap = 7
     tick_length = 14
@@ -726,6 +838,15 @@ def _render_target_image(
         cv2.LINE_AA,
     )
     return image
+
+
+def _target_guide_radii(target_ellipse) -> tuple[int, int]:
+    """Keep the centering guide close to the projected physical ball edge."""
+
+    return (
+        int(round(max(6.0, float(target_ellipse.radius_x_px) + 2.0))),
+        int(round(max(6.0, float(target_ellipse.radius_y_px) + 2.0))),
+    )
 
 
 def _detection_regions_for_frame(frame_bgr: np.ndarray, geometry, calibration):
@@ -825,7 +946,7 @@ def _ball_geometry_is_usable(detection: Detection) -> bool:
     quality = float(detection.geometry_quality)
     confidence = float(detection.conf)
     if method.startswith("bbox"):
-        return quality >= 0.40 and confidence >= 0.50
+        return False
     return quality >= 0.40
 
 

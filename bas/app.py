@@ -584,13 +584,17 @@ class RuntimePipeline:
         dt = 0.1
         for track in tracks.tracks:
             try:
-                center_px = np.asarray([track.center_px], dtype=np.float32)
-                center_mm = self.calibration.ball_camera_px_to_table_mm(center_px)[0]
+                located = self.calibration.ball_geometry.locate(
+                    track.center_px,
+                    radius_px=track.radius_px,
+                    geometry_quality=track.quality,
+                )
+                center_mm = np.asarray(located.table_center_mm, dtype=np.float32)
                 v_px = np.asarray(track.velocity_px_s, dtype=np.float32)
                 edge_px = np.asarray([[track.center_px[0] + float(v_px[0]) * dt, track.center_px[1] + float(v_px[1]) * dt]], dtype=np.float32)
                 edge_mm = self.calibration.ball_camera_px_to_table_mm(edge_px)[0]
                 velocity_mm = (edge_mm - center_mm) / dt
-                radius_mm = self.calibration.ball_pixel_radius_to_mm(track.center_px, track.radius_px)
+                radius_mm = located.radius_mm
                 enriched.append(
                     replace(
                         track,

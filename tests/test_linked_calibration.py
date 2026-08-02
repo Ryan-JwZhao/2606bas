@@ -69,8 +69,8 @@ def test_build_linked_patterns_covers_full_and_focus_zones() -> None:
 def test_linked_calibration_runtime_summary_identifies_loaded_implementation() -> None:
     summary = linked_calibration_runtime_summary()
 
-    assert "linked-geometry-v5" in summary
-    assert "coverage=55%/55%/25%" in summary
+    assert "linked-geometry-v6" in summary
+    assert "coverage=62%/62%/34%" in summary
     assert "middle_pockets=diagonal_inset_v1" in summary
     assert "bas" in summary and "linked.py" in summary
 
@@ -233,7 +233,7 @@ def test_linked_calibration_requires_table_polygon_anchor() -> None:
         )
 
 
-def test_linked_calibration_accepts_two_pockets_when_points_cover_table() -> None:
+def test_linked_calibration_requires_named_pockets_even_when_points_cover_table() -> None:
     def observation(pattern_id: str, zone: str, camera: np.ndarray) -> LinkedCalibrationObservation:
         projector = camera * np.asarray([1.10, 1.05], dtype=np.float32) + np.asarray([20.0, 30.0], dtype=np.float32)
         count = int(camera.shape[0])
@@ -247,23 +247,20 @@ def test_linked_calibration_accepts_two_pockets_when_points_cover_table() -> Non
     pocket_lt = np.asarray([[x, y] for y in (80.0, 150.0) for x in (90.0, 170.0, 250.0)], dtype=np.float32)
     pocket_rb = np.asarray([[x, y] for y in (450.0, 530.0) for x in (750.0, 840.0, 930.0)], dtype=np.float32)
 
-    result = solve_linked_projection_calibration(
-        [
-            observation("full", "full", full),
-            observation("center", "center", center),
-            observation("pocket_lt", "pocket_lt", pocket_lt),
-            observation("pocket_rb", "pocket_rb", pocket_rb),
-        ],
-        (1280, 800),
-        table_polygon_cam=np.asarray([[0, 0], [1000, 0], [1000, 600], [0, 600]], dtype=np.float32),
-    )
-
-    assert result.projection.is_valid
-    assert result.summary["pocket_zones_used"] == 2
-    assert result.summary["coverage_gate"] == "geometric"
+    with pytest.raises(RuntimeError, match="pocket zones=2/4"):
+        solve_linked_projection_calibration(
+            [
+                observation("full", "full", full),
+                observation("center", "center", center),
+                observation("pocket_lt", "pocket_lt", pocket_lt),
+                observation("pocket_rb", "pocket_rb", pocket_rb),
+            ],
+            (1280, 800),
+            table_polygon_cam=np.asarray([[0, 0], [1000, 0], [1000, 600], [0, 600]], dtype=np.float32),
+        )
 
 
-def test_linked_calibration_accepts_measured_field_coverage_with_two_pockets() -> None:
+def test_linked_calibration_rejects_legacy_minimum_geometric_coverage() -> None:
     normalized = np.asarray(
         [
             [0.21, 0.475],
@@ -285,16 +282,12 @@ def test_linked_calibration_accepts_measured_field_coverage_with_two_pockets() -
         for zone in zones
     ]
 
-    result = solve_linked_projection_calibration(
-        observations,
-        (1280, 800),
-        table_polygon_cam=np.asarray([[0, 0], [1000, 0], [1000, 600], [0, 600]], dtype=np.float32),
-    )
-
-    coverage = result.summary["spatial_coverage"]
-    assert coverage["width_ratio"] == pytest.approx(0.58, abs=0.01)
-    assert coverage["height_ratio"] == pytest.approx(0.75, abs=0.01)
-    assert coverage["hull_area_ratio"] == pytest.approx(0.261, abs=0.01)
+    with pytest.raises(RuntimeError, match="insufficient spatial coverage"):
+        solve_linked_projection_calibration(
+            observations,
+            (1280, 800),
+            table_polygon_cam=np.asarray([[0, 0], [1000, 0], [1000, 600], [0, 600]], dtype=np.float32),
+        )
 
 
 def test_linked_calibration_rejects_named_zones_when_points_are_clustered() -> None:

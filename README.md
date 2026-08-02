@@ -617,3 +617,49 @@ node --test tests\web_control_coordinates.test.js
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q tests\test_detection_regions.py tests\test_detection_service.py tests\test_geometry_runtime.py tests\test_geometry_pocket_integration.py tests\test_pocket_observer.py tests\test_pocket_visual_state.py
 ```
+
+## 球心与投影几何阶段 1–4 升级（2026-08）
+
+本轮升级把球心补偿从“每个点独立修正”的理解，统一为“全局球心平面模型 + 局部残差 + 支撑域衰减”。相机检测球心、规划起点、投影圆圈和调试画面现在共享同一套 `BallCenterGeometry` 结果，避免各模块分别换算造成击球线与白球中心不一致。
+
+工程球心补偿向导现在使用 8×7、共 56 个空间均匀且按短路径排序的目标点。系统自动保留约 18% 的分散点作为 Holdout，只用其余点拟合；Holdout 的 P95 误差或平均方向偏差超限时不会保存新标定。目标提示改为贴近物理球边缘的四段短弧和外侧刻度，球内部保持暗色，便于人工判断是否真正居中。
+
+使用顺序：
+
+1. 先完成相机、台面和投影联合标定；新版会要求更充分的宽度、高度、凸包和袋口区域覆盖。
+2. 再运行“工程球心补偿”，依次移动单颗球完成全部 56 点。应优先保证球心居中和稳定，不要为了速度接受边框回退检测。
+3. 向导通过训练集交叉验证与独立 Holdout 后会保存带时间戳的 JSON，并写入训练/留出样本及质量报告。
+4. 重新启动应用以加载本轮代码，然后用投影调试模式检查近端、中央、远端及四周边缘；圆在投影像素中可能是椭圆，这是透视下保持台面真实圆形所需的正确结果。
+
+定向回归测试：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_ball_compensation_sampling.py tests\test_independent_geometry.py tests\test_ball_center_geometry.py tests\test_projection_debug.py tests\test_linked_calibration.py -q --basetemp local_settings\pytest_tmp\geometry_phase14
+```
+
+## 校准动作审计与日志
+
+联合投影校准和工程球心补偿现在都会建立独立审计会话，默认保存在：
+
+```text
+logs/calibration/YYYYMMDD/时间_流程_会话ID/
+├── events.jsonl
+└── summary.json
+```
+
+`events.jsonl` 按发生顺序记录配置摘要、相机实际分辨率、每个投影图样的识别结果、每个球心采样点的检测质量、跳过点、训练/Holdout 划分及质量验收。`summary.json` 记录最终状态、耗时、警告/错误数量、质量报告和校准产物路径。日志不保存相机帧或投影图片，避免产生大量文件；写日志失败也不会中断正在进行的校准。
+
+查看最近的校准会话：
+
+```powershell
+.\.venv\Scripts\python.exe -m bas.cli calibration-audits --limit 20
+```
+
+只查看某一流程：
+
+```powershell
+.\.venv\Scripts\python.exe -m bas.cli calibration-audits --workflow linked_projection
+.\.venv\Scripts\python.exe -m bas.cli calibration-audits --workflow ball_center_compensation
+```
+
+校准成功、失败或人工停止时，向导文本日志也会显示本次 `summary.json` 的完整路径，便于现场直接定位。

@@ -43,6 +43,7 @@ from ..calibration import (
     linked_calibration_runtime_summary,
     projection_output_summary,
     solve_linked_projection_calibration,
+    start_calibration_audit,
 )
 from ..capture import (
     VideoTimelineState,
@@ -1128,6 +1129,31 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
         if self._busy:
             return
         capture = None
+        audit = start_calibration_audit(
+            self.operator.config.logging.directory,
+            "linked_projection",
+            context={
+                "camera_backend": self.operator.config.camera.backend,
+                "camera_id": self.operator.config.camera.camera_id,
+                "camera_device_index": self.operator.config.camera.device_index,
+                "nori_device_id": self.operator.config.camera.nori_device_id,
+                "configured_frame_size": [
+                    self.operator.config.camera.width,
+                    self.operator.config.camera.height,
+                ],
+                "frame_rotation_degrees": self.operator.config.camera.frame_rotation_degrees,
+                "projector_size": [
+                    self.operator.config.projection.projector_width,
+                    self.operator.config.projection.projector_height,
+                ],
+                "geometry_paths": {
+                    "outline": self.operator.config.geometry.outline_path,
+                    "inline": self.operator.config.geometry.inline_path,
+                    "pocket": self.operator.config.geometry.pocket_path,
+                },
+                "implementation": linked_calibration_runtime_summary(),
+            },
+        )
         self._set_busy(True)
         self.progress.setValue(0)
         self._append_log("联动校正开始，准备同步当前配置。")
@@ -1156,6 +1182,11 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
             capture = create_capture_service(self.operator.config.camera)
             capture_info = capture.info()
             actual_frame_size = (int(capture_info.width), int(capture_info.height))
+            audit.event(
+                "capture_opened",
+                metrics={"width": actual_frame_size[0], "height": actual_frame_size[1]},
+                details={"backend": self.operator.config.camera.backend},
+            )
             self.operator.remember_calibration_frame_size(actual_frame_size)
             calibration = _create_calibration_workflow_service(
                 self.operator.config,
@@ -1239,6 +1270,22 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                             "并将相机曝光适当调低后重试；中心图样可识别前不会继续采集边缘图样。"
                         )
 
+                audit.event(
+                    "pattern_captured",
+                    status="ok" if best is not None else "warning",
+                    metrics={
+                        "pattern_index": idx + 1,
+                        "transition_frames": capture_result.transition_frames_read,
+                        "detection_frames": capture_result.detection_frames_read,
+                        "matched_frames": capture_result.matched_frames,
+                        "matched_points": int(best.matched_count) if best is not None else 0,
+                    },
+                    details={
+                        "title": pattern.title,
+                        "emphasis_zone": pattern.emphasis_zone,
+                        "collect_for_solver": pattern.collect_for_solver,
+                    },
+                )
                 if not pattern.collect_for_solver:
                     continue
                 if best is None:
@@ -1279,6 +1326,14 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                 (int(self.operator.config.projection.projector_width), int(self.operator.config.projection.projector_height)),
                 table_polygon_cam=table_polygon_cam,
             )
+            audit.event(
+                "projection_solved",
+                metrics={
+                    "captured_patterns": len(observations),
+                    "usable_patterns": len(usable_observations),
+                },
+                details={"quality_report": self._result.projection.quality_report},
+            )
             frame_h, frame_w = first_frame_shape
             coordinate_domain = (
                 "undistorted"
@@ -1311,10 +1366,18 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                 f"保存路径: {self._saved_path}"
             )
             self._append_log(f"联动校正完成，结果已保存并加载: {self._saved_path}")
+            audit_path = audit.finish(
+                "success",
+                quality=self._result.projection.quality_report,
+                artifacts=[self._saved_path],
+            )
+            self._append_log(f"校准审计报告: {audit_path}")
             self.show_result(calibration)
             if self._auto_close_on_success:
                 QtCore.QTimer.singleShot(0, self.accept)
         except Exception as exc:
+            audit_path = audit.finish("failed", error=exc)
+            self._append_log(f"校准审计报告: {audit_path}")
             self.summary.setText(f"联动校正失败: {exc}")
             self._append_log(f"联动校正失败: {exc}")
             QtWidgets.QMessageBox.critical(self, "联动校正失败", str(exc))

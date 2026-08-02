@@ -84,7 +84,11 @@ def _append_projected_ball_marker(
     cx, cy = [float(v) for v in center_px]
     if calibration.ball_compensation_model.is_valid:
         try:
-            ellipse = calibration.ball_projector_ellipse((cx, cy))
+            ellipse = calibration.ball_geometry.locate(
+                (cx, cy),
+                radius_px=float(radius_px),
+                geometry_quality=1.0,
+            ).projector_ellipse
         except Exception:
             return False
         overlay.circles.append(

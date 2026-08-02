@@ -5,6 +5,8 @@ from typing import Callable, Optional
 
 from PyQt5 import QtCore, QtWidgets
 
+from ..calibration import start_calibration_audit
+
 
 @dataclass(frozen=True)
 class CompleteCalibrationRunResult:
@@ -130,27 +132,71 @@ class CompleteCalibrationWizardDialog(QtWidgets.QDialog):
 
         self._set_busy(True)
         self.result_state = None
+        audit = start_calibration_audit(
+            self.operator.config.logging.directory,
+            "complete_calibration",
+            context={
+                "projection_file": self.operator.config.calibration.projection_file,
+                "ball_compensation_file": self.operator.config.calibration.engineered_ball_compensation_file,
+                "detector_backend": self.operator.config.detector.backend,
+            },
+        )
         self.projection_state.setText("进行中")
         self.ball_state.setText("等待联合校准")
         self.summary.setText("正在进行相机—投影仪联合校准。")
         try:
             def run_projection() -> bool:
                 succeeded = bool(self.operator.run_linked_projector_calibration(auto_start=True))
+                audit.event(
+                    "projection_stage_finished",
+                    status="ok" if succeeded else "failed",
+                    metrics={"completed": succeeded},
+                )
                 self.projection_state.setText("已完成" if succeeded else "失败或取消")
                 return succeeded
+
+            def confirm_ball_setup() -> bool:
+                confirmed = bool(self._confirm_ball_setup())
+                audit.event(
+                    "ball_setup_confirmed",
+                    status="ok" if confirmed else "cancelled",
+                    metrics={"confirmed": confirmed},
+                )
+                return confirmed
 
             def run_ball() -> bool:
                 self.ball_state.setText("进行中")
                 self.summary.setText("正在进行球心补偿，请按投影目标移动标准球。")
                 succeeded = bool(self.operator.run_engineered_ball_compensation_wizard(auto_start=True))
+                audit.event(
+                    "ball_compensation_stage_finished",
+                    status="ok" if succeeded else "failed",
+                    metrics={"completed": succeeded},
+                )
                 self.ball_state.setText("已完成" if succeeded else "失败或取消")
                 return succeeded
 
             self.result_state = run_complete_calibration_steps(
                 run_projection,
-                self._confirm_ball_setup,
+                confirm_ball_setup,
                 run_ball,
             )
+            final_status = (
+                "success"
+                if self.result_state.completed
+                else "cancelled"
+                if self.result_state.stage == "ball_setup_cancelled"
+                else "failed"
+            )
+            audit_path = audit.finish(
+                final_status,
+                quality={
+                    "stage": self.result_state.stage,
+                    "projection_completed": self.result_state.projection_completed,
+                    "ball_compensation_completed": self.result_state.ball_compensation_completed,
+                },
+            )
+            self.operator._append_log(f"完整校准审计报告: {audit_path}")
             if self.result_state.completed:
                 self.summary.setText("完整几何校准已完成：联合校准和球心补偿均已通过并保存。")
                 QtWidgets.QMessageBox.information(self, "校准完成", self.summary.text())
@@ -162,8 +208,9 @@ class CompleteCalibrationWizardDialog(QtWidgets.QDialog):
             else:
                 self.summary.setText("联合校准已保存，但球心补偿未完成；请检查提示后重试球心补偿。")
         except Exception as exc:
+            audit_path = audit.finish("failed", error=exc)
+            self.operator._append_log(f"完整校准审计报告: {audit_path}")
             self.summary.setText(f"完整校准中止：{exc}")
             QtWidgets.QMessageBox.critical(self, "完整校准中止", str(exc))
         finally:
             self._set_busy(False)
-

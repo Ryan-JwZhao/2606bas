@@ -22,10 +22,10 @@ from .projector import (
 
 PointArray = np.ndarray
 MAX_LINKED_PATTERN_CV_P95_PX = 5.0
-MIN_LINKED_COVERAGE_WIDTH_RATIO = 0.55
-MIN_LINKED_COVERAGE_HEIGHT_RATIO = 0.55
-MIN_LINKED_COVERAGE_HULL_AREA_RATIO = 0.25
-LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v5"
+MIN_LINKED_COVERAGE_WIDTH_RATIO = 0.62
+MIN_LINKED_COVERAGE_HEIGHT_RATIO = 0.62
+MIN_LINKED_COVERAGE_HULL_AREA_RATIO = 0.34
+LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v6"
 
 
 @dataclass
@@ -318,7 +318,8 @@ def solve_linked_projection_calibration(
         and spatial_coverage["height_ratio"] >= MIN_LINKED_COVERAGE_HEIGHT_RATIO
         and spatial_coverage["hull_area_ratio"] >= MIN_LINKED_COVERAGE_HULL_AREA_RATIO
     )
-    if missing_core or not geometric_coverage_ok:
+    pocket_coverage_ok = len(pocket_zones) >= max(0, int(minimum_pocket_zones))
+    if missing_core or not geometric_coverage_ok or not pocket_coverage_ok:
         raise RuntimeError(
             "Linked calibration rejected: insufficient spatial coverage; "
             f"missing core zones={missing_core}, pocket zones={len(pocket_zones)}/"
@@ -330,11 +331,7 @@ def solve_linked_projection_calibration(
             f"hull={spatial_coverage['hull_area_ratio']:.1%}/"
             f"{MIN_LINKED_COVERAGE_HULL_AREA_RATIO:.0%}."
         )
-    coverage_gate = (
-        "categorical"
-        if len(pocket_zones) >= max(0, int(minimum_pocket_zones))
-        else "geometric"
-    )
+    coverage_gate = "categorical_and_geometric"
     pattern_cv_errors = _leave_one_pattern_out_errors(usable)
     pattern_cv_p95 = float(np.percentile(pattern_cv_errors, 95)) if pattern_cv_errors.size else float("inf")
     if not np.isfinite(pattern_cv_p95) or pattern_cv_p95 > MAX_LINKED_PATTERN_CV_P95_PX:

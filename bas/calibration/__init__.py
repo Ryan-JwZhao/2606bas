@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from .ball_compensation import BallCompensationModel
+from .audit import CalibrationAudit, load_calibration_audit_summaries, start_calibration_audit
 from .ball_compensation_sampling import (
     BallCompensationSample,
     build_ball_compensation_model,
     build_engineered_ball_sampling_grid,
+    evaluate_ball_compensation_holdout,
+    split_ball_compensation_samples,
     update_calibration_table_boundaries_from_geometry_frame,
 )
 from .camera import CameraCalibration
@@ -31,6 +34,9 @@ from .verification import format_holdout_report, verify_holdout_file, verify_hol
 
 __all__ = [
     "BallCompensationModel",
+    "CalibrationAudit",
+    "load_calibration_audit_summaries",
+    "start_calibration_audit",
     "BallCompensationSample",
     "CameraCalibration",
     "IndependentGeometry",
@@ -42,6 +48,8 @@ __all__ = [
     "create_setting_aware_calibration_service",
     "build_ball_compensation_model",
     "build_engineered_ball_sampling_grid",
+    "evaluate_ball_compensation_holdout",
+    "split_ball_compensation_samples",
     "update_calibration_table_boundaries_from_geometry_frame",
     "LinkedCalibrationPattern",
     "LinkedCalibrationObservation",

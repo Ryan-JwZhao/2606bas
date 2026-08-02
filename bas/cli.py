@@ -33,6 +33,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     p_verify = sub.add_parser("verify-calib", help="Verify calibration against a holdout JSON file.")
     p_verify.add_argument("holdout_json")
 
+    p_audits = sub.add_parser("calibration-audits", help="List recent structured calibration audit summaries.")
+    p_audits.add_argument("--workflow", default=None, help="Filter by workflow name.")
+    p_audits.add_argument("--limit", type=int, default=20, help="Maximum summaries to print.")
+
     p_replay = sub.add_parser("replay-summary", help="Summarize a replay events.jsonl file.")
     p_replay.add_argument("path")
 
@@ -164,6 +168,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             report = verify_holdout_file(args.holdout_json, service)
             print(format_holdout_report(report))
             print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+
+        if args.command == "calibration-audits":
+            from .calibration import load_calibration_audit_summaries
+
+            rows = load_calibration_audit_summaries(
+                cfg.logging.directory,
+                workflow=args.workflow,
+                limit=args.limit,
+            )
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
             return 0
 
         if args.command == "replay-summary":

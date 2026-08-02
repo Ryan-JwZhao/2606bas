@@ -174,6 +174,115 @@ class _RegularizedPointMap:
         return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
+@dataclass
+class _BallPlaneMap:
+    """Projective ball-center plane with a small, regularized residual field."""
+
+    homography: np.ndarray
+    source_points: np.ndarray
+    support_fade_distance: float
+    cv_p95: float
+    residual: Optional[_RegularizedPointMap] = None
+
+    @classmethod
+    def fit(
+        cls,
+        source: np.ndarray,
+        target: np.ndarray,
+        *,
+        sample_weights: Optional[np.ndarray] = None,
+    ) -> Optional["_BallPlaneMap"]:
+        src = ensure_numpy_points(source).astype(np.float64)
+        dst = ensure_numpy_points(target).astype(np.float64)
+        if src.shape != dst.shape or src.shape[0] < 4:
+            return None
+        homography, mask = cv2.findHomography(src, dst, cv2.RANSAC, 6.0)
+        if homography is None:
+            return None
+        inliers = np.ones((src.shape[0],), dtype=bool) if mask is None else mask.reshape((-1,)).astype(bool)
+        if int(np.count_nonzero(inliers)) >= 4:
+            refined, _ = cv2.findHomography(src[inliers], dst[inliers], 0)
+            if refined is not None:
+                homography = refined
+        base = _perspective(src, homography).astype(np.float64)
+        residual_target = dst - base
+        residual = None
+        if src.shape[0] >= 12:
+            candidate = _RegularizedPointMap.fit(
+                src,
+                residual_target,
+                sample_weights=sample_weights,
+                allow_quadratic=False,
+            )
+            if candidate is not None:
+                corrected = base + candidate.map(src).astype(np.float64)
+                base_p95 = float(np.percentile(np.linalg.norm(base - dst, axis=1), 95))
+                corrected_p95 = float(np.percentile(np.linalg.norm(corrected - dst, axis=1), 95))
+                if base_p95 > 0.35 and corrected_p95 < base_p95 * 0.90:
+                    residual = candidate
+        predicted = base
+        if residual is not None:
+            predicted = predicted + residual.map(src).astype(np.float64)
+        cv_p95 = _ball_plane_cross_validated_p95(src, dst)
+        if not np.isfinite(cv_p95):
+            cv_p95 = float(np.percentile(np.linalg.norm(predicted - dst, axis=1), 95))
+        return cls(
+            homography=np.asarray(homography, dtype=np.float64),
+            source_points=src.copy(),
+            support_fade_distance=_support_fade_distance(src),
+            cv_p95=float(cv_p95),
+            residual=residual,
+        )
+
+    def map(self, points: np.ndarray) -> np.ndarray:
+        pts = ensure_numpy_points(points).astype(np.float32)
+        mapped = _perspective(pts, self.homography)
+        if self.residual is not None and pts.size:
+            mapped = mapped + self.residual.map(pts) * self.residual.support_weights(pts)[:, None]
+        return mapped.astype(np.float32)
+
+    def support_weights(self, points: np.ndarray) -> np.ndarray:
+        pts = ensure_numpy_points(points).astype(np.float64)
+        if pts.size == 0:
+            return np.zeros((0,), dtype=np.float32)
+        hull = cv2.convexHull(self.source_points.astype(np.float32)).reshape((-1, 2))
+        contour = hull.reshape((-1, 1, 2)).astype(np.float32)
+        signed = np.asarray(
+            [cv2.pointPolygonTest(contour, (float(point[0]), float(point[1])), True) for point in pts],
+            dtype=np.float64,
+        )
+        t = np.clip(1.0 + signed / max(1e-6, self.support_fade_distance), 0.0, 1.0)
+        return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+
+    @property
+    def model_kind(self) -> str:
+        return "homography_rbf" if self.residual is not None else "homography"
+
+    @property
+    def degree(self) -> int:
+        return 0
+
+
+def _ball_plane_cross_validated_p95(source: np.ndarray, target: np.ndarray) -> float:
+    count = int(source.shape[0])
+    if count < 8:
+        return float("inf")
+    center = np.median(source, axis=0)
+    quadrants = (source[:, 0] >= center[0]).astype(np.int32) + 2 * (source[:, 1] >= center[1]).astype(np.int32)
+    errors: list[float] = []
+    for fold in range(4):
+        validation = np.flatnonzero(quadrants == fold)
+        training = np.flatnonzero(quadrants != fold)
+        if validation.size == 0 or training.size < 4:
+            continue
+        homography, _ = cv2.findHomography(source[training], target[training], 0)
+        if homography is None:
+            continue
+        predicted = _perspective(source[validation], homography)
+        errors.extend(np.linalg.norm(predicted - target[validation], axis=1).tolist())
+    return float(np.percentile(errors, 95)) if errors else float("inf")
+
+
 def regularized_point_map_quality(
     source: np.ndarray,
     target: np.ndarray,
@@ -199,6 +308,23 @@ def regularized_point_map_quality(
         "model_available": True,
         "model_kind": model.model_kind,
         "degree": int(model.degree),
+        "cv_p95": float(model.cv_p95),
+    }
+
+
+def ball_center_map_quality(
+    source: np.ndarray,
+    target: np.ndarray,
+    *,
+    sample_weights: Optional[np.ndarray] = None,
+) -> dict[str, float | int | str | bool]:
+    model = _BallPlaneMap.fit(source, target, sample_weights=sample_weights)
+    if model is None:
+        return {"model_available": False, "model_kind": "unavailable", "degree": 0, "cv_p95": float("inf")}
+    return {
+        "model_available": True,
+        "model_kind": model.model_kind,
+        "degree": 0,
         "cv_p95": float(model.cv_p95),
     }
 
@@ -469,6 +595,14 @@ class IndependentGeometry:
             base += self.ball_compensation.offsets_for_camera_points(points).astype(np.float32)
         return base.astype(np.float32)
 
+    def ball_support_weights(self, points_camera: np.ndarray) -> np.ndarray:
+        points = ensure_numpy_points(points_camera).astype(np.float32)
+        if self._ball_direct is not None:
+            return self._ball_direct.support_weights(points)
+        if self._ball_residual is not None:
+            return self._ball_residual.support_weights(points)
+        return np.zeros((points.shape[0],), dtype=np.float32)
+
     def _require_projection(self) -> None:
         if not self.projection.is_valid:
             raise CalibrationUnavailableError(
@@ -485,6 +619,20 @@ class IndependentGeometry:
             report["projector_residual_model"] = self._table_projector.residual.model_kind
             report["projector_residual_degree"] = int(self._table_projector.residual.degree)
             report["projector_residual_cv_p95_px"] = float(self._table_projector.residual.cv_p95)
+            grid_x, grid_y = np.meshgrid(
+                np.linspace(0.0, float(self.table.width_mm), 9),
+                np.linspace(0.0, float(self.table.height_mm), 5),
+            )
+            grid = np.column_stack([grid_x.reshape((-1,)), grid_y.reshape((-1,))]).astype(np.float32)
+            support = self._table_projector.residual.support_weights(grid)
+            edge = (
+                (grid[:, 0] <= float(self.table.width_mm) * 0.13)
+                | (grid[:, 0] >= float(self.table.width_mm) * 0.87)
+                | (grid[:, 1] <= float(self.table.height_mm) * 0.18)
+                | (grid[:, 1] >= float(self.table.height_mm) * 0.82)
+            )
+            report["projector_residual_support_grid_ratio"] = float(np.mean(support >= 0.5))
+            report["projector_residual_support_edge_ratio"] = float(np.mean(support[edge] >= 0.5))
         if self._ball_direct is not None:
             report["ball_map_model"] = self._ball_direct.model_kind
             report["ball_map_degree"] = int(self._ball_direct.degree)
@@ -546,17 +694,16 @@ class IndependentGeometry:
             )
         return _PlanarMap(homography=homography, residual=residual)
 
-    def _build_ball_maps(self) -> tuple[Optional[_RegularizedPointMap], Optional[_RegularizedPointMap]]:
+    def _build_ball_maps(self) -> tuple[Optional[_BallPlaneMap], Optional[_RegularizedPointMap]]:
         model = self.ball_compensation
         if not model.is_valid:
             return None, None
         weights = model.sample_weights if model.sample_weights.shape[0] == model.control_points_camera_px.shape[0] else None
         if model.target_table_mm.shape == model.control_points_camera_px.shape:
-            direct = _RegularizedPointMap.fit(
+            direct = _BallPlaneMap.fit(
                 model.control_points_camera_px,
                 model.target_table_mm,
                 sample_weights=weights,
-                allow_quadratic=True,
             )
             return direct, None
         residual = _RegularizedPointMap.fit(

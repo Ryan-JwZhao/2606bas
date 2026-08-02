@@ -62,9 +62,13 @@ class CalibrationService:
     ball_compensation_model: BallCompensationModel = field(default_factory=BallCompensationModel)
     ball_center_compensation: BallCenterCompensation = field(default_factory=BallCenterCompensation)
     _geometry: IndependentGeometry = field(init=False, repr=False)
+    ball_geometry: object = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._rebuild_geometry()
+        from ..ball_center_geometry import BallCenterGeometry
+
+        self.ball_geometry = BallCenterGeometry(self)
 
     def _rebuild_geometry(self) -> None:
         self._geometry = IndependentGeometry(

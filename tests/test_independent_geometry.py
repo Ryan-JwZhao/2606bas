@@ -80,6 +80,8 @@ def test_table_projector_smooth_map_has_a_stable_inverse() -> None:
 
     np.testing.assert_allclose(restored, table_points, atol=0.02)
     assert service.geometry_quality_report["projector_residual_cv_p95_px"] < 0.1
+    assert 0.0 <= service.geometry_quality_report["projector_residual_support_grid_ratio"] <= 1.0
+    assert 0.0 <= service.geometry_quality_report["projector_residual_support_edge_ratio"] <= 1.0
 
 
 def test_ball_map_uses_direct_camera_to_known_table_targets() -> None:
@@ -122,6 +124,35 @@ def test_ball_map_uses_direct_camera_to_known_table_targets() -> None:
 
     np.testing.assert_allclose(actual, expected, atol=0.05)
     assert service.geometry_quality_report["ball_map_cv_p95_mm"] < 0.1
+
+
+def test_ball_map_uses_projective_ball_plane_before_local_residuals() -> None:
+    projection = _projection(
+        np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]], dtype=np.float64)
+    )
+    xs, ys = np.meshgrid(np.linspace(120.0, 1080.0, 6), np.linspace(90.0, 610.0, 5))
+    controls = np.column_stack([xs.reshape(-1), ys.reshape(-1)]).astype(np.float32)
+    h_ball = np.asarray(
+        [[1.75, 0.08, -120.0], [0.03, 1.62, -65.0], [0.00032, -0.00017, 1.0]],
+        dtype=np.float64,
+    )
+    targets = cv2.perspectiveTransform(controls.reshape((-1, 1, 2)), h_ball).reshape((-1, 2))
+    model = BallCompensationModel(
+        mode="engineered_ball_comp_v3",
+        control_points_camera_px=controls,
+        delta_table_mm=np.zeros_like(controls),
+        target_table_mm=targets,
+        sample_weights=np.ones((controls.shape[0],), dtype=np.float64),
+        quality_report={"quality_gate_passed": True},
+    )
+    service = CalibrationService(CameraCalibration(metadata={}), projection, _table(), ball_compensation_model=model)
+    probes = np.asarray([[210.0, 160.0], [640.0, 350.0], [1010.0, 560.0]], dtype=np.float32)
+    expected = cv2.perspectiveTransform(probes.reshape((-1, 1, 2)), h_ball).reshape((-1, 2))
+
+    actual = service.ball_camera_px_to_table_mm(probes)
+
+    np.testing.assert_allclose(actual, expected, atol=0.35)
+    assert str(service.geometry_quality_report["ball_map_model"]).startswith("homography")
 
 
 def test_ball_map_blends_continuously_at_calibrated_domain_edge() -> None:

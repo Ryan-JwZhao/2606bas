@@ -11,8 +11,60 @@ from bas.calibration.ball_compensation_sampling import (
     BallCompensationSample,
     build_ball_compensation_model,
     build_engineered_ball_sampling_grid,
+    evaluate_ball_compensation_holdout,
+    split_ball_compensation_samples,
     update_calibration_table_boundaries_from_geometry_frame,
 )
+
+
+def test_dense_samples_reserve_spread_holdout_without_overlap() -> None:
+    samples = [
+        BallCompensationSample(
+            sample_index=index,
+            target_table_mm=(float(index % 8) * 300.0, float(index // 8) * 180.0),
+            detected_camera_px=(float(index % 8) * 100.0, float(index // 8) * 80.0),
+            projected_target_px=(0.0, 0.0),
+            expected_camera_px=(0.0, 0.0),
+            observed_table_mm=(0.0, 0.0),
+            delta_table_mm=(0.0, 0.0),
+        )
+        for index in range(56)
+    ]
+
+    training, holdout = split_ball_compensation_samples(samples)
+
+    assert len(training) == 46
+    assert len(holdout) == 10
+    assert {item.sample_index for item in training}.isdisjoint({item.sample_index for item in holdout})
+    holdout_points = np.asarray([item.target_table_mm for item in holdout], dtype=np.float64)
+    assert np.ptp(holdout_points[:, 0]) >= 1800.0
+    assert np.ptp(holdout_points[:, 1]) >= 900.0
+
+
+def test_dense_sampling_grid_is_spread_without_near_duplicates() -> None:
+    polygon = np.asarray(
+        [[40.0, 40.0], [2500.0, 40.0], [2500.0, 1230.0], [40.0, 1230.0]],
+        dtype=np.float32,
+    )
+
+    grid = build_engineered_ball_sampling_grid(
+        2540.0,
+        1270.0,
+        57.15,
+        cols=8,
+        rows=7,
+        preferred_polygon_mm=polygon,
+        extra_safe_inset_mm=6.0,
+    )
+
+    distances = np.linalg.norm(grid[:, None, :] - grid[None, :, :], axis=2)
+    distances[distances < 1e-9] = np.inf
+    assert grid.shape == (56, 2)
+    assert float(np.min(distances)) >= 100.0
+    # Sampling order should be locally efficient instead of jumping back to
+    # the opposite end of the table after each row.
+    travel = np.linalg.norm(np.diff(grid, axis=0), axis=1)
+    assert float(np.percentile(travel, 95)) < 700.0
 from bas.calibration.camera import CameraCalibration
 from bas.calibration.projector import ProjectionCalibration
 from bas.calibration.service import CalibrationService
@@ -22,6 +74,7 @@ from bas.table_boundaries import EdgeInsets
 from bas.ui.engineered_ball_compensation_wizard import (
     _pick_ball_candidate,
     _render_target_image,
+    _target_guide_radii,
     ball_compensation_path_or_default,
     ball_compensation_path_from_input,
     resolve_ball_sampling_region,
@@ -29,7 +82,7 @@ from bas.ui.engineered_ball_compensation_wizard import (
 )
 
 
-def test_ball_sampling_accepts_detector_bbox_fallback_near_target() -> None:
+def test_ball_sampling_rejects_detector_bbox_fallback_near_target() -> None:
     detection = Detection(
         bbox=(470.0, 370.0, 530.0, 430.0),
         conf=0.92,
@@ -45,9 +98,9 @@ def test_ball_sampling_accepts_detector_bbox_fallback_near_target() -> None:
         expected_radius_px=30.0,
     )
 
-    assert candidate is detection
-    assert candidate_count == 1
-    assert distance_px == 0.0
+    assert candidate is None
+    assert candidate_count == 0
+    assert np.isinf(distance_px)
 
 
 def test_ball_sampling_target_keeps_ball_interior_dark() -> None:
@@ -66,6 +119,48 @@ def test_ball_sampling_target_keeps_ball_interior_dark() -> None:
     interior = image[228:253, 306:335]
 
     assert int(np.max(interior)) <= 20
+
+
+def test_ball_sampling_target_guide_stays_close_to_physical_ball_edge() -> None:
+    target = type("TargetEllipse", (), {"radius_x_px": 13.5, "radius_y_px": 15.3})()
+
+    assert _target_guide_radii(target) == (16, 17)
+
+
+def test_ball_compensation_holdout_rejects_systematic_bias() -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]),
+        np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]),
+        projector_size=(1000, 500),
+    )
+    service = CalibrationService(
+        CameraCalibration(metadata={}),
+        projection,
+        TableModel(
+            width_mm=1000.0,
+            height_mm=500.0,
+            ball_diameter_mm=57.15,
+            inner_polygon_mm=[(0.0, 0.0), (1000.0, 0.0), (1000.0, 500.0), (0.0, 500.0)],
+            pockets_mm=[],
+        ),
+    )
+    samples = [
+        BallCompensationSample(
+            sample_index=index,
+            target_table_mm=(float(100 + index * 50), 200.0),
+            detected_camera_px=(float(110 + index * 50), 200.0),
+            projected_target_px=(0.0, 0.0),
+            expected_camera_px=(0.0, 0.0),
+            observed_table_mm=(0.0, 0.0),
+            delta_table_mm=(0.0, 0.0),
+        )
+        for index in range(10)
+    ]
+
+    report = evaluate_ball_compensation_holdout(samples, service)
+
+    assert report["quality_gate_passed"] is False
+    assert any("mean bias" in error for error in report["quality_gate_errors"])
 
 
 def test_build_engineered_ball_sampling_grid_covers_table_interior() -> None:
