@@ -30,7 +30,9 @@
 
 袋口图样按全局门槛判断是否需要人工重试：已经有 4 个不同袋口区域达到 6 个角点后，后续冗余袋口（例如袋口重点 6）即使识别为 0 点也会直接记录并继续求解，不再单独弹出重试提示。
 
-每次联动校准开始时，日志会打印算法版本、覆盖门槛、图样布局版本、补采次数和实际加载的 `linked.py` 绝对路径。当前版本应显示 `linked-geometry-v8`、`coverage=62%/62%/34%`、`corner_pockets=cloth_inset_v1`、`capture_retry=2` 与 `optional_pockets=skip_after_4`。主窗口关闭时会显式退出 Qt 应用，防止投影窗口或隐藏子窗口让旧 Python 进程继续驻留。
+现场相机中两个物理左侧角袋图样的白格亮度显著低于其他区域。`pocket_lt` / `pocket_lb` 原始检测不足 4 点时会自动执行一次 CLAHE 局部对比度恢复后重新识别；该处理只用于联合校准角点检测，不修改保存的相机画面、运行时视频或其他六个图样。
+
+每次联动校准开始时，日志会打印算法版本、覆盖门槛、图样布局版本、补采次数和实际加载的 `linked.py` 绝对路径。当前版本应显示 `linked-geometry-v9`、`coverage=62%/62%/34%`、`corner_pockets=cloth_inset_v1`、`capture_retry=2`、`optional_pockets=skip_after_4` 与 `left_corner_contrast=clahe_v1`。主窗口关闭时会显式退出 Qt 应用，防止投影窗口或隐藏子窗口让旧 Python 进程继续驻留。
 
 ## 简介
 

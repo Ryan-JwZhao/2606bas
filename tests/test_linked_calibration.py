@@ -70,12 +70,13 @@ def test_build_linked_patterns_covers_full_and_focus_zones() -> None:
 def test_linked_calibration_runtime_summary_identifies_loaded_implementation() -> None:
     summary = linked_calibration_runtime_summary()
 
-    assert "linked-geometry-v8" in summary
+    assert "linked-geometry-v9" in summary
     assert "coverage=62%/62%/34%" in summary
     assert "middle_pockets=diagonal_inset_v1" in summary
     assert "corner_pockets=cloth_inset_v1" in summary
     assert "capture_retry=2" in summary
     assert "optional_pockets=skip_after_4" in summary
+    assert "left_corner_contrast=clahe_v1" in summary
     assert "bas" in summary and "linked.py" in summary
 
 
@@ -139,6 +140,25 @@ def test_all_linked_patterns_remain_detectable_after_camera_blur() -> None:
 
     assert len(matched_counts) == 8
     assert min(matched_counts) >= 6
+
+
+@pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
+def test_dark_left_corner_pattern_uses_contrast_recovery() -> None:
+    pattern = next(
+        pattern
+        for pattern in build_linked_patterns(_sample_geometry(), (1280, 800))
+        if pattern.emphasis_zone == "pocket_lb"
+    )
+    gray = cv2.cvtColor(pattern.image, cv2.COLOR_BGR2GRAY).astype(np.float32) * 0.06
+    noise = np.random.default_rng(123).normal(0.0, 1.0, gray.shape)
+    dark = np.clip(gray + noise, 0, 255).astype(np.uint8)
+    dark_bgr = cv2.cvtColor(dark, cv2.COLOR_GRAY2BGR)
+    _raw_points, raw_ids = detect_charuco_corners(dark_bgr, pattern.board_spec)
+
+    assert raw_ids.size < 4
+    observation = match_linked_pattern_observation(pattern, dark_bgr)
+    assert observation is not None
+    assert observation.matched_count >= 6
 
 
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")

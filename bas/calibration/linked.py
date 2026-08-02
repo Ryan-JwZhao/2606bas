@@ -25,7 +25,7 @@ MAX_LINKED_PATTERN_CV_P95_PX = 5.0
 MIN_LINKED_COVERAGE_WIDTH_RATIO = 0.62
 MIN_LINKED_COVERAGE_HEIGHT_RATIO = 0.62
 MIN_LINKED_COVERAGE_HULL_AREA_RATIO = 0.34
-LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v8"
+LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v9"
 
 
 @dataclass
@@ -79,6 +79,7 @@ def linked_calibration_runtime_summary() -> str:
         "middle_pockets=diagonal_inset_v1 | "
         "corner_pockets=cloth_inset_v1 | capture_retry=2 | "
         "optional_pockets=skip_after_4 | "
+        "left_corner_contrast=clahe_v1 | "
         f"source={Path(__file__).resolve()}"
     )
 
@@ -306,6 +307,17 @@ def match_linked_pattern_observation(
     if frame_bgr is None or frame_bgr.size == 0:
         return None
     camera_points, camera_ids = detect_charuco_corners(frame_bgr, pattern.board_spec)
+    if camera_ids.size < 4 and str(pattern.emphasis_zone).strip().lower() in {"pocket_lt", "pocket_lb"}:
+        # The installed projector/camera geometry makes the two physical-left
+        # corner boards much darker than the other six boards. Preserve the
+        # original pixels for normal detection, then recover local contrast only
+        # for these known low-light zones when the normal pass cannot match.
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+        enhanced_gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+        enhanced_bgr = cv2.cvtColor(enhanced_gray, cv2.COLOR_GRAY2BGR)
+        recovered_points, recovered_ids = detect_charuco_corners(enhanced_bgr, pattern.board_spec)
+        if recovered_ids.size > camera_ids.size:
+            camera_points, camera_ids = recovered_points, recovered_ids
     if camera_ids.size == 0 or pattern.projector_ids.size == 0:
         return None
     pairs = _match_ids(pattern.projector_points, pattern.projector_ids, camera_points, camera_ids)
