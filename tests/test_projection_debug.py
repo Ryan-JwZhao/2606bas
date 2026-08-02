@@ -58,6 +58,29 @@ def _ball_compensated_service() -> CalibrationService:
     )
 
 
+def _perspective_service_without_ball_model() -> CalibrationService:
+    camera_quad = np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64)
+    projector_quad = np.array([[0, 0], [1000, 40], [900, 500], [100, 470]], dtype=np.float64)
+    projection = ProjectionCalibration.fit_from_correspondences(
+        camera_quad,
+        projector_quad,
+        projector_size=(1000, 500),
+    )
+    projection.table_polygon_cam = camera_quad.copy()
+    projection.table_polygon_proj = projector_quad.copy()
+    return CalibrationService(
+        camera=CameraCalibration(metadata={}),
+        projection=projection,
+        table=TableModel(
+            width_mm=1000,
+            height_mm=500,
+            ball_diameter_mm=57.15,
+            inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
+            pockets_mm=[],
+        ),
+    )
+
+
 def test_projection_debug_appends_three_boundary_layers() -> None:
     overlay = ProjectionOverlay(overlay_id="debug", frame_id=1, projector_size=(1000, 500))
 
@@ -105,6 +128,37 @@ def test_projection_debug_falls_back_to_detections_when_tracks_absent() -> None:
     assert len(overlay.circles) == 1
     assert overlay.circles[0].color == (255, 255, 255)
     assert not overlay.labels
+
+
+def test_projection_debug_without_ball_model_uses_shared_perspective_ellipse() -> None:
+    service = _perspective_service_without_ball_model()
+    overlay = ProjectionOverlay(overlay_id="debug", frame_id=1, projector_size=(1000, 500))
+    track = TrackObservation(
+        track_id=7,
+        bbox=(485.0, 235.0, 515.0, 265.0),
+        center_px=(500.0, 250.0),
+        radius_px=15.0,
+        cls_name="cue",
+        group="cue",
+        confidence=0.9,
+        quality=0.9,
+        geometry_quality=0.9,
+        geometry_method="appearance_ellipse",
+    )
+    expected = service.ball_geometry.locate(
+        track.center_px,
+        radius_px=track.radius_px,
+        geometry_quality=track.geometry_quality,
+        geometry_method=track.geometry_method,
+    ).projector_ellipse
+
+    append_projected_ball_overlays(overlay, service, tracks=[track])
+
+    circle = overlay.circles[0]
+    assert circle.center == pytest.approx(expected.center_px, abs=1e-5)
+    assert circle.radius == pytest.approx(expected.radius_x_px, abs=1e-5)
+    assert circle.radius_y == pytest.approx(expected.radius_y_px, abs=1e-5)
+    assert circle.rotation_deg == pytest.approx(expected.rotation_deg, abs=1e-5)
 
 
 def test_ball_compensated_projection_debug_uses_physical_ball_radius() -> None:

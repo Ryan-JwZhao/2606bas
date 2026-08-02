@@ -88,40 +88,23 @@ def _append_projected_ball_marker(
     geometry_method: str,
 ) -> bool:
     cx, cy = [float(v) for v in center_px]
-    if calibration.ball_compensation_model.is_valid:
-        try:
-            ellipse = calibration.ball_geometry.locate(
-                (cx, cy),
-                radius_px=float(radius_px),
-                geometry_quality=float(geometry_quality),
-                geometry_method=str(geometry_method),
-            ).projector_ellipse
-        except Exception:
-            return False
-        overlay.circles.append(
-            OverlayCircle(
-                center=ellipse.center_px,
-                radius=max(4.0, float(ellipse.radius_x_px)),
-                radius_y=max(4.0, float(ellipse.radius_y_px)),
-                rotation_deg=float(ellipse.rotation_deg),
-                color=ROUTE_COLOR,
-            )
-        )
-        return True
-    radius = float(max(1.0, radius_px))
-    refs = np.asarray(
-        [[cx, cy], [cx + radius, cy], [cx, cy + radius]],
-        dtype=np.float32,
-    )
     try:
-        proj_refs = calibration.ball_camera_px_to_projector_px(refs).astype(np.float32)
+        ellipse = calibration.ball_geometry.locate(
+            (cx, cy),
+            radius_px=float(radius_px),
+            geometry_quality=float(geometry_quality),
+            geometry_method=str(geometry_method),
+        ).projector_ellipse
     except Exception:
         return False
-    rx = float(np.linalg.norm(proj_refs[1] - proj_refs[0]))
-    ry = float(np.linalg.norm(proj_refs[2] - proj_refs[0]))
-    center = (float(proj_refs[0, 0]), float(proj_refs[0, 1]))
     overlay.circles.append(
-        OverlayCircle(center=center, radius=max(4.0, 0.5 * (rx + ry)), color=ROUTE_COLOR)
+        OverlayCircle(
+            center=ellipse.center_px,
+            radius=max(4.0, float(ellipse.radius_x_px)),
+            radius_y=max(4.0, float(ellipse.radius_y_px)),
+            rotation_deg=float(ellipse.rotation_deg),
+            color=ROUTE_COLOR,
+        )
     )
     return True
 

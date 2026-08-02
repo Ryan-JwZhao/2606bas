@@ -181,6 +181,8 @@ def test_linked_calibration_can_recover_projector_mapping_from_warped_patterns(t
     assert "匹配角点" in summary
     assert "覆盖率" in summary
     assert "跨图样CV" in summary
+    assert result.projection.quality_report["pocket_zones_used"] == result.summary["pocket_zones_used"]
+    assert f"袋口区域={result.summary['pocket_zones_used']}" in summary
     assert result.projection.is_valid
     assert result.projection.table_polygon_proj.shape[0] == 4
     assert result.projection.table_control_points_norm.shape[0] >= 12
@@ -190,6 +192,7 @@ def test_linked_calibration_can_recover_projector_mapping_from_warped_patterns(t
     saved_path = tmp_path / "independent_projection.json"
     result.projection.save(saved_path)
     restored = ProjectionCalibration.load_json(saved_path)
+    assert restored.quality_report["pocket_zones_used"] == result.summary["pocket_zones_used"]
     np.testing.assert_allclose(restored.table_control_points_norm, result.projection.table_control_points_norm)
     np.testing.assert_allclose(restored.table_control_points_proj, result.projection.table_control_points_proj)
     pred = result.projection.camera_to_projector_points(observations[0].camera_points)

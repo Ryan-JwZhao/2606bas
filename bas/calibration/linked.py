@@ -377,6 +377,7 @@ def solve_linked_projection_calibration(
         "matched_points_total": summary["matched_points_total"],
         "matched_points_by_pattern": summary["matched_points_by_pattern"],
         "zones": summary["zones"],
+        "pocket_zones_used": summary["pocket_zones_used"],
         "quality_gate_passed": True,
         "minimum_inlier_ratio": float(MIN_PROJECTION_INLIER_RATIO),
         "minimum_pocket_zones": max(0, int(minimum_pocket_zones)),
