@@ -68,6 +68,21 @@ def test_build_linked_patterns_covers_full_and_focus_zones() -> None:
     assert any(pattern.emphasis_zone.startswith("pocket_") for pattern in patterns)
 
 
+def test_linked_pattern_never_sends_chinese_to_opencv_hershey(monkeypatch) -> None:
+    """OpenCV's Hershey font renders every UTF-8 byte as a question mark."""
+
+    from bas.calibration import linked
+
+    original_put_text = linked.cv2.putText
+
+    def reject_non_ascii(image, text, *args, **kwargs):
+        assert str(text).isascii(), f"Unicode text sent to cv2.putText: {text}"
+        return original_put_text(image, text, *args, **kwargs)
+
+    monkeypatch.setattr(linked.cv2, "putText", reject_non_ascii)
+    build_linked_patterns(_sample_geometry(), (1280, 800))
+
+
 def test_linked_coverage_anchor_uses_coplanar_inner_table_surface() -> None:
     geometry = _sample_geometry()
     surface = linked_table_surface_polygon(geometry, (1920, 1080))

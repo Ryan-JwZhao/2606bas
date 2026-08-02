@@ -9,6 +9,8 @@ import cv2
 import numpy as np
 
 from ..geometry import TableGeometry
+from ..projection.text import draw_overlay_texts
+from ..schemas import OverlayText
 from ..utils import clamp, ensure_numpy_points
 from .charuco import CharucoBoardSpec, detect_charuco_corners, render_charuco_board
 from .projector import (
@@ -646,7 +648,22 @@ def _render_guide_image(
         cx, cy = [int(round(v)) for v in focus_point[:2]]
         cv2.circle(image, (cx, cy), max(18, min(width, height) // 40), (0, 255, 255), 2, cv2.LINE_AA)
     if label:
-        cv2.putText(image, str(label), (x1 + 16, max(34, y1 + 28)), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2, cv2.LINE_AA)
+        label_text = str(label)
+        label_center_x = x1 + min(max(130, int(round((x2 - x1) * 0.18))), 260)
+        draw_overlay_texts(
+            image,
+            [
+                OverlayText(
+                    position=(float(label_center_x), float(max(36, y1 + 30))),
+                    text=label_text,
+                    color=(255, 255, 255),
+                    font_size_px=28.0,
+                    max_width_ratio=0.38,
+                    outline_width_px=1.0,
+                    background_alpha=120,
+                )
+            ],
+        )
     return image
 
 
