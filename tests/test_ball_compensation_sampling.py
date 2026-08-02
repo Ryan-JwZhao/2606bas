@@ -18,6 +18,7 @@ from bas.calibration.ball_compensation_sampling import (
     split_ball_compensation_samples,
     update_calibration_table_boundaries_from_geometry_frame,
 )
+from bas.calibration.ball_sampling_detection import ball_sampling_delta_is_plausible
 from bas.calibration.quality_standards import ball_holdout_quality_errors
 
 
@@ -388,6 +389,34 @@ def test_ball_sampling_still_rejects_unsafe_bbox_fallbacks() -> None:
         assert candidate is None
         assert candidate_count == 0
         assert np.isinf(distance_px)
+
+
+def test_ball_sampling_rejects_previous_point_ellipse_after_target_switch() -> None:
+    previous_point_ball = Detection(
+        bbox=(470.0, 370.0, 530.0, 430.0),
+        conf=0.94,
+        cls_id=2,
+        cls_name="sob",
+        refined_center_px=(500.0, 400.0),
+        refined_radius_px=30.0,
+        geometry_quality=0.90,
+        geometry_method="appearance_ellipse",
+    )
+
+    candidate, candidate_count, distance_px = _pick_ball_candidate(
+        [previous_point_ball],
+        np.asarray([620.0, 400.0], dtype=np.float32),
+        expected_radius_px=30.0,
+    )
+
+    assert candidate is None
+    assert candidate_count == 1
+    assert distance_px == 120.0
+
+
+def test_ball_sampling_rejects_physically_impossible_cross_point_delta() -> None:
+    assert ball_sampling_delta_is_plausible(np.asarray([24.0, -12.0]), 57.15) is True
+    assert ball_sampling_delta_is_plausible(np.asarray([178.3, 23.1]), 57.15) is False
 
 
 def test_ball_sampling_target_keeps_ball_interior_dark() -> None:

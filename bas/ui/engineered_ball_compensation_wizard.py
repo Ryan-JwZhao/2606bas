@@ -24,7 +24,9 @@ from ..calibration import (
 )
 from ..calibration.ball_sampling_detection import (
     BALL_SAMPLING_DETECTION_VERSION,
+    ball_sampling_delta_is_plausible,
     ball_sampling_geometry_is_usable,
+    ball_sampling_target_distance_limit_px,
 )
 from ..capture import create_capture_service
 from ..geometry import TableGeometryLoader
@@ -781,6 +783,21 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             stable_center, stable_radius, stable_confidence, spread_px, stable_quality, stable_method = stable
             observed_table_mm = calibration.camera_px_to_table_mm(np.asarray([stable_center], dtype=np.float32))[0]
             delta_table_mm = target_table_mm - observed_table_mm
+            if not ball_sampling_delta_is_plausible(delta_table_mm, calibration.table.ball_diameter_mm):
+                delta_norm_mm = float(np.linalg.norm(delta_table_mm))
+                history.clear()
+                settle_started_at = None
+                last_candidate_at = None
+                self.summary.setText(
+                    f"第 {sample_index + 1}/{total_count} 个点检测到的球仍位于上一目标附近："
+                    f"补偿量 {delta_norm_mm:.1f} mm 超过一个球直径，请把球移动到当前目标圈。"
+                )
+                self._append_log(
+                    f"采样点 {sample_index + 1}/{total_count} 拒绝跨点候选："
+                    f"delta={delta_norm_mm:.1f} mm。"
+                )
+                time.sleep(0.03)
+                continue
             captured_preview = _annotate_preview(
                 frame,
                 expected_cam,
@@ -990,7 +1007,7 @@ def _select_ball_candidate(
         if distance < best_distance:
             best = detection
             best_distance = distance
-    max_distance = max(140.0, 6.0 * float(best.radius_px)) if best is not None else 140.0
+    max_distance = ball_sampling_target_distance_limit_px(expected_radius_px)
     if best_distance > max_distance:
         best = None
     return BallCandidateSelection(
