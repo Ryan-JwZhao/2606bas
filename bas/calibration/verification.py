@@ -135,7 +135,26 @@ def format_holdout_report(report: Dict[str, Any]) -> str:
     if zones:
         zone_text = ", ".join(f"{zone}={value:.2f}mm" for zone, value in zones.items())
         lines.append(f"分区 P95: {zone_text}")
+    zone_biases = _format_zone_mean_vectors(report.get("zone_mean_vector_mm", {}))
+    if zone_biases:
+        lines.append(f"分区平均偏差: {zone_biases}")
     return "\n".join(lines)
+
+
+def _format_zone_mean_vectors(value: Any) -> str:
+    if not isinstance(value, dict):
+        return ""
+    formatted: list[str] = []
+    for zone, vector in value.items():
+        try:
+            point = np.asarray(vector, dtype=np.float64).reshape((-1,))
+        except (TypeError, ValueError):
+            continue
+        if point.size < 2 or not bool(np.all(np.isfinite(point[:2]))):
+            continue
+        dx, dy = float(point[0]), float(point[1])
+        formatted.append(f"{zone}=(dx={dx:+.2f}, dy={dy:+.2f}, |v|={float(np.hypot(dx, dy)):.2f})mm")
+    return ", ".join(formatted)
 
 
 def _point(sample: Dict[str, Any], *keys: str) -> Optional[np.ndarray]:

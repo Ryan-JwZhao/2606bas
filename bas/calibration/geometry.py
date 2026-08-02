@@ -233,11 +233,11 @@ class _BallPlaneMap:
 
     @property
     def model_kind(self) -> str:
-        return "homography_rbf" if self.residual is not None else "homography"
+        return f"homography_{self.residual.model_kind}" if self.residual is not None else "homography"
 
     @property
     def degree(self) -> int:
-        return 0
+        return int(self.residual.degree) if self.residual is not None else 0
 
 
 def _fit_ball_plane_components(

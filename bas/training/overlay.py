@@ -77,10 +77,12 @@ class TrainingOverlayBuilder:
             if number is None:
                 continue
             try:
-                point = self.calibration.ball_camera_px_to_projector_px(
-                    np.asarray([track.center_px], dtype=np.float32)
-                )[0]
-                ellipse = self.calibration.ball_projector_ellipse(track.center_px)
+                ellipse = self.calibration.ball_geometry.locate(
+                    track.center_px,
+                    radius_px=float(track.radius_px),
+                    geometry_quality=float(getattr(track, "geometry_quality", track.quality)),
+                    geometry_method=str(getattr(track, "geometry_method", "unknown")),
+                ).projector_ellipse
                 radius = 0.5 * (float(ellipse.radius_x_px) + float(ellipse.radius_y_px))
             except Exception:
                 continue

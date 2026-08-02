@@ -157,6 +157,30 @@ def test_ball_map_uses_projective_ball_plane_before_local_residuals() -> None:
     assert str(service.geometry_quality_report["ball_map_model"]).startswith("homography")
 
 
+def test_ball_plane_reports_the_actual_residual_family_and_degree() -> None:
+    residual = geometry_module._RegularizedPointMap(
+        center=np.zeros((2,), dtype=np.float64),
+        scale=np.ones((2,), dtype=np.float64),
+        coefficients=np.zeros((3, 2), dtype=np.float64),
+        degree=1,
+        source_min=np.zeros((2,), dtype=np.float64),
+        source_max=np.ones((2,), dtype=np.float64),
+        source_points=np.asarray([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float64),
+        support_fade_distance=1.0,
+        cv_p95=0.5,
+    )
+    model = geometry_module._BallPlaneMap(
+        homography=np.eye(3, dtype=np.float64),
+        source_points=residual.source_points,
+        support_fade_distance=1.0,
+        cv_p95=0.5,
+        residual=residual,
+    )
+
+    assert model.model_kind == "homography_polynomial_1"
+    assert model.degree == 1
+
+
 def test_ball_plane_cross_validation_applies_selected_residual(monkeypatch) -> None:
     class ConstantResidual:
         def map(self, points):

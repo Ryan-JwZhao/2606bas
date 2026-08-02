@@ -22,6 +22,25 @@ from bas.calibration.verification import format_holdout_report, verify_holdout_s
 from bas.schemas import TableModel
 
 
+def test_holdout_report_displays_directional_zone_bias() -> None:
+    report = {
+        "sample_count": 2,
+        "skipped_count": 0,
+        "image_error_px": {"count": 0, "mean": 0.0, "median": 0.0, "p95": 0.0, "max": 0.0},
+        "table_error_mm": {"count": 2, "mean": 2.24, "median": 2.24, "p95": 2.24, "max": 2.24},
+        "distance_slope_mm_per_cm": None,
+        "verdict": {"mvp": False, "formal": False},
+        "coverage": {"labeled_zones": ["far"], "pocket_zones": [], "formal": False},
+        "zone_p95_mm": {"far": 2.24},
+        "zone_mean_vector_mm": {"far": [2.0, -1.0]},
+    }
+
+    text = format_holdout_report(report)
+
+    assert "分区平均偏差" in text
+    assert "far=(dx=+2.00, dy=-1.00, |v|=2.24)mm" in text
+
+
 def test_create_calibration_service_does_not_load_camera_file_when_correction_is_disabled(monkeypatch) -> None:
     def unexpected_load(_path):
         raise AssertionError("disabled correction must not load camera calibration")

@@ -779,6 +779,59 @@ def test_training_overlay_keeps_route_lines_and_adds_training_status() -> None:
     assert "请完成摆球" in overlay.texts[0].text
 
 
+def test_training_overlay_uses_shared_ball_center_geometry() -> None:
+    from types import SimpleNamespace
+
+    from bas.config import ProjectionConfig
+    from bas.training.overlay import TrainingOverlayBuilder
+
+    calls = []
+
+    class _BallGeometry:
+        @staticmethod
+        def locate(center_px, *, radius_px, geometry_quality, geometry_method):
+            calls.append((center_px, radius_px, geometry_quality, geometry_method))
+            return SimpleNamespace(
+                projector_ellipse=SimpleNamespace(
+                    center_px=(321.0, 123.0),
+                    radius_x_px=17.0,
+                    radius_y_px=13.0,
+                    rotation_deg=8.0,
+                )
+            )
+
+    class _Calibration:
+        ball_geometry = _BallGeometry()
+
+        @staticmethod
+        def ball_projector_ellipse(_center_px):
+            raise AssertionError("training overlay must not bypass BallCenterGeometry")
+
+    track = _track(1, 300.0, 200.0)
+    track.radius_px = 11.5
+    track.geometry_quality = 0.82
+    track.geometry_method = "appearance_ellipse"
+    state = TrainingStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        scenario_id="ordered_line_1_7",
+        scenario_title="ordered",
+        phase="running",
+        expected_numbers=[1],
+    )
+
+    overlay = TrainingOverlayBuilder(ProjectionConfig(), _Calibration()).build(
+        TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[track]),
+        state,
+    )
+
+    assert calls == [((300.0, 200.0), 11.5, 0.82, "appearance_ellipse")]
+    assert overlay.circles[0].center == (321.0, 123.0)
+    assert overlay.circles[0].radius == 21.25
+    assert overlay.circles[0].radius_y == 16.25
+    assert overlay.circles[0].rotation_deg == 8.0
+
+
 def test_training_overlay_guides_every_configured_setup_zone() -> None:
     from bas.config import ProjectionConfig
     from bas.training.overlay import TrainingOverlayBuilder
