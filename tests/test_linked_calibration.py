@@ -69,9 +69,11 @@ def test_build_linked_patterns_covers_full_and_focus_zones() -> None:
 def test_linked_calibration_runtime_summary_identifies_loaded_implementation() -> None:
     summary = linked_calibration_runtime_summary()
 
-    assert "linked-geometry-v6" in summary
+    assert "linked-geometry-v7" in summary
     assert "coverage=62%/62%/34%" in summary
     assert "middle_pockets=diagonal_inset_v1" in summary
+    assert "corner_pockets=cloth_inset_v1" in summary
+    assert "capture_retry=2" in summary
     assert "bas" in summary and "linked.py" in summary
 
 
@@ -100,6 +102,23 @@ def test_middle_pocket_patterns_shift_inward_and_off_center_axis() -> None:
     assert top_center[1] > 230.0
     assert bottom_center[0] > 680.0
     assert bottom_center[1] < 570.0
+
+
+def test_corner_pocket_patterns_do_not_touch_the_reflective_table_boundary() -> None:
+    patterns = build_linked_patterns(_sample_geometry(), (1280, 800))
+    corners = [
+        pattern
+        for pattern in patterns
+        if pattern.emphasis_zone in {"pocket_lt", "pocket_rt", "pocket_rb", "pocket_lb"}
+    ]
+
+    assert len(corners) == 4
+    for pattern in corners:
+        x1, y1, x2, y2 = pattern.roi_proj
+        assert x1 > 64
+        assert y1 > 64
+        assert x2 < 1216
+        assert y2 < 736
 
 
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
@@ -154,9 +173,76 @@ def test_linked_pattern_collection_survives_delayed_camera_frames() -> None:
 
 
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
+def test_linked_pattern_collection_retries_a_required_pattern_after_an_empty_attempt() -> None:
+    pattern = next(
+        pattern
+        for pattern in build_linked_patterns(_sample_geometry(), (1280, 800))
+        if pattern.emphasis_zone == "full"
+    )
+    blank = np.zeros_like(pattern.image)
+    frames = iter([blank] * (8 + 18) + [blank] * 8 + [pattern.image] * 4)
+
+    capture = collect_linked_pattern_observation(
+        pattern,
+        lambda: next(frames, None),
+        transition_frames=8,
+        max_detection_frames=18,
+        attempts=2,
+    )
+
+    assert capture.observation is not None
+    assert capture.observation.matched_count >= 6
+    assert capture.attempts == 2
+
+
+@pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
+def test_logged_missing_full_and_edge_patterns_recover_before_the_coverage_gate() -> None:
+    projector_size = (1280, 800)
+    camera_size = (1600, 1000)
+    projector_quad = np.asarray([[0, 0], [1279, 0], [1279, 799], [0, 799]], dtype=np.float32)
+    camera_quad = np.asarray([[140, 120], [1450, 80], [1500, 930], [100, 950]], dtype=np.float32)
+    projector_to_camera = cv2.getPerspectiveTransform(projector_quad, camera_quad)
+    initially_missing = {"full", "pocket_lt", "pocket_rb", "pocket_lb"}
+    observations = []
+
+    for pattern in build_linked_patterns(_sample_geometry(), projector_size):
+        if not pattern.collect_for_solver:
+            continue
+        warped = cv2.warpPerspective(pattern.image, projector_to_camera, camera_size, flags=cv2.INTER_LINEAR)
+        blank = np.zeros_like(warped)
+        if pattern.emphasis_zone in initially_missing:
+            frames = iter([blank] * (8 + 18 + 8) + [warped] * 18)
+        else:
+            frames = iter([blank] * 8 + [warped] * 18)
+        capture = collect_linked_pattern_observation(
+            pattern,
+            lambda frames=frames: next(frames, None),
+            transition_frames=8,
+            max_detection_frames=18,
+            attempts=2,
+        )
+        assert capture.observation is not None, pattern.emphasis_zone
+        observations.append(capture.observation)
+
+    table_polygon_cam = cv2.perspectiveTransform(
+        projector_quad.reshape((-1, 1, 2)),
+        projector_to_camera,
+    ).reshape((-1, 2))
+    result = solve_linked_projection_calibration(
+        observations,
+        projector_size,
+        table_polygon_cam=table_polygon_cam,
+    )
+
+    assert result.projection.is_valid
+    assert result.summary["pocket_zones_used"] == 6
+    assert result.summary["spatial_coverage"]["hull_area_ratio"] >= 0.34
+
+
+@pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
 def test_linked_calibration_can_recover_projector_mapping_from_warped_patterns(tmp_path) -> None:
     projector_size = (1280, 800)
-    patterns = [pattern for pattern in build_linked_patterns(_sample_geometry(), projector_size) if pattern.collect_for_solver][:3]
+    patterns = [pattern for pattern in build_linked_patterns(_sample_geometry(), projector_size) if pattern.collect_for_solver]
     camera_size = (1600, 1000)
     projector_quad = np.array([[0, 0], [1279, 0], [1279, 799], [0, 799]], dtype=np.float32)
     camera_quad = np.array([[140, 120], [1450, 80], [1500, 930], [100, 950]], dtype=np.float32)

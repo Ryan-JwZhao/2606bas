@@ -25,7 +25,7 @@ MAX_LINKED_PATTERN_CV_P95_PX = 5.0
 MIN_LINKED_COVERAGE_WIDTH_RATIO = 0.62
 MIN_LINKED_COVERAGE_HEIGHT_RATIO = 0.62
 MIN_LINKED_COVERAGE_HULL_AREA_RATIO = 0.34
-LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v6"
+LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v7"
 
 
 @dataclass
@@ -66,6 +66,8 @@ class LinkedPatternCaptureResult:
     transition_frames_read: int
     detection_frames_read: int
     matched_frames: int
+    attempts: int = 1
+    diagnostic_frame: Optional[np.ndarray] = field(default=None, repr=False)
 
 
 def linked_calibration_runtime_summary() -> str:
@@ -75,6 +77,7 @@ def linked_calibration_runtime_summary() -> str:
         f"{MIN_LINKED_COVERAGE_HEIGHT_RATIO:.0%}/"
         f"{MIN_LINKED_COVERAGE_HULL_AREA_RATIO:.0%} | "
         "middle_pockets=diagonal_inset_v1 | "
+        "corner_pockets=cloth_inset_v1 | capture_retry=2 | "
         f"source={Path(__file__).resolve()}"
     )
 
@@ -86,6 +89,8 @@ def collect_linked_pattern_observation(
     undistort_points: Optional[Callable[[np.ndarray], np.ndarray]] = None,
     transition_frames: int = 8,
     max_detection_frames: int = 18,
+    attempts: int = 1,
+    minimum_matched_points: int = 6,
     inter_frame_delay_seconds: float = 0.0,
     on_frame: Optional[Callable[[np.ndarray], None]] = None,
 ) -> LinkedPatternCaptureResult:
@@ -96,49 +101,58 @@ def collect_linked_pattern_observation(
     coordinates, especially because adjacent focus patterns reuse ChArUco IDs.
     """
     transition_read = 0
-    delay = max(0.0, float(inter_frame_delay_seconds))
-    for _ in range(max(0, int(transition_frames))):
-        frame = read_frame()
-        if frame is None or frame.size == 0:
-            if delay > 0.0:
-                time.sleep(delay)
-            continue
-        transition_read += 1
-        if on_frame is not None:
-            on_frame(frame)
-        if delay > 0.0:
-            time.sleep(delay)
-
-    best: Optional[LinkedCalibrationObservation] = None
     detection_read = 0
     matched_frames = 0
-    for _ in range(max(1, int(max_detection_frames))):
-        frame = read_frame()
-        if frame is None or frame.size == 0:
+    attempts_completed = 0
+    diagnostic_frame: Optional[np.ndarray] = None
+    delay = max(0.0, float(inter_frame_delay_seconds))
+    best: Optional[LinkedCalibrationObservation] = None
+    for _attempt_index in range(max(1, int(attempts))):
+        attempts_completed += 1
+        for _ in range(max(0, int(transition_frames))):
+            frame = read_frame()
+            if frame is None or frame.size == 0:
+                if delay > 0.0:
+                    time.sleep(delay)
+                continue
+            transition_read += 1
+            diagnostic_frame = frame
+            if on_frame is not None:
+                on_frame(frame)
             if delay > 0.0:
                 time.sleep(delay)
-            continue
-        detection_read += 1
-        if on_frame is not None:
-            on_frame(frame)
-        observation = match_linked_pattern_observation(
-            pattern,
-            frame,
-            undistort_points=undistort_points,
-        )
-        if delay > 0.0:
-            time.sleep(delay)
-        if observation is None:
-            continue
-        matched_frames += 1
-        if best is None or observation.matched_count > best.matched_count:
-            best = observation
+        for _ in range(max(1, int(max_detection_frames))):
+            frame = read_frame()
+            if frame is None or frame.size == 0:
+                if delay > 0.0:
+                    time.sleep(delay)
+                continue
+            detection_read += 1
+            diagnostic_frame = frame
+            if on_frame is not None:
+                on_frame(frame)
+            observation = match_linked_pattern_observation(
+                pattern,
+                frame,
+                undistort_points=undistort_points,
+            )
+            if delay > 0.0:
+                time.sleep(delay)
+            if observation is None:
+                continue
+            matched_frames += 1
+            if best is None or observation.matched_count > best.matched_count:
+                best = observation
+        if best is not None and best.matched_count >= max(4, int(minimum_matched_points)):
+            break
 
     return LinkedPatternCaptureResult(
         observation=best,
         transition_frames_read=transition_read,
         detection_frames_read=detection_read,
         matched_frames=matched_frames,
+        attempts=attempts_completed,
+        diagnostic_frame=diagnostic_frame,
     )
 
 
@@ -186,9 +200,27 @@ def build_linked_patterns(
     patterns.append(_make_charuco_pattern("full_cover", "台布全域 ChArUco", coarse_spec, width, height, full_roi, "full", projector_bbox, outline_proj, inner_proj, pockets_proj, center))
 
     names = ["pocket_lt", "pocket_mt", "pocket_rt", "pocket_rb", "pocket_mb", "pocket_lb"]
+    corner_focus_positions = {
+        0: (0.18, 0.20),
+        2: (0.82, 0.20),
+        3: (0.82, 0.80),
+        5: (0.18, 0.80),
+    }
     for idx, point in enumerate(pocket_centers[:6]):
         focus_point = np.asarray(point, dtype=np.float32).copy()
-        if idx == 1:
+        if idx in corner_focus_positions:
+            # Keep the complete board on matte cloth. A board touching the
+            # projected table boundary is easily destroyed by rail reflection,
+            # pocket voids, or a few clipped marker cells.
+            x_ratio, y_ratio = corner_focus_positions[idx]
+            focus_point = np.asarray(
+                [
+                    projector_bbox[0] + x_ratio * (projector_bbox[2] - projector_bbox[0]),
+                    projector_bbox[1] + y_ratio * (projector_bbox[3] - projector_bbox[1]),
+                ],
+                dtype=np.float32,
+            )
+        elif idx == 1:
             # The upper middle pocket is commonly affected by the pocket void,
             # rail reflection and the overhead-light centerline. Move the whole
             # board diagonally onto cloth while retaining the upper-half zone.

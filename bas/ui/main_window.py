@@ -1238,12 +1238,13 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                     undistort_points=undistort,
                     transition_frames=8,
                     max_detection_frames=18 if pattern.collect_for_solver else 2,
+                    attempts=2 if pattern.collect_for_solver else 1,
                     inter_frame_delay_seconds=0.03,
                     on_frame=show_calibration_frame,
                 )
                 best = capture_result.observation
 
-                if pattern.emphasis_zone == "center" and best is None:
+                if pattern.emphasis_zone == "center" and (best is None or best.matched_count < 6):
                     retry = QtWidgets.QMessageBox.warning(
                         self,
                         "中心 ChArUco 预检失败",
@@ -1265,17 +1266,60 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                             on_frame=show_calibration_frame,
                         )
                         best = capture_result.observation
-                    if best is None:
+                    if best is None or best.matched_count < 6:
                         raise RuntimeError(
                             "中心 ChArUco 预检失败。请关闭球桌照明灯、检查投影和相机焦点，"
                             "并将相机曝光适当调低后重试；中心图样可识别前不会继续采集边缘图样。"
                         )
 
+                if (
+                    pattern.collect_for_solver
+                    and pattern.emphasis_zone != "center"
+                    and (best is None or best.matched_count < 6)
+                ):
+                    retry = QtWidgets.QMessageBox.warning(
+                        self,
+                        "校准图样识别不足",
+                        f"{pattern.title} 目前只匹配到 "
+                        f"{0 if best is None else best.matched_count} 个角点，至少需要 6 个。\n\n"
+                        "系统已自动补采一次。请确认该图样完整落在台布上，避开袋洞和反光，"
+                        "必要时调暗球桌照明或降低相机曝光，然后选择“重试”。",
+                        QtWidgets.QMessageBox.Retry | QtWidgets.QMessageBox.Cancel,
+                        QtWidgets.QMessageBox.Retry,
+                    )
+                    if retry == QtWidgets.QMessageBox.Retry:
+                        self._append_log(f"{pattern.title} 自动补采仍不足，等待现场调整后重试。")
+                        capture_result = collect_linked_pattern_observation(
+                            pattern,
+                            read_calibration_frame,
+                            undistort_points=undistort,
+                            transition_frames=8,
+                            max_detection_frames=30,
+                            attempts=2,
+                            inter_frame_delay_seconds=0.03,
+                            on_frame=show_calibration_frame,
+                        )
+                        best = capture_result.observation
+
+                capture_ok = (
+                    not pattern.collect_for_solver
+                    or (best is not None and best.matched_count >= 6)
+                )
+                diagnostic_path = None
+                if not capture_ok and capture_result.diagnostic_frame is not None:
+                    diagnostic_path = audit.session_dir / f"pattern_{idx + 1:02d}_{pattern.pattern_id}_failed.jpg"
+                    try:
+                        if not cv2.imwrite(str(diagnostic_path), capture_result.diagnostic_frame):
+                            diagnostic_path = None
+                    except cv2.error:
+                        diagnostic_path = None
+
                 audit.event(
                     "pattern_captured",
-                    status="ok" if best is not None else "warning",
+                    status="ok" if capture_ok else "warning",
                     metrics={
                         "pattern_index": idx + 1,
+                        "capture_attempts": capture_result.attempts,
                         "transition_frames": capture_result.transition_frames_read,
                         "detection_frames": capture_result.detection_frames_read,
                         "matched_frames": capture_result.matched_frames,
@@ -1285,6 +1329,7 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                         "title": pattern.title,
                         "emphasis_zone": pattern.emphasis_zone,
                         "collect_for_solver": pattern.collect_for_solver,
+                        "diagnostic_frame": str(diagnostic_path) if diagnostic_path is not None else None,
                     },
                 )
                 if not pattern.collect_for_solver:
