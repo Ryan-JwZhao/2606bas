@@ -19,6 +19,11 @@ MAX_BALL_HOLDOUT_P95_BALL_DIAMETER_RATIO = 0.12
 MIN_BALL_HOLDOUT_P95_MM = 5.0
 MAX_BALL_HOLDOUT_BIAS_BALL_DIAMETER_RATIO = 0.05
 MIN_BALL_HOLDOUT_BIAS_MM = 2.0
+MIN_BALL_COMPENSATION_TRAINING_SAMPLES = 20
+MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES = 8
+MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES = (
+    MIN_BALL_COMPENSATION_TRAINING_SAMPLES + MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES
+)
 
 
 @dataclass
@@ -205,7 +210,7 @@ def build_ball_compensation_model(
     ball_diameter_mm: float,
     max_neighbors: int = 8,
     mode: str = "engineered_ball_comp_v3",
-    minimum_samples: int = 20,
+    minimum_samples: int = MIN_BALL_COMPENSATION_TRAINING_SAMPLES,
     table_width_mm: float | None = None,
     table_height_mm: float | None = None,
 ) -> BallCompensationModel:
@@ -282,9 +287,17 @@ def split_ball_compensation_samples(
     """Reserve spatially spread samples for honest end-to-end validation."""
 
     items = list(samples)
-    if len(items) < 24:
-        return items, []
-    count = min(len(items) - 20, max(int(minimum_holdout), int(round(len(items) * float(holdout_ratio)))))
+    required_holdout = max(1, int(minimum_holdout))
+    required_total = MIN_BALL_COMPENSATION_TRAINING_SAMPLES + required_holdout
+    if len(items) < required_total:
+        raise ValueError(
+            f"At least {required_total} accepted samples are required: "
+            f"{MIN_BALL_COMPENSATION_TRAINING_SAMPLES} training and {required_holdout} holdout."
+        )
+    count = min(
+        len(items) - MIN_BALL_COMPENSATION_TRAINING_SAMPLES,
+        max(required_holdout, int(round(len(items) * float(holdout_ratio)))),
+    )
     points = np.asarray([sample.target_table_mm for sample in items], dtype=np.float64)
     scale = np.maximum(np.ptp(points, axis=0), 1.0)
     normalized = (points - np.min(points, axis=0)) / scale

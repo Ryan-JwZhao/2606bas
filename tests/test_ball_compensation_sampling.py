@@ -43,6 +43,28 @@ def test_dense_samples_reserve_spread_holdout_without_overlap() -> None:
     assert np.ptp(holdout_points[:, 1]) >= 900.0
 
 
+def test_sample_split_rejects_total_below_training_plus_minimum_holdout() -> None:
+    samples = [
+        _sample_from_identical_point(index, np.asarray([float(index % 7), float(index // 7)]))
+        for index in range(27)
+    ]
+
+    with np.testing.assert_raises_regex(ValueError, "(?i)at least 28.*20 training.*8 holdout"):
+        split_ball_compensation_samples(samples)
+
+
+def test_sample_split_keeps_declared_minimum_holdout_at_exact_boundary() -> None:
+    samples = [
+        _sample_from_identical_point(index, np.asarray([float(index % 7), float(index // 7)]))
+        for index in range(28)
+    ]
+
+    training, holdout = split_ball_compensation_samples(samples)
+
+    assert len(training) == 20
+    assert len(holdout) == 8
+
+
 def test_wizard_fit_seam_builds_and_activates_holdout_validated_model() -> None:
     projection = ProjectionCalibration.fit_from_correspondences(
         np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]),

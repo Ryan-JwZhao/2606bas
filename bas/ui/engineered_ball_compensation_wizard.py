@@ -13,6 +13,9 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from ..calibration import (
     BallCompensationSample,
     BallCompensationValidationError,
+    MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES,
+    MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES,
+    MIN_BALL_COMPENSATION_TRAINING_SAMPLES,
     build_engineered_ball_sampling_grid,
     create_setting_aware_calibration_service,
     fit_and_validate_ball_compensation,
@@ -118,7 +121,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         intro = QtWidgets.QLabel(
             "该向导会按 8×7、共 56 个均匀目标点自动采样。约 18% 的空间分散点只用于独立 Holdout，"
             "其余样本拟合全局球心平面和正则局部残差。请确保投影平面校准文件与球检测模型都有效。"
-            "采样时建议清空台面，仅保留一颗球。"
+            f"采样时建议清空台面，仅保留一颗球；允许跳过异常点，但至少要获得 {MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个有效样本。"
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -132,7 +135,8 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     "2. 启用可用的球检测后端；向导严格沿用当前工业相机畸变校正开关，不会自行开启校正。",
                     "3. 清空台面，仅保留一颗标准球。",
                     "4. 点击“开始自动采样”，按提示把球逐个移动到贴近球边缘的短弧目标圈。",
-                    "5. 训练交叉验证和独立 Holdout 均通过后，程序才会保存新补偿 JSON 并写回设置。",
+                    f"5. 至少保留 {MIN_BALL_COMPENSATION_TRAINING_SAMPLES} 个训练样本和 "
+                    f"{MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES} 个独立 Holdout；两项验收均通过后才会保存新补偿 JSON。",
                 ]
             )
         )
@@ -383,6 +387,13 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 extra_safe_inset_mm=edge_safe_inset_mm,
                 priority_points_mm=np.asarray(calibration.table.pockets_mm, dtype=np.float32),
             )
+            if len(sample_points) < MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES:
+                raise RuntimeError(
+                    f"当前安全采样区只能生成 {len(sample_points)} 个点，"
+                    f"至少需要 {MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个点才能保留 "
+                    f"{MIN_BALL_COMPENSATION_TRAINING_SAMPLES} 个训练样本和 "
+                    f"{MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES} 个独立 Holdout。"
+                )
             self._append_log(
                 "sampling_region="
                 f"{sampling_region_name}, "
@@ -439,6 +450,14 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                         metrics={"sample_index": idx + 1, "total": total},
                         details={"target_table_mm": target_table_mm},
                     )
+                    remaining_count = len(sample_points) - idx - 1
+                    maximum_accepted = len(self._samples) + remaining_count
+                    if maximum_accepted < MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES:
+                        raise RuntimeError(
+                            f"跳过当前点后最多只能获得 {maximum_accepted} 个有效样本，"
+                            f"低于最低要求 {MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个；"
+                            "已提前结束，避免继续无效采样。"
+                        )
                     continue
                 self._samples.append(outcome)
                 audit.event(
@@ -464,8 +483,13 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     f"delta=({outcome.delta_table_mm[0]:.2f}, {outcome.delta_table_mm[1]:.2f}) mm"
                 )
 
-            if len(self._samples) < 20:
-                raise RuntimeError(f"有效采样点只有 {len(self._samples)} 个，至少需要 20 个点才能生成可靠补偿文件。")
+            if len(self._samples) < MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES:
+                raise RuntimeError(
+                    f"有效采样点只有 {len(self._samples)} 个，至少需要 "
+                    f"{MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个（"
+                    f"{MIN_BALL_COMPENSATION_TRAINING_SAMPLES} 个训练 + "
+                    f"{MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES} 个 Holdout）。"
+                )
             frame_height, frame_width = prime_frame.shape[:2] if prime_frame is not None else (
                 int(self.operator.config.camera.height),
                 int(self.operator.config.camera.width),
