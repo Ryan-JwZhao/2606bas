@@ -11,6 +11,7 @@ from ..schemas import Point, TableModel
 from ..utils import ensure_numpy_points
 from .ball_compensation import BallCompensationModel
 from .ball_compensation_sampling import evaluate_ball_compensation_quality
+from .quality_standards import BALL_COMPENSATION_MIN_TRAINING_SAMPLES
 from .camera import CameraCalibration
 from .geometry import IndependentGeometry, ProjectedEllipse
 from .projector import ProjectionCalibration
@@ -260,7 +261,22 @@ def _audit_legacy_ball_compensation_model(
         return
     controls = np.asarray(model.control_points_camera_px, dtype=np.float64).reshape((-1, 2))
     targets = np.asarray(model.target_table_mm, dtype=np.float64).reshape((-1, 2))
-    if controls.shape != targets.shape or controls.shape[0] < 20:
+    if (
+        targets.shape[0] > 0
+        and controls.shape == targets.shape
+        and controls.shape[0] < BALL_COMPENSATION_MIN_TRAINING_SAMPLES
+    ):
+        model.quality_report = {
+            **model.quality_report,
+            "legacy_model_audited": True,
+            "quality_gate_passed": False,
+            "quality_gate_errors": [
+                f"legacy global ball-center model has {controls.shape[0]} samples; "
+                f"at least {BALL_COMPENSATION_MIN_TRAINING_SAMPLES} are required"
+            ],
+        }
+        return
+    if controls.shape != targets.shape or controls.shape[0] < BALL_COMPENSATION_MIN_TRAINING_SAMPLES:
         return
     weights = model.sample_weights if model.sample_weights.shape[0] == controls.shape[0] else None
     audit = evaluate_ball_compensation_quality(

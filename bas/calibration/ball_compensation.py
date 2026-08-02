@@ -8,6 +8,7 @@ import numpy as np
 
 from ..geometry_contract import context_compatibility_errors
 from .artifact_io import atomic_write_json, load_json_object
+from .quality_standards import ball_holdout_quality_errors
 
 
 @dataclass
@@ -61,6 +62,39 @@ class BallCompensationModel:
                 raise ValueError("target_table_mm must be empty or match control point count")
             if sample_weights.shape[0] not in {0, controls.shape[0]}:
                 raise ValueError("sample_weights must be empty or match control point count")
+            quality_report = dict(data.get("quality_report", {}))
+            holdout_report = data.get("holdout_quality_report")
+            if not isinstance(holdout_report, dict):
+                holdout_report = quality_report.get("holdout_validation")
+            if isinstance(holdout_report, dict):
+                error_report = holdout_report.get("error_mm", {})
+                mean_vector = np.asarray(
+                    holdout_report.get("mean_vector_mm", [float("inf"), float("inf")]),
+                    dtype=np.float64,
+                ).reshape((-1,))
+                holdout_errors = ball_holdout_quality_errors(
+                    sample_count=int(holdout_report.get("sample_count", 0)),
+                    median_mm=float(error_report.get("median", float("inf"))),
+                    p95_mm=float(error_report.get("p95", float("inf"))),
+                    mean_bias_mm=(
+                        float(np.linalg.norm(mean_vector[:2]))
+                        if mean_vector.shape[0] >= 2
+                        else float("inf")
+                    ),
+                )
+                quality_report = {
+                    **quality_report,
+                    "holdout_validation": holdout_report,
+                    "quality_gate_passed": (
+                        quality_report.get("quality_gate_passed") is not False
+                        and not holdout_errors
+                    ),
+                }
+                if holdout_errors:
+                    quality_report["quality_gate_errors"] = [
+                        *list(quality_report.get("quality_gate_errors", [])),
+                        *holdout_errors,
+                    ]
             return cls(
                 mode=str(data.get("mode", "none")),
                 control_points_camera_px=controls,
@@ -69,7 +103,7 @@ class BallCompensationModel:
                 sample_weights=sample_weights,
                 max_neighbors=max(1, int(data.get("max_neighbors", 8) or 8)),
                 source_path=str(p),
-                quality_report=dict(data.get("quality_report", {})),
+                quality_report=quality_report,
                 calibration_context=stored_context,
                 compatibility_errors=compatibility_errors,
             )

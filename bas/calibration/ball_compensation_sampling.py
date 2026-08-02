@@ -7,6 +7,14 @@ import cv2
 import numpy as np
 
 from .ball_compensation import BallCompensationModel
+from .quality_standards import (
+    BALL_COMPENSATION_MIN_ACCEPTED_SAMPLES,
+    BALL_COMPENSATION_MIN_HOLDOUT_SAMPLES,
+    BALL_COMPENSATION_MIN_TRAINING_SAMPLES,
+    FORMAL_TABLE_ERROR_MEDIAN_MM,
+    FORMAL_TABLE_ERROR_P95_MM,
+    ball_holdout_quality_errors,
+)
 from ..table_boundaries import EdgeInsets, derive_table_boundaries, inset_polygon_uniform
 
 
@@ -15,15 +23,9 @@ MIN_BALL_MAP_CV_P95_MM = 8.0
 MIN_BALL_TARGET_WIDTH_RATIO = 0.60
 MIN_BALL_TARGET_HEIGHT_RATIO = 0.55
 MIN_BALL_TARGET_HULL_AREA_RATIO = 0.35
-MAX_BALL_HOLDOUT_P95_BALL_DIAMETER_RATIO = 0.12
-MIN_BALL_HOLDOUT_P95_MM = 5.0
-MAX_BALL_HOLDOUT_BIAS_BALL_DIAMETER_RATIO = 0.05
-MIN_BALL_HOLDOUT_BIAS_MM = 2.0
-MIN_BALL_COMPENSATION_TRAINING_SAMPLES = 20
-MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES = 8
-MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES = (
-    MIN_BALL_COMPENSATION_TRAINING_SAMPLES + MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES
-)
+MIN_BALL_COMPENSATION_TRAINING_SAMPLES = BALL_COMPENSATION_MIN_TRAINING_SAMPLES
+MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES = BALL_COMPENSATION_MIN_HOLDOUT_SAMPLES
+MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES = BALL_COMPENSATION_MIN_ACCEPTED_SAMPLES
 
 
 @dataclass
@@ -332,29 +334,20 @@ def evaluate_ball_compensation_holdout(
     vectors = predicted - target
     error_report = _stats_report(np.linalg.norm(vectors, axis=1))
     mean_vector = np.mean(vectors, axis=0)
-    ball_diameter_mm = float(calibration.table.ball_diameter_mm)
-    maximum_p95_mm = max(
-        MIN_BALL_HOLDOUT_P95_MM,
-        ball_diameter_mm * MAX_BALL_HOLDOUT_P95_BALL_DIAMETER_RATIO,
-    )
-    maximum_bias_mm = max(
-        MIN_BALL_HOLDOUT_BIAS_MM,
-        ball_diameter_mm * MAX_BALL_HOLDOUT_BIAS_BALL_DIAMETER_RATIO,
-    )
-    quality_errors: list[str] = []
-    if float(error_report["p95"]) > maximum_p95_mm:
-        quality_errors.append(
-            f"holdout P95 {float(error_report['p95']):.2f} mm exceeds {maximum_p95_mm:.2f} mm"
-        )
+    maximum_p95_mm = FORMAL_TABLE_ERROR_P95_MM
+    maximum_bias_mm = FORMAL_TABLE_ERROR_MEDIAN_MM
     bias_mm = float(np.linalg.norm(mean_vector))
-    if bias_mm > maximum_bias_mm:
-        quality_errors.append(
-            f"holdout mean bias {bias_mm:.2f} mm exceeds {maximum_bias_mm:.2f} mm"
-        )
+    quality_errors = ball_holdout_quality_errors(
+        sample_count=len(samples),
+        median_mm=float(error_report["median"]),
+        p95_mm=float(error_report["p95"]),
+        mean_bias_mm=bias_mm,
+    )
     return {
         "sample_count": int(len(samples)),
         "error_mm": error_report,
         "mean_vector_mm": mean_vector.tolist(),
+        "maximum_median_mm": float(FORMAL_TABLE_ERROR_MEDIAN_MM),
         "maximum_p95_mm": float(maximum_p95_mm),
         "maximum_mean_bias_mm": float(maximum_bias_mm),
         "quality_gate_passed": not quality_errors,
@@ -399,6 +392,11 @@ def fit_and_validate_ball_compensation(
                 training_count=len(training_samples),
                 holdout_count=len(holdout_samples),
             )
+        model.quality_report = {
+            **model.quality_report,
+            "holdout_validation": holdout_report,
+            "quality_gate_passed": True,
+        }
     except Exception:
         calibration.ball_compensation_model = previous_model
         calibration._rebuild_geometry()

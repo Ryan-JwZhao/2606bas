@@ -622,3 +622,42 @@ def test_engineered_service_audits_and_rejects_bad_legacy_full_grid_model(tmp_pa
     assert "cross-validation" in " ".join(
         service.ball_compensation_model.quality_report["quality_gate_errors"]
     )
+
+
+def test_engineered_service_rejects_undersampled_legacy_global_model(tmp_path) -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
+        np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float64),
+        projector_size=(1000, 500),
+    )
+    projection.table_polygon_proj = np.array(
+        [[0, 0], [1000, 0], [1000, 500], [0, 500]],
+        dtype=np.float64,
+    )
+    plane_path = tmp_path / "engineered_plane.json"
+    projection.save(plane_path)
+    ball_path = tmp_path / "undersampled_global_ball.json"
+    ball_path.write_text(
+        json.dumps(
+            {
+                "mode": "engineered_ball_comp_v2",
+                "control_camera_points": [[0, 0], [1000, 0], [1000, 500], [0, 500]],
+                "target_table_mm": [[0, 0], [1000, 0], [1000, 500], [0, 500]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    cfg = CalibrationConfig(
+        projection_file=str(plane_path),
+        engineered_ball_compensation_file=str(ball_path),
+        table_width_mm=1000.0,
+        table_height_mm=500.0,
+        ball_diameter_mm=57.15,
+    )
+
+    service = create_calibration_service(cfg, distortion_correction_enabled=False)
+
+    assert service.ball_compensation_model.is_valid is False
+    assert "at least 20" in " ".join(
+        service.ball_compensation_model.quality_report["quality_gate_errors"]
+    )

@@ -7,6 +7,16 @@ from typing import Any, Dict, Iterable, List, Optional
 import numpy as np
 
 from ..utils import percentile
+from .quality_standards import (
+    DISTANCE_ERROR_SLOPE_ABS_MM_PER_CM,
+    FORMAL_TABLE_ERROR_MEDIAN_MM,
+    FORMAL_TABLE_ERROR_P95_MM,
+    IMAGE_ERROR_MEAN_PX,
+    IMAGE_ERROR_P95_PX,
+    MVP_TABLE_ERROR_MEDIAN_MM,
+    MVP_TABLE_ERROR_P95_MM,
+    POCKET_ZONE_ERROR_P95_MM,
+)
 from .service import CalibrationService
 
 
@@ -90,14 +100,14 @@ def verify_holdout_samples(samples: Iterable[Dict[str, Any]], service: Calibrati
         "distance_slope_mm_per_cm": _fit_slope(distances_cm, mm_errors),
         "coverage": _coverage_report(used_samples, zone_errors),
         "thresholds": {
-            "image_mean_px": 0.20,
-            "image_p95_px": 0.35,
-            "mvp_table_median_mm": 1.5,
-            "mvp_table_p95_mm": 3.0,
-            "formal_table_median_mm": 1.0,
-            "formal_table_p95_mm": 2.0,
-            "pocket_zone_p95_mm": 2.5,
-            "distance_slope_abs_mm_per_cm": 0.03,
+            "image_mean_px": IMAGE_ERROR_MEAN_PX,
+            "image_p95_px": IMAGE_ERROR_P95_PX,
+            "mvp_table_median_mm": MVP_TABLE_ERROR_MEDIAN_MM,
+            "mvp_table_p95_mm": MVP_TABLE_ERROR_P95_MM,
+            "formal_table_median_mm": FORMAL_TABLE_ERROR_MEDIAN_MM,
+            "formal_table_p95_mm": FORMAL_TABLE_ERROR_P95_MM,
+            "pocket_zone_p95_mm": POCKET_ZONE_ERROR_P95_MM,
+            "distance_slope_abs_mm_per_cm": DISTANCE_ERROR_SLOPE_ABS_MM_PER_CM,
             "mvp_min_samples": MVP_MIN_HOLDOUT_SAMPLES,
             "formal_min_samples": FORMAL_MIN_HOLDOUT_SAMPLES,
             "mvp_min_labeled_zones": MVP_MIN_LABELED_ZONES,
@@ -211,10 +221,20 @@ def _verdict(report: Dict[str, Any]) -> Dict[str, bool]:
     img = report["image_error_px"]
     mm = report["table_error_mm"]
     slope = report["distance_slope_mm_per_cm"]
-    img_ok = img["count"] == 0 or (img["mean"] < 0.20 and img["p95"] < 0.35)
-    mvp_mm_ok = mm["count"] > 0 and mm["median"] < 1.5 and mm["p95"] < 3.0
-    formal_mm_ok = mm["count"] > 0 and mm["median"] < 1.0 and mm["p95"] < 2.0
-    slope_ok = slope is None or abs(float(slope)) < 0.03
+    img_ok = img["count"] == 0 or (
+        img["mean"] < IMAGE_ERROR_MEAN_PX and img["p95"] < IMAGE_ERROR_P95_PX
+    )
+    mvp_mm_ok = (
+        mm["count"] > 0
+        and mm["median"] < MVP_TABLE_ERROR_MEDIAN_MM
+        and mm["p95"] < MVP_TABLE_ERROR_P95_MM
+    )
+    formal_mm_ok = (
+        mm["count"] > 0
+        and mm["median"] < FORMAL_TABLE_ERROR_MEDIAN_MM
+        and mm["p95"] < FORMAL_TABLE_ERROR_P95_MM
+    )
+    slope_ok = slope is None or abs(float(slope)) < DISTANCE_ERROR_SLOPE_ABS_MM_PER_CM
     coverage = report["coverage"]
     mvp_coverage = bool(coverage["mvp"])
     formal_coverage = bool(coverage["formal"])

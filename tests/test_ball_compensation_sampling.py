@@ -17,6 +17,7 @@ from bas.calibration.ball_compensation_sampling import (
     split_ball_compensation_samples,
     update_calibration_table_boundaries_from_geometry_frame,
 )
+from bas.calibration.quality_standards import ball_holdout_quality_errors
 
 
 def test_dense_samples_reserve_spread_holdout_without_overlap() -> None:
@@ -65,6 +66,17 @@ def test_sample_split_keeps_declared_minimum_holdout_at_exact_boundary() -> None
     assert len(holdout) == 8
 
 
+def test_ball_holdout_rejects_bad_median_even_when_p95_and_directional_bias_pass() -> None:
+    errors = ball_holdout_quality_errors(
+        sample_count=8,
+        median_mm=1.5,
+        p95_mm=1.5,
+        mean_bias_mm=0.0,
+    )
+
+    assert errors == ["holdout median 1.50 mm is not below 1.00 mm"]
+
+
 def test_wizard_fit_seam_builds_and_activates_holdout_validated_model() -> None:
     projection = ProjectionCalibration.fit_from_correspondences(
         np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]),
@@ -92,6 +104,8 @@ def test_wizard_fit_seam_builds_and_activates_holdout_validated_model() -> None:
     assert len(validated.holdout_samples) == 10
     assert validated.holdout_report["quality_gate_passed"] is True
     assert validated.model.calibration_context["camera_coordinate_domain"] == "raw"
+    assert validated.model.quality_report["quality_gate_passed"] is True
+    assert validated.model.quality_report["holdout_validation"] == validated.holdout_report
 
 
 def test_wizard_fit_seam_restores_previous_model_after_holdout_failure() -> None:
@@ -292,6 +306,46 @@ def test_ball_compensation_holdout_rejects_systematic_bias() -> None:
 
     assert report["quality_gate_passed"] is False
     assert any("mean bias" in error for error in report["quality_gate_errors"])
+
+
+def test_ball_compensation_holdout_rejects_visible_error_even_when_bias_cancels() -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]),
+        np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]),
+        projector_size=(1000, 500),
+    )
+    service = CalibrationService(
+        CameraCalibration(metadata={}),
+        projection,
+        TableModel(
+            width_mm=1000.0,
+            height_mm=500.0,
+            ball_diameter_mm=57.15,
+            inner_polygon_mm=[(0.0, 0.0), (1000.0, 0.0), (1000.0, 500.0), (0.0, 500.0)],
+            pockets_mm=[],
+        ),
+    )
+    samples = []
+    for index in range(10):
+        target_x = float(100 + index * 70)
+        error_x = 4.0 if index % 2 == 0 else -4.0
+        samples.append(
+            BallCompensationSample(
+                sample_index=index,
+                target_table_mm=(target_x, 200.0),
+                detected_camera_px=(target_x + error_x, 200.0),
+                projected_target_px=(0.0, 0.0),
+                expected_camera_px=(0.0, 0.0),
+                observed_table_mm=(0.0, 0.0),
+                delta_table_mm=(0.0, 0.0),
+            )
+        )
+
+    report = evaluate_ball_compensation_holdout(samples, service)
+
+    assert report["maximum_p95_mm"] == 2.0
+    assert report["quality_gate_passed"] is False
+    assert any("holdout P95" in error for error in report["quality_gate_errors"])
 
 
 def test_build_engineered_ball_sampling_grid_covers_table_interior() -> None:
@@ -715,6 +769,34 @@ def test_ball_compensation_model_rejects_explicit_failed_quality_gate() -> None:
     )
 
     assert model.is_valid is False
+
+
+def test_loaded_ball_compensation_rechecks_embedded_holdout_with_current_standard(tmp_path: Path) -> None:
+    controls = np.asarray([[0, 0], [10, 0], [0, 10], [10, 10]], dtype=np.float64)
+    model = BallCompensationModel(
+        mode="direct",
+        control_points_camera_px=controls,
+        target_table_mm=controls.copy(),
+        quality_report={"quality_gate_passed": True},
+    )
+    path = tmp_path / "loose_holdout.json"
+    model.save_json(
+        path,
+        extra_data={
+            "holdout_quality_report": {
+                "sample_count": 8,
+                "error_mm": {"p95": 4.0},
+                "mean_vector_mm": [0.0, 0.0],
+                "quality_gate_passed": True,
+            }
+        },
+    )
+
+    loaded = BallCompensationModel.load_json(path)
+
+    assert loaded.is_valid is False
+    assert loaded.quality_report["quality_gate_passed"] is False
+    assert any("holdout P95" in error for error in loaded.quality_report["quality_gate_errors"])
 
 
 def test_ball_compensation_downweights_bbox_geometry() -> None:
