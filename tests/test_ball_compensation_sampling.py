@@ -11,10 +11,13 @@ from bas.calibration import BallCompensationModel
 from bas.calibration.ball_compensation_sampling import (
     BallCompensationValidationError,
     BallCompensationSample,
+    aggregate_ball_compensation_holdout_repeats,
+    ball_holdout_geometry_is_formal,
     build_ball_compensation_model,
     build_engineered_ball_sampling_grid,
     evaluate_ball_compensation_holdout,
     fit_and_validate_ball_compensation,
+    select_ball_compensation_holdout_targets,
     split_ball_compensation_samples,
     update_calibration_table_boundaries_from_geometry_frame,
 )
@@ -95,14 +98,17 @@ def test_wizard_fit_seam_builds_and_activates_holdout_validated_model() -> None:
     points = build_engineered_ball_sampling_grid(1000.0, 500.0, 57.15, cols=8, rows=7)
     samples = [_sample_from_identical_point(index, point) for index, point in enumerate(points)]
 
+    holdout = [_sample_from_identical_point(1000 + index, point) for index, point in enumerate(points[::6])]
+
     validated = fit_and_validate_ball_compensation(
         samples,
         service,
+        holdout_samples=holdout,
         calibration_context={"camera_coordinate_domain": "raw"},
     )
 
     assert service.ball_compensation_model is validated.model
-    assert len(validated.training_samples) == 46
+    assert len(validated.training_samples) == 56
     assert len(validated.holdout_samples) == 10
     assert validated.holdout_report["quality_gate_passed"] is True
     assert validated.model.calibration_context["camera_coordinate_domain"] == "raw"
@@ -126,16 +132,56 @@ def test_wizard_fit_seam_restores_previous_model_after_holdout_failure() -> None
     previous = service.ball_compensation_model
     points = build_engineered_ball_sampling_grid(1000.0, 500.0, 57.15, cols=8, rows=7)
     samples = [_sample_from_identical_point(index, point) for index, point in enumerate(points)]
-    _, holdout = split_ball_compensation_samples(samples)
-    held_indices = {sample.sample_index for sample in holdout}
-    for sample in samples:
-        if sample.sample_index in held_indices:
-            sample.detected_camera_px = (sample.detected_camera_px[0] + 40.0, sample.detected_camera_px[1])
+    holdout = [_sample_from_identical_point(1000 + index, point) for index, point in enumerate(points[::6])]
+    for sample in holdout:
+        sample.detected_camera_px = (sample.detected_camera_px[0] + 40.0, sample.detected_camera_px[1])
 
     with np.testing.assert_raises(BallCompensationValidationError):
-        fit_and_validate_ball_compensation(samples, service)
+        fit_and_validate_ball_compensation(samples, service, holdout_samples=holdout)
 
     assert service.ball_compensation_model is previous
+
+
+def test_independent_holdout_targets_keep_every_first_pass_sample_for_training() -> None:
+    samples = [
+        _sample_from_identical_point(index, np.asarray([float(index % 8) * 300.0, float(index // 8) * 180.0]))
+        for index in range(56)
+    ]
+
+    targets = select_ball_compensation_holdout_targets(samples, count=10)
+
+    assert len(targets) == 10
+    assert len(samples) == 56
+    assert {sample.sample_index for sample in targets}.issubset({sample.sample_index for sample in samples})
+    points = np.asarray([sample.target_table_mm for sample in targets], dtype=np.float64)
+    assert np.ptp(points[:, 0]) >= 1800.0
+    assert np.ptp(points[:, 1]) >= 900.0
+
+
+def test_formal_holdout_rejects_bbox_geometry() -> None:
+    assert ball_holdout_geometry_is_formal("segmentation_ellipse") is True
+    assert ball_holdout_geometry_is_formal("appearance_ellipse") is True
+    assert ball_holdout_geometry_is_formal("bbox") is False
+    assert ball_holdout_geometry_is_formal("bbox:size_outlier") is False
+
+
+def test_holdout_repeat_aggregation_uses_median_and_reports_repeatability() -> None:
+    group = []
+    for index, center_x in enumerate((99.5, 100.5, 140.0)):
+        sample = _sample_from_identical_point(index, np.asarray([100.0, 200.0]))
+        sample.detected_camera_px = (center_x, 200.0)
+        sample.observed_table_mm = (center_x, 200.0)
+        sample.delta_table_mm = (100.0 - center_x, 0.0)
+        group.append(sample)
+
+    aggregated, repeatability = aggregate_ball_compensation_holdout_repeats([group])
+
+    assert len(aggregated) == 1
+    assert aggregated[0].detected_camera_px == (100.5, 200.0)
+    assert aggregated[0].geometry_method == "segmentation_ellipse"
+    assert repeatability["repeat_count"] == 3
+    assert repeatability["location_count"] == 1
+    assert repeatability["error_mm"]["max"] == 39.5
 
 
 def _sample_from_identical_point(index: int, point: np.ndarray) -> BallCompensationSample:
@@ -340,6 +386,22 @@ def test_stable_sample_completes_at_unchanged_target_with_bbox_recovery(monkeypa
     assert sample.detected_camera_px == (100.0, 100.0)
     assert sample.geometry_method == "bbox"
 
+    formal_sample = EngineeredBallCompensationWizardDialog._wait_for_stable_sample(
+        dialog,
+        capture,
+        Detector(),
+        calibration,
+        None,
+        0,
+        30,
+        fixed_target,
+        projected_target,
+        fixed_target,
+        formal_geometry_required=True,
+    )
+
+    assert formal_sample is None
+
 
 def test_stable_sample_resets_after_sustained_detector_dropout() -> None:
     from bas.ui import engineered_ball_compensation_wizard as wizard
@@ -467,7 +529,7 @@ def test_ball_compensation_completion_summary_exposes_validation_metrics() -> No
         save_path="calibration.json",
     )
 
-    assert "训练=46 留出=10" in summary
+    assert "训练=46 独立Holdout=10" in summary
     assert "homography_rbf" in summary
     assert "Holdout P95=4.10/6.86 mm" in summary
     assert "平均偏差=1.50/2.86 mm" in summary

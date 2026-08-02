@@ -16,9 +16,13 @@ from ..calibration import (
     MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES,
     MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES,
     MIN_BALL_COMPENSATION_TRAINING_SAMPLES,
+    aggregate_ball_compensation_holdout_repeats,
+    ball_holdout_geometry_is_formal,
+    build_ball_compensation_model,
     build_engineered_ball_sampling_grid,
     create_setting_aware_calibration_service,
     fit_and_validate_ball_compensation,
+    select_ball_compensation_holdout_targets,
     start_calibration_audit,
     update_calibration_table_boundaries_from_geometry_frame,
 )
@@ -45,6 +49,8 @@ ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS = 3.0
 ENGINEERED_SAMPLE_TIMEOUT_SECONDS = 28.0
 ENGINEERED_SAMPLE_DROPOUT_GRACE_SECONDS = 0.45
 ENGINEERED_CENTER_PLAYABLE_SAFE_INSET_MM = 6.0
+ENGINEERED_HOLDOUT_LOCATION_COUNT = 10
+ENGINEERED_HOLDOUT_REPEATS = 3
 
 
 class _SamplingAborted(RuntimeError):
@@ -126,8 +132,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
 
         intro = QtWidgets.QLabel(
-            "该向导会按 8×7、共 56 个均匀目标点自动采样。约 18% 的空间分散点只用于独立 Holdout，"
-            "其余样本拟合全局球心平面和正则局部残差。请确保投影平面校准文件与球检测模型都有效。"
+            "该向导会先按 8×7、共 56 个全桌目标点完成训练采样，第一遍有效样本全部用于拟合，"
+            "不会再扣除边角点。随后会在 10 个空间分散位置进行 3 轮独立 Holdout 复采。"
+            "请确保投影平面校准文件与球检测模型都有效。"
             f"采样时建议清空台面，仅保留一颗球；允许跳过异常点，但至少要获得 {MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个有效样本。"
         )
         intro.setWordWrap(True)
@@ -142,8 +149,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     "2. 启用可用的球检测后端；向导严格沿用当前工业相机畸变校正开关，不会自行开启校正。",
                     "3. 清空台面，仅保留一颗标准球。",
                     "4. 点击“开始自动采样”，按提示把球逐个移动到贴近球边缘的短弧目标圈。",
-                    f"5. 至少保留 {MIN_BALL_COMPENSATION_TRAINING_SAMPLES} 个训练样本和 "
-                    f"{MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES} 个独立 Holdout；两项验收均通过后才会保存新补偿 JSON。",
+                    f"5. 第一遍至少保留 {MIN_BALL_COMPENSATION_TRAINING_SAMPLES} 个训练样本；随后按提示完成 "
+                    f"{ENGINEERED_HOLDOUT_LOCATION_COUNT} 个位置 × {ENGINEERED_HOLDOUT_REPEATS} 轮独立 Holdout。",
+                    "6. 正式 Holdout 只接受轮廓椭圆球心；若画面只能得到 bbox，向导会等待重试而不会写入验收数据。",
                 ]
             )
         )
@@ -398,9 +406,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             if len(sample_points) < MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES:
                 raise RuntimeError(
                     f"当前安全采样区只能生成 {len(sample_points)} 个点，"
-                    f"至少需要 {MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个点才能保留 "
-                    f"{MIN_BALL_COMPENSATION_TRAINING_SAMPLES} 个训练样本和 "
-                    f"{MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES} 个独立 Holdout。"
+                    f"第一遍至少需要 {MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个有效训练位置。"
                 )
             self._append_log(
                 "sampling_region="
@@ -424,7 +430,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             for idx, target_table_mm in enumerate(sample_points):
                 if self._abort_requested:
                     raise _SamplingAborted()
-                percent = int(round(idx / total * 100.0))
+                percent = int(round(idx / total * 70.0))
                 self.progress.setValue(percent)
                 target_arr = np.asarray([target_table_mm], dtype=np.float32)
                 target_proj = calibration.table_mm_to_projector_px(target_arr)[0]
@@ -494,9 +500,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             if len(self._samples) < MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES:
                 raise RuntimeError(
                     f"有效采样点只有 {len(self._samples)} 个，至少需要 "
-                    f"{MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个（"
-                    f"{MIN_BALL_COMPENSATION_TRAINING_SAMPLES} 个训练 + "
-                    f"{MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES} 个 Holdout）。"
+                    f"{MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个第一遍训练样本。"
                 )
             frame_height, frame_width = prime_frame.shape[:2] if prime_frame is not None else (
                 int(self.operator.config.camera.height),
@@ -521,10 +525,110 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 detector_model_file=self.operator.config.detector.model_path,
                 ball_diameter_mm=float(calibration.table.ball_diameter_mm),
             )
+            # Validate the complete first pass before asking the operator for a
+            # second pass.  Unlike the legacy split, no edge/corner sample is
+            # removed from model training.
+            build_ball_compensation_model(
+                self._samples,
+                ball_diameter_mm=float(calibration.table.ball_diameter_mm),
+                table_width_mm=float(calibration.table.width_mm),
+                table_height_mm=float(calibration.table.height_mm),
+            )
+            holdout_targets = select_ball_compensation_holdout_targets(
+                self._samples,
+                count=ENGINEERED_HOLDOUT_LOCATION_COUNT,
+            )
+            repeated_holdout: list[list[BallCompensationSample]] = [
+                [] for _ in holdout_targets
+            ]
+            holdout_observation_total = len(holdout_targets) * ENGINEERED_HOLDOUT_REPEATS
+            self._append_log(
+                f"训练采样完成；开始独立 Holdout 复采：{len(holdout_targets)} 个位置 × "
+                f"{ENGINEERED_HOLDOUT_REPEATS} 轮。正式复采只接受轮廓椭圆球心。"
+            )
+            audit.event(
+                "holdout_sampling_started",
+                metrics={
+                    "training_count": len(self._samples),
+                    "location_count": len(holdout_targets),
+                    "repeat_count": ENGINEERED_HOLDOUT_REPEATS,
+                },
+            )
+            observation_index = 0
+            for repeat_index in range(ENGINEERED_HOLDOUT_REPEATS):
+                location_order = list(range(len(holdout_targets)))
+                rotation = (repeat_index * 3) % max(1, len(location_order))
+                location_order = location_order[rotation:] + location_order[:rotation]
+                for location_index in location_order:
+                    if self._abort_requested:
+                        raise _SamplingAborted()
+                    target_sample = holdout_targets[location_index]
+                    target_table_mm = np.asarray(target_sample.target_table_mm, dtype=np.float32)
+                    target_arr = target_table_mm.reshape((1, 2))
+                    target_proj = calibration.table_mm_to_projector_px(target_arr)[0]
+                    expected_cam = calibration.table_mm_to_camera_px(target_arr)[0]
+                    target_ellipse = calibration.table_circle_to_projector_ellipse(
+                        target_table_mm,
+                        0.5 * float(calibration.table.ball_diameter_mm),
+                    )
+                    self._show_target(target_ellipse, observation_index + 1, holdout_observation_total)
+                    self.progress.setValue(
+                        70 + int(round(observation_index / max(1, holdout_observation_total) * 30.0))
+                    )
+                    self.summary.setText(
+                        f"Holdout 第 {repeat_index + 1}/{ENGINEERED_HOLDOUT_REPEATS} 轮，"
+                        f"位置 {location_index + 1}/{len(holdout_targets)}。请重新移动球到目标圈中心。"
+                    )
+                    outcome = self._collect_sample_for_target(
+                        capture,
+                        detector,
+                        calibration,
+                        geometry,
+                        observation_index,
+                        holdout_observation_total,
+                        target_table_mm,
+                        target_proj.astype(np.float32),
+                        expected_cam.astype(np.float32),
+                        formal_geometry_required=True,
+                        allow_skip=False,
+                    )
+                    if outcome is None:
+                        raise RuntimeError("正式 Holdout 复采不可跳过；请重试当前点或结束向导。")
+                    outcome.sample_index = len(self._samples) + observation_index
+                    repeated_holdout[location_index].append(outcome)
+                    audit.event(
+                        "holdout_sample_accepted",
+                        metrics={
+                            "location_index": location_index + 1,
+                            "repeat_index": repeat_index + 1,
+                            "geometry_quality": outcome.geometry_quality,
+                            "stability_spread_px": outcome.stability_spread_px,
+                        },
+                        details={
+                            "target_table_mm": outcome.target_table_mm,
+                            "detected_camera_px": outcome.detected_camera_px,
+                            "geometry_method": outcome.geometry_method,
+                        },
+                    )
+                    observation_index += 1
+            holdout_samples, holdout_repeatability = aggregate_ball_compensation_holdout_repeats(
+                repeated_holdout,
+                minimum_repeats=ENGINEERED_HOLDOUT_REPEATS,
+            )
+            audit.event(
+                "holdout_repeats_aggregated",
+                metrics={
+                    "location_count": len(holdout_samples),
+                    "observation_count": holdout_repeatability["observation_count"],
+                },
+                details={"repeatability": holdout_repeatability},
+            )
             try:
                 validated = fit_and_validate_ball_compensation(
                     self._samples,
                     calibration,
+                    holdout_samples=holdout_samples,
+                    holdout_repeatability=holdout_repeatability,
                     calibration_context=model_context,
                 )
             except BallCompensationValidationError as exc:
@@ -543,7 +647,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             holdout_samples = list(validated.holdout_samples)
             holdout_report = validated.holdout_report
             audit.event(
-                "samples_split",
+                "training_and_independent_holdout_prepared",
                 metrics={
                     "accepted_count": len(self._samples),
                     "training_count": len(training_samples),
@@ -648,6 +752,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         target_table_mm: np.ndarray,
         target_proj: np.ndarray,
         expected_cam: np.ndarray,
+        *,
+        formal_geometry_required: bool = False,
+        allow_skip: bool = True,
     ) -> Optional[BallCompensationSample]:
         while True:
             sample = self._wait_for_stable_sample(
@@ -660,23 +767,33 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 target_table_mm,
                 target_proj,
                 expected_cam,
+                formal_geometry_required=formal_geometry_required,
             )
             if sample is not None:
                 return sample
             if self._abort_requested:
                 raise _SamplingAborted()
+            timeout_instruction = (
+                "你可以重试当前点、跳过当前点，或结束本次向导。"
+                if allow_skip
+                else "正式 Holdout 不允许跳过；你可以重试当前点或结束本次向导。"
+            )
             choice = QtWidgets.QMessageBox.question(
                 self,
                 "采样超时",
                 f"第 {sample_index + 1}/{total_count} 个采样点在限定时间内未达到稳定条件。\n"
-                "你可以重试当前点、跳过当前点，或结束本次向导。",
-                QtWidgets.QMessageBox.Retry | QtWidgets.QMessageBox.Ignore | QtWidgets.QMessageBox.Cancel,
+                f"{timeout_instruction}",
+                (
+                    QtWidgets.QMessageBox.Retry | QtWidgets.QMessageBox.Ignore | QtWidgets.QMessageBox.Cancel
+                    if allow_skip
+                    else QtWidgets.QMessageBox.Retry | QtWidgets.QMessageBox.Cancel
+                ),
                 QtWidgets.QMessageBox.Retry,
             )
             if choice == QtWidgets.QMessageBox.Retry:
                 self._append_log(f"重试采样点 {sample_index + 1}/{total_count}。")
                 continue
-            if choice == QtWidgets.QMessageBox.Ignore:
+            if allow_skip and choice == QtWidgets.QMessageBox.Ignore:
                 self._append_log(f"跳过采样点 {sample_index + 1}/{total_count}。")
                 return None
             raise _SamplingAborted()
@@ -692,6 +809,8 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         target_table_mm: np.ndarray,
         target_proj: np.ndarray,
         expected_cam: np.ndarray,
+        *,
+        formal_geometry_required: bool = False,
     ) -> Optional[BallCompensationSample]:
         deadline = time.perf_counter() + ENGINEERED_SAMPLE_TIMEOUT_SECONDS
         history: list[tuple[np.ndarray, float, float, float, str]] = []
@@ -752,6 +871,25 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             conf = float(candidate.conf)
             geometry_quality = float(candidate.geometry_quality)
             geometry_method = str(candidate.geometry_method)
+            if formal_geometry_required and not ball_holdout_geometry_is_formal(geometry_method):
+                history.clear()
+                settle_started_at = None
+                last_candidate_at = None
+                now = time.perf_counter()
+                self.summary.setText(
+                    f"第 {sample_index + 1}/{total_count} 个 Holdout 点只检测到 bbox 球框；"
+                    "正式验收需要完整球心轮廓，正在继续等待。"
+                )
+                self._set_preview_image(_annotate_preview(frame, expected_cam, candidate, candidate_count, distance_px))
+                self._pump_ui()
+                if now - last_diagnostic_log_at >= 5.0:
+                    self._append_log(
+                        f"Holdout 点 {sample_index + 1}/{total_count} 拒绝 bbox："
+                        f"geometry_quality={geometry_quality:.2f}。请避免反光或适当降低曝光。"
+                    )
+                    last_diagnostic_log_at = now
+                time.sleep(0.03)
+                continue
             if history and np.linalg.norm(center - history[-1][0]) > max(32.0, radius * 1.6):
                 history.clear()
                 settle_started_at = None
@@ -920,11 +1058,18 @@ def _ball_compensation_completion_summary(
     mapping = training_report.get("mapping_cross_validation", {})
     delta = training_report.get("delta_norm_mm", {})
     holdout_error = holdout_report.get("error_mm", {})
+    repeatability_error = holdout_report.get("repeatability", {}).get("error_mm", {})
     mean_vector = np.asarray(holdout_report.get("mean_vector_mm", [0.0, 0.0]), dtype=np.float64).reshape((-1,))
     bias_mm = float(np.linalg.norm(mean_vector[:2])) if mean_vector.size >= 2 else 0.0
+    repeatability_line = ""
+    if repeatability_error:
+        repeatability_line = (
+            f"独立复采离散度 median={float(repeatability_error.get('median', 0.0)):.2f} mm | "
+            f"P95={float(repeatability_error.get('p95', 0.0)):.2f} mm\n"
+        )
     return (
         "工程球体补偿采样完成。\n"
-        f"有效采样: {accepted_count}/{total_count} | 训练={training_count} 留出={holdout_count}\n"
+        f"有效采样: {accepted_count}/{total_count} | 训练={training_count} 独立Holdout={holdout_count}\n"
         f"模型={mapping.get('model_kind', 'unknown')} | "
         f"训练CV P95={float(mapping.get('p95_mm', 0.0)):.2f}/"
         f"{float(mapping.get('maximum_p95_mm', 0.0)):.2f} mm\n"
@@ -932,6 +1077,7 @@ def _ball_compensation_completion_summary(
         f"{float(holdout_report.get('maximum_p95_mm', 0.0)):.2f} mm | "
         f"平均偏差={bias_mm:.2f}/{float(holdout_report.get('maximum_mean_bias_mm', 0.0)):.2f} mm | "
         f"验收={'通过' if holdout_report.get('quality_gate_passed') else '未通过'}\n"
+        f"{repeatability_line}"
         f"原始补偿量 delta P95={float(delta.get('p95', 0.0)):.2f} mm\n"
         f"保存路径: {save_path}"
     )

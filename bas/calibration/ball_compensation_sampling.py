@@ -300,6 +300,39 @@ def split_ball_compensation_samples(
         len(items) - MIN_BALL_COMPENSATION_TRAINING_SAMPLES,
         max(required_holdout, int(round(len(items) * float(holdout_ratio)))),
     )
+    selected = _spatially_spread_sample_indices(items, count=count)
+    held = set(selected)
+    return [sample for index, sample in enumerate(items) if index not in held], [items[index] for index in selected]
+
+
+def select_ball_compensation_holdout_targets(
+    samples: Sequence[BallCompensationSample],
+    *,
+    count: int = 10,
+) -> list[BallCompensationSample]:
+    """Choose full-table validation locations without removing training data.
+
+    Returned objects identify target locations only.  Formal holdout observations
+    must be acquired in a later, independent pass and must never be reused as
+    training samples.
+    """
+
+    items = list(samples)
+    requested = max(MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES, int(count))
+    if len(items) < requested:
+        raise ValueError(f"At least {requested} training locations are required to select holdout targets.")
+    return [items[index] for index in _spatially_spread_sample_indices(items, count=requested)]
+
+
+def _spatially_spread_sample_indices(
+    samples: Sequence[BallCompensationSample],
+    *,
+    count: int,
+) -> list[int]:
+    items = list(samples)
+    if not items or count <= 0:
+        return []
+    count = min(len(items), int(count))
     points = np.asarray([sample.target_table_mm for sample in items], dtype=np.float64)
     scale = np.maximum(np.ptp(points, axis=0), 1.0)
     normalized = (points - np.min(points, axis=0)) / scale
@@ -312,13 +345,75 @@ def split_ball_compensation_samples(
         )
         distance[np.asarray(selected, dtype=np.int32)] = -1.0
         selected.append(int(np.argmax(distance)))
-    held = set(selected)
-    return [sample for index, sample in enumerate(items) if index not in held], [items[index] for index in selected]
+    return selected
+
+
+def ball_holdout_geometry_is_formal(method: str) -> bool:
+    normalized = str(method or "").strip().lower()
+    return normalized.startswith("segmentation_ellipse") or normalized.startswith("appearance_ellipse")
+
+
+def aggregate_ball_compensation_holdout_repeats(
+    repeated_samples: Sequence[Sequence[BallCompensationSample]],
+    *,
+    minimum_repeats: int = 3,
+) -> tuple[list[BallCompensationSample], Dict[str, object]]:
+    """Median-combine independently placed formal observations per location."""
+
+    groups = [list(group) for group in repeated_samples]
+    aggregated: list[BallCompensationSample] = []
+    repeat_errors: list[float] = []
+    repeat_count = max(1, int(minimum_repeats))
+    for group_index, group in enumerate(groups):
+        if len(group) < repeat_count:
+            raise ValueError(
+                f"Holdout location {group_index + 1} has {len(group)} repeats; at least {repeat_count} are required."
+            )
+        if any(not ball_holdout_geometry_is_formal(sample.geometry_method) for sample in group):
+            raise ValueError(f"Holdout location {group_index + 1} contains non-formal bbox geometry.")
+        targets = np.asarray([sample.target_table_mm for sample in group], dtype=np.float64)
+        target = np.median(targets, axis=0)
+        if float(np.max(np.linalg.norm(targets - target, axis=1))) > 0.5:
+            raise ValueError(f"Holdout location {group_index + 1} mixes different target positions.")
+        cameras = np.asarray([sample.detected_camera_px for sample in group], dtype=np.float64)
+        observed = np.asarray([sample.observed_table_mm for sample in group], dtype=np.float64)
+        projected = np.asarray([sample.projected_target_px for sample in group], dtype=np.float64)
+        expected = np.asarray([sample.expected_camera_px for sample in group], dtype=np.float64)
+        median_camera = np.median(cameras, axis=0)
+        median_observed = np.median(observed, axis=0)
+        repeat_errors.extend(np.linalg.norm(observed - median_observed, axis=1).tolist())
+        methods = [str(sample.geometry_method) for sample in group]
+        versions = [str(sample.detector_version) for sample in group]
+        aggregated.append(
+            BallCompensationSample(
+                sample_index=int(group[0].sample_index),
+                target_table_mm=(float(target[0]), float(target[1])),
+                detected_camera_px=(float(median_camera[0]), float(median_camera[1])),
+                projected_target_px=tuple(np.median(projected, axis=0).astype(float)),
+                expected_camera_px=tuple(np.median(expected, axis=0).astype(float)),
+                observed_table_mm=(float(median_observed[0]), float(median_observed[1])),
+                delta_table_mm=(float(target[0] - median_observed[0]), float(target[1] - median_observed[1])),
+                detected_radius_px=float(np.median([sample.detected_radius_px for sample in group])),
+                detection_confidence=float(np.median([sample.detection_confidence for sample in group])),
+                stability_spread_px=float(np.median([sample.stability_spread_px for sample in group])),
+                geometry_quality=float(np.median([sample.geometry_quality for sample in group])),
+                geometry_method=max(dict.fromkeys(methods), key=methods.count),
+                detector_version=max(dict.fromkeys(versions), key=versions.count),
+            )
+        )
+    return aggregated, {
+        "location_count": len(groups),
+        "repeat_count": repeat_count,
+        "observation_count": sum(len(group) for group in groups),
+        "error_mm": _stats_report(np.asarray(repeat_errors, dtype=np.float64)),
+    }
 
 
 def evaluate_ball_compensation_holdout(
     samples: Sequence[BallCompensationSample],
     calibration,
+    *,
+    require_formal_geometry: bool = False,
 ) -> Dict[str, object]:
     if not samples:
         return {
@@ -343,6 +438,11 @@ def evaluate_ball_compensation_holdout(
         p95_mm=float(error_report["p95"]),
         mean_bias_mm=bias_mm,
     )
+    invalid_geometry = [sample for sample in samples if not ball_holdout_geometry_is_formal(sample.geometry_method)]
+    if require_formal_geometry and invalid_geometry:
+        quality_errors.append(
+            f"holdout has {len(invalid_geometry)} non-formal bbox/unknown samples; contour ellipse geometry is required"
+        )
     return {
         "sample_count": int(len(samples)),
         "error_mm": error_report,
@@ -352,6 +452,7 @@ def evaluate_ball_compensation_holdout(
         "maximum_mean_bias_mm": float(maximum_bias_mm),
         "quality_gate_passed": not quality_errors,
         "quality_gate_errors": quality_errors,
+        "geometry_methods": sorted({str(sample.geometry_method) for sample in samples}),
         "samples": [
             {
                 "sample_index": int(sample.sample_index),
@@ -369,11 +470,17 @@ def fit_and_validate_ball_compensation(
     samples: Sequence[BallCompensationSample],
     calibration,
     *,
+    holdout_samples: Optional[Sequence[BallCompensationSample]] = None,
+    holdout_repeatability: Optional[Dict[str, object]] = None,
     calibration_context: Optional[Dict[str, Any]] = None,
 ) -> ValidatedBallCompensation:
     """Fit the runtime model and validate it through the same calibration seam used by the wizard."""
 
-    training_samples, holdout_samples = split_ball_compensation_samples(samples)
+    if holdout_samples is None:
+        training_samples, validation_samples = split_ball_compensation_samples(samples)
+    else:
+        training_samples = list(samples)
+        validation_samples = list(holdout_samples)
     model = build_ball_compensation_model(
         training_samples,
         ball_diameter_mm=float(calibration.table.ball_diameter_mm),
@@ -385,12 +492,18 @@ def fit_and_validate_ball_compensation(
     try:
         calibration.ball_compensation_model = model
         calibration._rebuild_geometry()
-        holdout_report = evaluate_ball_compensation_holdout(holdout_samples, calibration)
+        holdout_report = evaluate_ball_compensation_holdout(
+            validation_samples,
+            calibration,
+            require_formal_geometry=True,
+        )
+        if holdout_repeatability is not None:
+            holdout_report["repeatability"] = dict(holdout_repeatability)
         if not bool(holdout_report.get("quality_gate_passed", False)):
             raise BallCompensationValidationError(
                 holdout_report,
                 training_count=len(training_samples),
-                holdout_count=len(holdout_samples),
+                holdout_count=len(validation_samples),
             )
         model.quality_report = {
             **model.quality_report,
@@ -404,7 +517,7 @@ def fit_and_validate_ball_compensation(
     return ValidatedBallCompensation(
         model=model,
         training_samples=tuple(training_samples),
-        holdout_samples=tuple(holdout_samples),
+        holdout_samples=tuple(validation_samples),
         holdout_report=holdout_report,
     )
 
