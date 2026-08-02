@@ -47,6 +47,8 @@ class _NumberTrack:
     center: np.ndarray
     radius_px: float
     confidence: float
+    geometry_quality: float
+    geometry_method: str
     last_ts_ns: int
     velocity: np.ndarray
     age: int = 1
@@ -97,6 +99,8 @@ class NumberedBallTracker:
                 center=center,
                 radius_px=float(detection.radius_px),
                 confidence=float(detection.conf),
+                geometry_quality=float(np.clip(detection.geometry_quality, 0.0, 1.0)),
+                geometry_method=str(detection.geometry_method or "unknown"),
                 last_ts_ns=int(detections_frame.ts_cam_ns),
                 velocity=np.zeros((2,), dtype=np.float32),
             )
@@ -120,6 +124,8 @@ class NumberedBallTracker:
         track.bbox = tuple(float(value) for value in detection.bbox)
         track.radius_px = float(detection.radius_px)
         track.confidence = float(detection.conf)
+        track.geometry_quality = float(np.clip(detection.geometry_quality, 0.0, 1.0))
+        track.geometry_method = str(detection.geometry_method or "unknown")
         track.last_ts_ns = int(ts_ns)
         track.age += 1
         track.lost_frames = 0
@@ -140,4 +146,6 @@ class NumberedBallTracker:
             age=int(track.age),
             lost_frames=int(track.lost_frames),
             visibility="visible" if track.lost_frames == 0 else "occluded",
+            geometry_quality=float(track.geometry_quality),
+            geometry_method=str(track.geometry_method),
         )

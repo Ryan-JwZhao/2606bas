@@ -3,6 +3,8 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+import bas.calibration.geometry as geometry_module
+
 from bas.calibration.ball_compensation import BallCompensationModel
 from bas.calibration.camera import CameraCalibration
 from bas.calibration.projector import ProjectionCalibration, ResidualField
@@ -153,6 +155,37 @@ def test_ball_map_uses_projective_ball_plane_before_local_residuals() -> None:
 
     np.testing.assert_allclose(actual, expected, atol=0.35)
     assert str(service.geometry_quality_report["ball_map_model"]).startswith("homography")
+
+
+def test_ball_plane_cross_validation_applies_selected_residual(monkeypatch) -> None:
+    class ConstantResidual:
+        def map(self, points):
+            return np.tile(np.asarray([[5.0, -3.0]], dtype=np.float32), (len(points), 1))
+
+        def support_weights(self, points):
+            return np.ones((len(points),), dtype=np.float32)
+
+    calls = []
+
+    def fitted(source, target, *, sample_weights=None):
+        calls.append((len(source), sample_weights is not None))
+        predicted = np.asarray(source, dtype=np.float64) + np.asarray([5.0, -3.0])
+        return np.eye(3, dtype=np.float64), ConstantResidual(), predicted
+
+    monkeypatch.setattr(geometry_module, "_fit_ball_plane_components", fitted)
+    xs, ys = np.meshgrid(np.linspace(0.0, 700.0, 8), np.linspace(0.0, 500.0, 6))
+    source = np.column_stack([xs.reshape(-1), ys.reshape(-1)]).astype(np.float64)
+    target = source + np.asarray([5.0, -3.0], dtype=np.float64)
+
+    p95 = geometry_module._ball_plane_cross_validated_p95(
+        source,
+        target,
+        sample_weights=np.ones((len(source),), dtype=np.float64),
+    )
+
+    assert p95 < 1e-5
+    assert len(calls) == 4
+    assert all(weighted for _, weighted in calls)
 
 
 def test_ball_map_blends_continuously_at_calibrated_domain_edge() -> None:

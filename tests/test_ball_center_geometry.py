@@ -55,3 +55,16 @@ def test_bbox_center_has_materially_higher_uncertainty() -> None:
     bbox = module.locate((500.0, 250.0), geometry_quality=0.45, geometry_method="bbox")
 
     assert bbox.uncertainty_mm >= refined.uncertainty_mm * 1.8
+    assert bbox.reliability < refined.reliability * 0.4
+
+
+def test_base_geometry_without_ball_model_keeps_full_support() -> None:
+    calibration = _calibration()
+    calibration.ball_compensation_model = BallCompensationModel()
+    calibration._rebuild_geometry()
+    module = BallCenterGeometry(calibration)
+
+    result = module.locate((500.0, 250.0), geometry_quality=0.9, geometry_method="appearance_ellipse")
+
+    assert result.support_weight == 1.0
+    assert result.reliability > 0.70

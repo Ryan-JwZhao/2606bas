@@ -57,6 +57,8 @@ def append_projected_ball_overlays(
                 calibration,
                 center_px=track.center_px,
                 radius_px=track.radius_px,
+                geometry_quality=float(getattr(track, "geometry_quality", track.quality)),
+                geometry_method=str(getattr(track, "geometry_method", "unknown")),
             ):
                 appended += 1
         return appended
@@ -69,6 +71,8 @@ def append_projected_ball_overlays(
             calibration,
             center_px=det.center,
             radius_px=det.radius_px,
+            geometry_quality=float(det.geometry_quality),
+            geometry_method=str(det.geometry_method),
         ):
             appended += 1
     return appended
@@ -80,6 +84,8 @@ def _append_projected_ball_marker(
     *,
     center_px,
     radius_px: float,
+    geometry_quality: float,
+    geometry_method: str,
 ) -> bool:
     cx, cy = [float(v) for v in center_px]
     if calibration.ball_compensation_model.is_valid:
@@ -87,7 +93,8 @@ def _append_projected_ball_marker(
             ellipse = calibration.ball_geometry.locate(
                 (cx, cy),
                 radius_px=float(radius_px),
-                geometry_quality=1.0,
+                geometry_quality=float(geometry_quality),
+                geometry_method=str(geometry_method),
             ).projector_ellipse
         except Exception:
             return False

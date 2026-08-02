@@ -1056,7 +1056,8 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
         intro = QtWidgets.QLabel(
             "该流程会先基于工业相机畸变校正采集画面，再自动播放总览网格、全域 ChArUco、中心细化和六个袋口重点图样，"
-            "完成投影仪-相机-程序的一键联动校正。"
+            "完成投影仪-相机-程序的一键联动校正。结果必须同时通过重投影误差、跨图样验证、"
+            "台面宽高/凸包覆盖和至少四个袋口区域门禁才会保存。"
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -1359,16 +1360,20 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                 self._saved_path,
                 actual_frame_size=(int(frame_w), int(frame_h)),
             )
+            completed_quality = {
+                **self._result.projection.quality_report,
+                "geometry_runtime": calibration.geometry_quality_report,
+            }
             self.progress.setValue(100)
             self.summary.setText(
                 "联动校正完成。\n"
-                f"{projection_output_summary(self._result)}\n"
+                f"{projection_output_summary(self._result, geometry_report=calibration.geometry_quality_report)}\n"
                 f"保存路径: {self._saved_path}"
             )
             self._append_log(f"联动校正完成，结果已保存并加载: {self._saved_path}")
             audit_path = audit.finish(
                 "success",
-                quality=self._result.projection.quality_report,
+                quality=completed_quality,
                 artifacts=[self._saved_path],
             )
             self._append_log(f"校准审计报告: {audit_path}")

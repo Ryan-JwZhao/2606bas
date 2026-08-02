@@ -442,15 +442,39 @@ def _leave_one_pattern_out_errors(observations: Sequence[LinkedCalibrationObserv
     return np.asarray(errors, dtype=np.float64)
 
 
-def projection_output_summary(result: LinkedCalibrationResult) -> str:
+def projection_output_summary(
+    result: LinkedCalibrationResult,
+    *,
+    geometry_report: Optional[Dict[str, object]] = None,
+) -> str:
     report = dict(result.projection.quality_report)
     stats = result.projection.calibration_error_stats()
     p95 = stats.get("p95_px", stats.get("max_px", 0.0))
-    return (
+    coverage = report.get("spatial_coverage", {})
+    if not isinstance(coverage, dict):
+        coverage = {}
+    lines = [
         f"图样 {report.get('patterns_used', 0)}/{report.get('patterns_total', 0)} | "
         f"匹配角点 {report.get('matched_points_total', 0)} | "
         f"mean={stats.get('mean_px', 0.0):.2f}px p95={p95:.2f}px max={stats.get('max_px', 0.0):.2f}px"
-    )
+    ]
+    if coverage:
+        lines.append(
+            "覆盖率 "
+            f"宽={float(coverage.get('width_ratio', 0.0)):.1%} "
+            f"高={float(coverage.get('height_ratio', 0.0)):.1%} "
+            f"凸包={float(coverage.get('hull_area_ratio', 0.0)):.1%} | "
+            f"袋口区域={int(report.get('pocket_zones_used', 0))} | "
+            f"跨图样CV P95={float(report.get('pattern_cv_p95_px', 0.0)):.2f}px"
+        )
+    runtime = dict(geometry_report or {})
+    if "projector_residual_support_grid_ratio" in runtime:
+        lines.append(
+            "投影残差支撑 "
+            f"全域={float(runtime.get('projector_residual_support_grid_ratio', 0.0)):.1%} "
+            f"边缘={float(runtime.get('projector_residual_support_edge_ratio', 0.0)):.1%}"
+        )
+    return "\n".join(lines)
 
 
 def _make_charuco_pattern(

@@ -85,6 +85,21 @@ def test_planner_generates_candidate() -> None:
     assert plan.best.score > -5
 
 
+def test_planner_rejects_low_reliability_bbox_ball_centers() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=3), _service())
+    cue = _obs(1, "cue", 120, 250)
+    cue.geometry_quality = 0.45
+    cue.geometry_method = "bbox"
+    target = _obs(2, "solid", 620, 250)
+    target.geometry_quality = 0.95
+    target.geometry_method = "segmentation_ellipse"
+    state = MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="STABLE_IDLE", layout=[cue, target])
+
+    plan = planner.plan(state)
+
+    assert plan.best is None
+
+
 def test_planner_manual_web_target_limits_candidates_until_cleared() -> None:
     planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20), _service())
     state = MatchStateFrame(

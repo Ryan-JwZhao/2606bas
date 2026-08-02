@@ -8,10 +8,12 @@ import numpy as np
 
 from bas.calibration import BallCompensationModel
 from bas.calibration.ball_compensation_sampling import (
+    BallCompensationValidationError,
     BallCompensationSample,
     build_ball_compensation_model,
     build_engineered_ball_sampling_grid,
     evaluate_ball_compensation_holdout,
+    fit_and_validate_ball_compensation,
     split_ball_compensation_samples,
     update_calibration_table_boundaries_from_geometry_frame,
 )
@@ -39,6 +41,81 @@ def test_dense_samples_reserve_spread_holdout_without_overlap() -> None:
     holdout_points = np.asarray([item.target_table_mm for item in holdout], dtype=np.float64)
     assert np.ptp(holdout_points[:, 0]) >= 1800.0
     assert np.ptp(holdout_points[:, 1]) >= 900.0
+
+
+def test_wizard_fit_seam_builds_and_activates_holdout_validated_model() -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]),
+        np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]),
+        projector_size=(1000, 500),
+    )
+    projection.table_polygon_cam = np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]])
+    projection.table_polygon_proj = projection.table_polygon_cam.copy()
+    service = CalibrationService(
+        CameraCalibration(metadata={}),
+        projection,
+        TableModel(1000.0, 500.0, 57.15, [(0, 0), (1000, 0), (1000, 500), (0, 500)], []),
+    )
+    points = build_engineered_ball_sampling_grid(1000.0, 500.0, 57.15, cols=8, rows=7)
+    samples = [_sample_from_identical_point(index, point) for index, point in enumerate(points)]
+
+    validated = fit_and_validate_ball_compensation(
+        samples,
+        service,
+        calibration_context={"camera_coordinate_domain": "raw"},
+    )
+
+    assert service.ball_compensation_model is validated.model
+    assert len(validated.training_samples) == 46
+    assert len(validated.holdout_samples) == 10
+    assert validated.holdout_report["quality_gate_passed"] is True
+    assert validated.model.calibration_context["camera_coordinate_domain"] == "raw"
+
+
+def test_wizard_fit_seam_restores_previous_model_after_holdout_failure() -> None:
+    projection = ProjectionCalibration.fit_from_correspondences(
+        np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]),
+        np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]),
+        projector_size=(1000, 500),
+    )
+    projection.table_polygon_cam = np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]])
+    projection.table_polygon_proj = projection.table_polygon_cam.copy()
+    service = CalibrationService(
+        CameraCalibration(metadata={}),
+        projection,
+        TableModel(1000.0, 500.0, 57.15, [(0, 0), (1000, 0), (1000, 500), (0, 500)], []),
+    )
+    previous = service.ball_compensation_model
+    points = build_engineered_ball_sampling_grid(1000.0, 500.0, 57.15, cols=8, rows=7)
+    samples = [_sample_from_identical_point(index, point) for index, point in enumerate(points)]
+    _, holdout = split_ball_compensation_samples(samples)
+    held_indices = {sample.sample_index for sample in holdout}
+    for sample in samples:
+        if sample.sample_index in held_indices:
+            sample.detected_camera_px = (sample.detected_camera_px[0] + 40.0, sample.detected_camera_px[1])
+
+    with np.testing.assert_raises(BallCompensationValidationError):
+        fit_and_validate_ball_compensation(samples, service)
+
+    assert service.ball_compensation_model is previous
+
+
+def _sample_from_identical_point(index: int, point: np.ndarray) -> BallCompensationSample:
+    xy = (float(point[0]), float(point[1]))
+    return BallCompensationSample(
+        sample_index=index,
+        target_table_mm=xy,
+        detected_camera_px=xy,
+        projected_target_px=xy,
+        expected_camera_px=xy,
+        observed_table_mm=xy,
+        delta_table_mm=(0.0, 0.0),
+        detected_radius_px=20.0,
+        detection_confidence=0.95,
+        stability_spread_px=0.2,
+        geometry_quality=0.95,
+        geometry_method="segmentation_ellipse",
+    )
 
 
 def test_dense_sampling_grid_is_spread_without_near_duplicates() -> None:
@@ -72,6 +149,7 @@ from bas.geometry import TableGeometry
 from bas.schemas import Detection, TableModel
 from bas.table_boundaries import EdgeInsets
 from bas.ui.engineered_ball_compensation_wizard import (
+    _ball_compensation_completion_summary,
     _pick_ball_candidate,
     _render_target_image,
     _target_guide_radii,
@@ -125,6 +203,37 @@ def test_ball_sampling_target_guide_stays_close_to_physical_ball_edge() -> None:
     target = type("TargetEllipse", (), {"radius_x_px": 13.5, "radius_y_px": 15.3})()
 
     assert _target_guide_radii(target) == (16, 17)
+
+
+def test_ball_compensation_completion_summary_exposes_validation_metrics() -> None:
+    summary = _ball_compensation_completion_summary(
+        accepted_count=56,
+        total_count=56,
+        training_count=46,
+        holdout_count=10,
+        training_report={
+            "mapping_cross_validation": {
+                "model_kind": "homography_rbf",
+                "p95_mm": 3.2,
+                "maximum_p95_mm": 10.29,
+            },
+            "delta_norm_mm": {"p95": 7.5},
+        },
+        holdout_report={
+            "error_mm": {"p95": 4.1},
+            "mean_vector_mm": [1.2, -0.9],
+            "maximum_p95_mm": 6.86,
+            "maximum_mean_bias_mm": 2.86,
+            "quality_gate_passed": True,
+        },
+        save_path="calibration.json",
+    )
+
+    assert "训练=46 留出=10" in summary
+    assert "homography_rbf" in summary
+    assert "Holdout P95=4.10/6.86 mm" in summary
+    assert "平均偏差=1.50/2.86 mm" in summary
+    assert "验收=通过" in summary
 
 
 def test_ball_compensation_holdout_rejects_systematic_bias() -> None:

@@ -29,6 +29,9 @@ class _Ball:
     radius_mm: float
     radius_px: float
     quality: float
+    uncertainty_mm: float
+    support_weight: float
+    geometry_method: str
 
 
 class GeometryPhysicsPlanner:
@@ -285,10 +288,14 @@ class GeometryPhysicsPlanner:
             located = self.calibration.ball_geometry.locate(
                 tr.center_px,
                 radius_px=tr.radius_px,
-                geometry_quality=tr.quality,
+                geometry_quality=float(getattr(tr, "geometry_quality", tr.quality)),
+                geometry_method=str(getattr(tr, "geometry_method", "unknown")),
             )
             center = np.asarray(located.table_center_mm, dtype=np.float32)
             radius_mm = float(located.radius_mm)
+            effective_quality = float(tr.quality) * float(located.reliability)
+            if effective_quality <= 0.25:
+                continue
             if radius_mm <= 1.0 or radius_mm > 80.0:
                 radius_mm = 0.5 * self.calibration.table.ball_diameter_mm
             balls.append(
@@ -299,7 +306,10 @@ class GeometryPhysicsPlanner:
                     center_mm=center.astype(np.float32),
                     radius_mm=float(radius_mm),
                     radius_px=float(max(2.0, tr.radius_px)),
-                    quality=float(tr.quality),
+                    quality=effective_quality,
+                    uncertainty_mm=float(located.uncertainty_mm),
+                    support_weight=float(located.support_weight),
+                    geometry_method=str(located.geometry_method),
                 )
             )
         return balls

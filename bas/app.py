@@ -587,7 +587,8 @@ class RuntimePipeline:
                 located = self.calibration.ball_geometry.locate(
                     track.center_px,
                     radius_px=track.radius_px,
-                    geometry_quality=track.quality,
+                    geometry_quality=float(getattr(track, "geometry_quality", track.quality)),
+                    geometry_method=str(getattr(track, "geometry_method", "unknown")),
                 )
                 center_mm = np.asarray(located.table_center_mm, dtype=np.float32)
                 v_px = np.asarray(track.velocity_px_s, dtype=np.float32)

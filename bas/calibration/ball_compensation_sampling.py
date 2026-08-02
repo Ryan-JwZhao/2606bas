@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -53,6 +53,29 @@ class BallCompensationSample:
             "geometry_method": str(self.geometry_method),
             "detector_version": str(self.detector_version),
         }
+
+
+@dataclass(frozen=True)
+class ValidatedBallCompensation:
+    model: BallCompensationModel
+    training_samples: tuple[BallCompensationSample, ...]
+    holdout_samples: tuple[BallCompensationSample, ...]
+    holdout_report: Dict[str, object]
+
+
+class BallCompensationValidationError(ValueError):
+    def __init__(
+        self,
+        report: Dict[str, object],
+        *,
+        training_count: int,
+        holdout_count: int,
+    ) -> None:
+        self.report = dict(report)
+        self.training_count = int(training_count)
+        self.holdout_count = int(holdout_count)
+        reasons = "; ".join(str(item) for item in report.get("quality_gate_errors", []))
+        super().__init__(f"ball compensation holdout validation failed: {reasons}")
 
 
 def build_engineered_ball_sampling_grid(
@@ -334,6 +357,45 @@ def evaluate_ball_compensation_holdout(
             for index, sample in enumerate(samples)
         ],
     }
+
+
+def fit_and_validate_ball_compensation(
+    samples: Sequence[BallCompensationSample],
+    calibration,
+    *,
+    calibration_context: Optional[Dict[str, Any]] = None,
+) -> ValidatedBallCompensation:
+    """Fit the runtime model and validate it through the same calibration seam used by the wizard."""
+
+    training_samples, holdout_samples = split_ball_compensation_samples(samples)
+    model = build_ball_compensation_model(
+        training_samples,
+        ball_diameter_mm=float(calibration.table.ball_diameter_mm),
+        table_width_mm=float(calibration.table.width_mm),
+        table_height_mm=float(calibration.table.height_mm),
+    )
+    model.calibration_context = dict(calibration_context or {})
+    previous_model = calibration.ball_compensation_model
+    try:
+        calibration.ball_compensation_model = model
+        calibration._rebuild_geometry()
+        holdout_report = evaluate_ball_compensation_holdout(holdout_samples, calibration)
+        if not bool(holdout_report.get("quality_gate_passed", False)):
+            raise BallCompensationValidationError(
+                holdout_report,
+                training_count=len(training_samples),
+                holdout_count=len(holdout_samples),
+            )
+    except Exception:
+        calibration.ball_compensation_model = previous_model
+        calibration._rebuild_geometry()
+        raise
+    return ValidatedBallCompensation(
+        model=model,
+        training_samples=tuple(training_samples),
+        holdout_samples=tuple(holdout_samples),
+        holdout_report=holdout_report,
+    )
 
 
 def evaluate_ball_compensation_quality(

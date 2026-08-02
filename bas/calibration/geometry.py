@@ -196,34 +196,11 @@ class _BallPlaneMap:
         dst = ensure_numpy_points(target).astype(np.float64)
         if src.shape != dst.shape or src.shape[0] < 4:
             return None
-        homography, mask = cv2.findHomography(src, dst, cv2.RANSAC, 6.0)
-        if homography is None:
+        fitted = _fit_ball_plane_components(src, dst, sample_weights=sample_weights)
+        if fitted is None:
             return None
-        inliers = np.ones((src.shape[0],), dtype=bool) if mask is None else mask.reshape((-1,)).astype(bool)
-        if int(np.count_nonzero(inliers)) >= 4:
-            refined, _ = cv2.findHomography(src[inliers], dst[inliers], 0)
-            if refined is not None:
-                homography = refined
-        base = _perspective(src, homography).astype(np.float64)
-        residual_target = dst - base
-        residual = None
-        if src.shape[0] >= 12:
-            candidate = _RegularizedPointMap.fit(
-                src,
-                residual_target,
-                sample_weights=sample_weights,
-                allow_quadratic=False,
-            )
-            if candidate is not None:
-                corrected = base + candidate.map(src).astype(np.float64)
-                base_p95 = float(np.percentile(np.linalg.norm(base - dst, axis=1), 95))
-                corrected_p95 = float(np.percentile(np.linalg.norm(corrected - dst, axis=1), 95))
-                if base_p95 > 0.35 and corrected_p95 < base_p95 * 0.90:
-                    residual = candidate
-        predicted = base
-        if residual is not None:
-            predicted = predicted + residual.map(src).astype(np.float64)
-        cv_p95 = _ball_plane_cross_validated_p95(src, dst)
+        homography, residual, predicted = fitted
+        cv_p95 = _ball_plane_cross_validated_p95(src, dst, sample_weights=sample_weights)
         if not np.isfinite(cv_p95):
             cv_p95 = float(np.percentile(np.linalg.norm(predicted - dst, axis=1), 95))
         return cls(
@@ -263,7 +240,51 @@ class _BallPlaneMap:
         return 0
 
 
-def _ball_plane_cross_validated_p95(source: np.ndarray, target: np.ndarray) -> float:
+def _fit_ball_plane_components(
+    source: np.ndarray,
+    target: np.ndarray,
+    *,
+    sample_weights: Optional[np.ndarray] = None,
+) -> Optional[tuple[np.ndarray, Optional[_RegularizedPointMap], np.ndarray]]:
+    src = ensure_numpy_points(source).astype(np.float64)
+    dst = ensure_numpy_points(target).astype(np.float64)
+    if src.shape != dst.shape or src.shape[0] < 4:
+        return None
+    homography, mask = cv2.findHomography(src, dst, cv2.RANSAC, 6.0)
+    if homography is None:
+        return None
+    inliers = np.ones((src.shape[0],), dtype=bool) if mask is None else mask.reshape((-1,)).astype(bool)
+    if int(np.count_nonzero(inliers)) >= 4:
+        refined, _ = cv2.findHomography(src[inliers], dst[inliers], 0)
+        if refined is not None:
+            homography = refined
+    base = _perspective(src, homography).astype(np.float64)
+    residual = None
+    if src.shape[0] >= 12:
+        candidate = _RegularizedPointMap.fit(
+            src,
+            dst - base,
+            sample_weights=sample_weights,
+            allow_quadratic=False,
+        )
+        if candidate is not None:
+            corrected = base + candidate.map(src).astype(np.float64)
+            base_p95 = float(np.percentile(np.linalg.norm(base - dst, axis=1), 95))
+            corrected_p95 = float(np.percentile(np.linalg.norm(corrected - dst, axis=1), 95))
+            if base_p95 > 0.35 and corrected_p95 < base_p95 * 0.90:
+                residual = candidate
+    predicted = base
+    if residual is not None:
+        predicted = predicted + residual.map(src).astype(np.float64)
+    return np.asarray(homography, dtype=np.float64), residual, predicted
+
+
+def _ball_plane_cross_validated_p95(
+    source: np.ndarray,
+    target: np.ndarray,
+    *,
+    sample_weights: Optional[np.ndarray] = None,
+) -> float:
     count = int(source.shape[0])
     if count < 8:
         return float("inf")
@@ -275,10 +296,22 @@ def _ball_plane_cross_validated_p95(source: np.ndarray, target: np.ndarray) -> f
         training = np.flatnonzero(quadrants != fold)
         if validation.size == 0 or training.size < 4:
             continue
-        homography, _ = cv2.findHomography(source[training], target[training], 0)
-        if homography is None:
+        training_weights = None
+        if sample_weights is not None:
+            supplied = np.asarray(sample_weights, dtype=np.float64).reshape((-1,))
+            if supplied.shape[0] == count:
+                training_weights = supplied[training]
+        fitted = _fit_ball_plane_components(
+            source[training],
+            target[training],
+            sample_weights=training_weights,
+        )
+        if fitted is None:
             continue
+        homography, residual, _ = fitted
         predicted = _perspective(source[validation], homography)
+        if residual is not None:
+            predicted += residual.map(source[validation]) * residual.support_weights(source[validation])[:, None]
         errors.extend(np.linalg.norm(predicted - target[validation], axis=1).tolist())
     return float(np.percentile(errors, 95)) if errors else float("inf")
 

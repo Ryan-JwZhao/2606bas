@@ -20,6 +20,7 @@ class _Track:
     radius_px: float
     confidence: float
     geometry_quality: float
+    geometry_method: str
     votes: Deque[str]
     last_ts_ns: int
     velocity: np.ndarray = field(default_factory=lambda: np.zeros((2,), dtype=np.float32))
@@ -86,6 +87,7 @@ class TemporalTracker:
                 radius_px=float(det.radius_px),
                 confidence=float(det.conf),
                 geometry_quality=float(np.clip(det.geometry_quality, 0.0, 1.0)),
+                geometry_method=str(det.geometry_method or "unknown"),
                 votes=deque([det.cls_name], maxlen=int(self.config.vote_window)),
                 last_ts_ns=detections_frame.ts_cam_ns,
             )
@@ -159,6 +161,7 @@ class TemporalTracker:
         track.radius_px = float(det.radius_px)
         track.confidence = float(det.conf)
         track.geometry_quality = float(np.clip(det.geometry_quality, 0.0, 1.0))
+        track.geometry_method = str(det.geometry_method or "unknown")
         track.votes.append(det.cls_name)
         track.last_ts_ns = int(ts_ns)
         track.age += 1
@@ -182,6 +185,8 @@ class TemporalTracker:
             age=int(track.age),
             lost_frames=int(track.lost_frames),
             visibility=visibility,
+            geometry_quality=float(track.geometry_quality),
+            geometry_method=str(track.geometry_method),
         )
 
     def _max_match_distance(self, track: _Track, det: Detection, dt: float) -> float:

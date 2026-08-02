@@ -5,6 +5,29 @@ from bas.schemas import Detection, DetectionsFrame
 from bas.tracking import TemporalTracker
 
 
+def test_tracker_propagates_ball_geometry_provenance() -> None:
+    tracker = TemporalTracker(TrackerConfig())
+    frame = DetectionsFrame(
+        frame_id=1,
+        ts_cam_ns=1_000_000_000,
+        detections=[
+            Detection(
+                bbox=(10, 10, 30, 30),
+                conf=0.9,
+                cls_id=0,
+                cls_name="cue",
+                geometry_quality=0.42,
+                geometry_method="bbox",
+            )
+        ],
+    )
+
+    track = tracker.update(frame).tracks[0]
+
+    assert track.geometry_quality == 0.42
+    assert track.geometry_method == "bbox"
+
+
 def test_tracker_keeps_id_across_small_motion() -> None:
     tracker = TemporalTracker(TrackerConfig(match_distance_px=50))
     f1 = DetectionsFrame(

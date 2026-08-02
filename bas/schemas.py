@@ -90,6 +90,8 @@ class TrackObservation:
     age: int = 1
     lost_frames: int = 0
     visibility: str = "visible"
+    geometry_quality: float = 1.0
+    geometry_method: str = "unknown"
 
 
 @dataclass

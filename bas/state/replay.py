@@ -129,4 +129,6 @@ def _track_from_payload(payload: dict[str, Any]) -> TrackObservation:
         age=int(payload.get("age", 1)),
         lost_frames=int(payload.get("lost_frames", 0)),
         visibility=str(payload.get("visibility", "visible")),
+        geometry_quality=float(payload.get("geometry_quality", 1.0)),
+        geometry_method=str(payload.get("geometry_method", "unknown")),
     )

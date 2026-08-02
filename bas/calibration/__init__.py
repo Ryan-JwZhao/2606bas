@@ -4,9 +4,12 @@ from .ball_compensation import BallCompensationModel
 from .audit import CalibrationAudit, load_calibration_audit_summaries, start_calibration_audit
 from .ball_compensation_sampling import (
     BallCompensationSample,
+    BallCompensationValidationError,
+    ValidatedBallCompensation,
     build_ball_compensation_model,
     build_engineered_ball_sampling_grid,
     evaluate_ball_compensation_holdout,
+    fit_and_validate_ball_compensation,
     split_ball_compensation_samples,
     update_calibration_table_boundaries_from_geometry_frame,
 )
@@ -38,6 +41,8 @@ __all__ = [
     "load_calibration_audit_summaries",
     "start_calibration_audit",
     "BallCompensationSample",
+    "BallCompensationValidationError",
+    "ValidatedBallCompensation",
     "CameraCalibration",
     "IndependentGeometry",
     "ProjectedEllipse",
@@ -49,6 +54,7 @@ __all__ = [
     "build_ball_compensation_model",
     "build_engineered_ball_sampling_grid",
     "evaluate_ball_compensation_holdout",
+    "fit_and_validate_ball_compensation",
     "split_ball_compensation_samples",
     "update_calibration_table_boundaries_from_geometry_frame",
     "LinkedCalibrationPattern",

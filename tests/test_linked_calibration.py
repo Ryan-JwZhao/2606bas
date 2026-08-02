@@ -179,6 +179,8 @@ def test_linked_calibration_can_recover_projector_mapping_from_warped_patterns(t
     summary = projection_output_summary(result)
 
     assert "匹配角点" in summary
+    assert "覆盖率" in summary
+    assert "跨图样CV" in summary
     assert result.projection.is_valid
     assert result.projection.table_polygon_proj.shape[0] == 4
     assert result.projection.table_control_points_norm.shape[0] >= 12
@@ -192,6 +194,41 @@ def test_linked_calibration_can_recover_projector_mapping_from_warped_patterns(t
     np.testing.assert_allclose(restored.table_control_points_proj, result.projection.table_control_points_proj)
     pred = result.projection.camera_to_projector_points(observations[0].camera_points)
     assert np.max(np.linalg.norm(pred - observations[0].projector_points, axis=1)) < 2.0
+
+
+def test_projection_summary_exposes_runtime_residual_support() -> None:
+    result = type(
+        "Result",
+        (),
+        {
+            "projection": type(
+                "Projection",
+                (),
+                {
+                    "quality_report": {
+                        "patterns_used": 8,
+                        "patterns_total": 8,
+                        "matched_points_total": 120,
+                        "pocket_zones_used": 6,
+                        "pattern_cv_p95_px": 0.52,
+                        "spatial_coverage": {"width_ratio": 0.9, "height_ratio": 0.88, "hull_area_ratio": 0.72},
+                    },
+                    "calibration_error_stats": lambda self: {"mean_px": 0.2, "p95_px": 0.4, "max_px": 0.8},
+                },
+            )(),
+        },
+    )()
+
+    summary = projection_output_summary(
+        result,
+        geometry_report={
+            "projector_residual_support_grid_ratio": 0.82,
+            "projector_residual_support_edge_ratio": 0.64,
+        },
+    )
+
+    assert "全域=82.0%" in summary
+    assert "边缘=64.0%" in summary
 
 
 def test_linked_calibration_rejects_excessive_ransac_outliers() -> None:

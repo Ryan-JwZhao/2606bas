@@ -12,11 +12,10 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ..calibration import (
     BallCompensationSample,
-    build_ball_compensation_model,
+    BallCompensationValidationError,
     build_engineered_ball_sampling_grid,
     create_setting_aware_calibration_service,
-    evaluate_ball_compensation_holdout,
-    split_ball_compensation_samples,
+    fit_and_validate_ball_compensation,
     start_calibration_audit,
     update_calibration_table_boundaries_from_geometry_frame,
 )
@@ -117,8 +116,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
 
         intro = QtWidgets.QLabel(
-            "该向导会按预设采样网格自动投影目标圈。请确保投影平面校准文件与球检测模型都有效。"
-            "采样时建议清空台面，仅保留一颗球；把球移动到目标圈后，系统会自动等待位置稳定并记录样本。"
+            "该向导会按 8×7、共 56 个均匀目标点自动采样。约 18% 的空间分散点只用于独立 Holdout，"
+            "其余样本拟合全局球心平面和正则局部残差。请确保投影平面校准文件与球检测模型都有效。"
+            "采样时建议清空台面，仅保留一颗球。"
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -131,8 +131,8 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     "1. 在设置中确认当前投影平面校准文件可加载。",
                     "2. 启用可用的球检测后端；向导严格沿用当前工业相机畸变校正开关，不会自行开启校正。",
                     "3. 清空台面，仅保留一颗标准球。",
-                    "4. 点击“开始自动采样”，按提示把球逐个移动到投影目标圈。",
-                    "5. 采样完成后，程序会自动生成新的工程球体补偿 JSON，并写回当前设置。",
+                    "4. 点击“开始自动采样”，按提示把球逐个移动到贴近球边缘的短弧目标圈。",
+                    "5. 训练交叉验证和独立 Holdout 均通过后，程序才会保存新补偿 JSON 并写回设置。",
                 ]
             )
         )
@@ -466,21 +466,6 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
 
             if len(self._samples) < 20:
                 raise RuntimeError(f"有效采样点只有 {len(self._samples)} 个，至少需要 20 个点才能生成可靠补偿文件。")
-            training_samples, holdout_samples = split_ball_compensation_samples(self._samples)
-            audit.event(
-                "samples_split",
-                metrics={
-                    "accepted_count": len(self._samples),
-                    "training_count": len(training_samples),
-                    "holdout_count": len(holdout_samples),
-                },
-            )
-            model = build_ball_compensation_model(
-                training_samples,
-                ball_diameter_mm=calibration.table.ball_diameter_mm,
-                table_width_mm=calibration.table.width_mm,
-                table_height_mm=calibration.table.height_mm,
-            )
             frame_height, frame_width = prime_frame.shape[:2] if prime_frame is not None else (
                 int(self.operator.config.camera.height),
                 int(self.operator.config.camera.width),
@@ -490,7 +475,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 if calibration.distortion_correction_enabled and calibration.camera.is_valid
                 else "raw"
             )
-            model.calibration_context = calibration_context(
+            model_context = calibration_context(
                 frame_width=frame_width,
                 frame_height=frame_height,
                 frame_rotation_degrees=int(self.operator.config.camera.frame_rotation_degrees),
@@ -504,10 +489,35 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 detector_model_file=self.operator.config.detector.model_path,
                 ball_diameter_mm=float(calibration.table.ball_diameter_mm),
             )
-            previous_model = calibration.ball_compensation_model
-            calibration.ball_compensation_model = model
-            calibration._rebuild_geometry()
-            holdout_report = evaluate_ball_compensation_holdout(holdout_samples, calibration)
+            try:
+                validated = fit_and_validate_ball_compensation(
+                    self._samples,
+                    calibration,
+                    calibration_context=model_context,
+                )
+            except BallCompensationValidationError as exc:
+                audit.event(
+                    "holdout_evaluated",
+                    status="failed",
+                    metrics={
+                        "training_count": exc.training_count,
+                        "holdout_count": exc.holdout_count,
+                    },
+                    details={"holdout_quality": exc.report},
+                )
+                raise
+            model = validated.model
+            training_samples = list(validated.training_samples)
+            holdout_samples = list(validated.holdout_samples)
+            holdout_report = validated.holdout_report
+            audit.event(
+                "samples_split",
+                metrics={
+                    "accepted_count": len(self._samples),
+                    "training_count": len(training_samples),
+                    "holdout_count": len(holdout_samples),
+                },
+            )
             audit.event(
                 "holdout_evaluated",
                 status="ok" if bool(holdout_report.get("quality_gate_passed", False)) else "failed",
@@ -516,11 +526,6 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     "holdout_quality": holdout_report,
                 },
             )
-            if not bool(holdout_report.get("quality_gate_passed", False)):
-                calibration.ball_compensation_model = previous_model
-                calibration._rebuild_geometry()
-                reasons = "; ".join(str(item) for item in holdout_report.get("quality_gate_errors", []))
-                raise RuntimeError(f"ball compensation holdout validation failed: {reasons}")
             save_template = self._safe_ball_compensation_output_path(calibration)
             save_path = timestamped_ball_compensation_output_path(str(save_template))
             model.save_json(
@@ -540,14 +545,17 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             self.operator._sync_controls_from_config()
             self.operator._save_user_settings()
             self.operator._update_module_status()
-            delta_report = model.quality_report.get("delta_norm_mm", {})
             self.progress.setValue(100)
             self.summary.setText(
-                "工程球体补偿采样完成。\n"
-                f"有效采样: {len(self._samples)}/{len(sample_points)}\n"
-                f"delta p95={float(delta_report.get('p95', 0.0)):.2f} mm, "
-                f"delta max={float(delta_report.get('max', 0.0)):.2f} mm\n"
-                f"保存路径: {save_path}"
+                _ball_compensation_completion_summary(
+                    accepted_count=len(self._samples),
+                    total_count=len(sample_points),
+                    training_count=len(training_samples),
+                    holdout_count=len(holdout_samples),
+                    training_report=model.quality_report,
+                    holdout_report=holdout_report,
+                    save_path=save_path,
+                )
             )
             self.output_path_edit.setText(str(save_path))
             self._append_log(f"工程球体补偿文件已生成并写回当前设置: {save_path}")
@@ -846,6 +854,36 @@ def _target_guide_radii(target_ellipse) -> tuple[int, int]:
     return (
         int(round(max(6.0, float(target_ellipse.radius_x_px) + 2.0))),
         int(round(max(6.0, float(target_ellipse.radius_y_px) + 2.0))),
+    )
+
+
+def _ball_compensation_completion_summary(
+    *,
+    accepted_count: int,
+    total_count: int,
+    training_count: int,
+    holdout_count: int,
+    training_report: dict,
+    holdout_report: dict,
+    save_path: str | Path,
+) -> str:
+    mapping = training_report.get("mapping_cross_validation", {})
+    delta = training_report.get("delta_norm_mm", {})
+    holdout_error = holdout_report.get("error_mm", {})
+    mean_vector = np.asarray(holdout_report.get("mean_vector_mm", [0.0, 0.0]), dtype=np.float64).reshape((-1,))
+    bias_mm = float(np.linalg.norm(mean_vector[:2])) if mean_vector.size >= 2 else 0.0
+    return (
+        "工程球体补偿采样完成。\n"
+        f"有效采样: {accepted_count}/{total_count} | 训练={training_count} 留出={holdout_count}\n"
+        f"模型={mapping.get('model_kind', 'unknown')} | "
+        f"训练CV P95={float(mapping.get('p95_mm', 0.0)):.2f}/"
+        f"{float(mapping.get('maximum_p95_mm', 0.0)):.2f} mm\n"
+        f"Holdout P95={float(holdout_error.get('p95', 0.0)):.2f}/"
+        f"{float(holdout_report.get('maximum_p95_mm', 0.0)):.2f} mm | "
+        f"平均偏差={bias_mm:.2f}/{float(holdout_report.get('maximum_mean_bias_mm', 0.0)):.2f} mm | "
+        f"验收={'通过' if holdout_report.get('quality_gate_passed') else '未通过'}\n"
+        f"原始补偿量 delta P95={float(delta.get('p95', 0.0)):.2f} mm\n"
+        f"保存路径: {save_path}"
     )
 
 
