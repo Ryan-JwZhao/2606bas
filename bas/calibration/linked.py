@@ -25,7 +25,7 @@ MAX_LINKED_PATTERN_CV_P95_PX = 5.0
 MIN_LINKED_COVERAGE_WIDTH_RATIO = 0.62
 MIN_LINKED_COVERAGE_HEIGHT_RATIO = 0.62
 MIN_LINKED_COVERAGE_HULL_AREA_RATIO = 0.34
-LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v7"
+LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v8"
 
 
 @dataclass
@@ -78,8 +78,32 @@ def linked_calibration_runtime_summary() -> str:
         f"{MIN_LINKED_COVERAGE_HULL_AREA_RATIO:.0%} | "
         "middle_pockets=diagonal_inset_v1 | "
         "corner_pockets=cloth_inset_v1 | capture_retry=2 | "
+        "optional_pockets=skip_after_4 | "
         f"source={Path(__file__).resolve()}"
     )
+
+
+def linked_pattern_requires_retry(
+    pattern: LinkedCalibrationPattern,
+    observation: Optional[LinkedCalibrationObservation],
+    accepted_observations: Sequence[LinkedCalibrationObservation],
+    *,
+    minimum_pocket_zones: int = 4,
+) -> bool:
+    """Return whether this failed pattern is still required by the quality gate."""
+    if not pattern.collect_for_solver:
+        return False
+    if observation is not None and observation.matched_count >= 6:
+        return False
+    zone = str(pattern.emphasis_zone).strip().lower()
+    if not zone.startswith("pocket_"):
+        return True
+    accepted_pocket_zones = {
+        str(item.emphasis_zone).strip().lower()
+        for item in accepted_observations
+        if item.matched_count >= 6 and str(item.emphasis_zone).strip().lower().startswith("pocket_")
+    }
+    return len(accepted_pocket_zones) < max(0, int(minimum_pocket_zones))
 
 
 def collect_linked_pattern_observation(

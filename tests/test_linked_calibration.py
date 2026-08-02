@@ -10,6 +10,7 @@ from bas.calibration.linked import (
     build_linked_patterns,
     collect_linked_pattern_observation,
     linked_calibration_runtime_summary,
+    linked_pattern_requires_retry,
     match_linked_pattern_observation,
     projection_output_summary,
     solve_linked_projection_calibration,
@@ -69,11 +70,12 @@ def test_build_linked_patterns_covers_full_and_focus_zones() -> None:
 def test_linked_calibration_runtime_summary_identifies_loaded_implementation() -> None:
     summary = linked_calibration_runtime_summary()
 
-    assert "linked-geometry-v7" in summary
+    assert "linked-geometry-v8" in summary
     assert "coverage=62%/62%/34%" in summary
     assert "middle_pockets=diagonal_inset_v1" in summary
     assert "corner_pockets=cloth_inset_v1" in summary
     assert "capture_retry=2" in summary
+    assert "optional_pockets=skip_after_4" in summary
     assert "bas" in summary and "linked.py" in summary
 
 
@@ -193,6 +195,32 @@ def test_linked_pattern_collection_retries_a_required_pattern_after_an_empty_att
     assert capture.observation is not None
     assert capture.observation.matched_count >= 6
     assert capture.attempts == 2
+
+
+def test_sixth_pocket_does_not_require_retry_after_four_pocket_zones_succeeded() -> None:
+    camera = np.asarray([[x, y] for y in (100.0, 150.0) for x in (100.0, 150.0, 200.0)], dtype=np.float32)
+
+    def observation(zone: str) -> LinkedCalibrationObservation:
+        return LinkedCalibrationObservation(
+            zone,
+            zone,
+            zone,
+            camera,
+            camera.copy(),
+            np.arange(6),
+            6,
+            6,
+        )
+
+    accepted = [observation(zone) for zone in ("pocket_mt", "pocket_rt", "pocket_rb", "pocket_mb")]
+    sixth = next(
+        pattern
+        for pattern in build_linked_patterns(_sample_geometry(), (1280, 800))
+        if pattern.emphasis_zone == "pocket_lb"
+    )
+
+    assert linked_pattern_requires_retry(sixth, None, accepted[:3], minimum_pocket_zones=4) is True
+    assert linked_pattern_requires_retry(sixth, None, accepted, minimum_pocket_zones=4) is False
 
 
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")

@@ -41,6 +41,7 @@ from ..calibration import (
     collect_linked_pattern_observation,
     create_setting_aware_calibration_service,
     linked_calibration_runtime_summary,
+    linked_pattern_requires_retry,
     projection_output_summary,
     solve_linked_projection_calibration,
     start_calibration_audit,
@@ -1272,10 +1273,10 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                             "并将相机曝光适当调低后重试；中心图样可识别前不会继续采集边缘图样。"
                         )
 
-                if (
-                    pattern.collect_for_solver
-                    and pattern.emphasis_zone != "center"
-                    and (best is None or best.matched_count < 6)
+                if pattern.emphasis_zone != "center" and linked_pattern_requires_retry(
+                    pattern,
+                    best,
+                    observations,
                 ):
                     retry = QtWidgets.QMessageBox.warning(
                         self,
