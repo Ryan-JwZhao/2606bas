@@ -37,6 +37,7 @@ ENGINEERED_SAMPLING_COLS = 8
 ENGINEERED_SAMPLING_ROWS = 7
 ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS = 3.0
 ENGINEERED_SAMPLE_TIMEOUT_SECONDS = 28.0
+ENGINEERED_SAMPLE_DROPOUT_GRACE_SECONDS = 0.45
 ENGINEERED_CENTER_PLAYABLE_SAFE_INSET_MM = 6.0
 
 
@@ -689,6 +690,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         history: list[tuple[np.ndarray, float, float, float, str]] = []
         detection_regions = None
         settle_started_at: float | None = None
+        last_candidate_at: float | None = None
         last_diagnostic_log_at = 0.0
         while time.perf_counter() < deadline:
             if self._abort_requested:
@@ -716,8 +718,10 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             candidate_count = selection.size_accepted_count
             distance_px = selection.nearest_distance_px
             if candidate is None:
-                history.clear()
-                settle_started_at = None
+                now = time.perf_counter()
+                if _candidate_dropout_expired(last_candidate_at, now):
+                    history.clear()
+                    settle_started_at = None
                 diagnostic = _ball_candidate_diagnostic_text(
                     selection,
                     raw_ball_count=raw_ball_count,
@@ -729,7 +733,6 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 )
                 self._set_preview_image(_annotate_preview(frame, expected_cam, None, candidate_count, distance_px))
                 self._pump_ui()
-                now = time.perf_counter()
                 if now - last_diagnostic_log_at >= 5.0:
                     self._append_log(f"采样点 {sample_index + 1}/{total_count} 候选诊断：{diagnostic}")
                     last_diagnostic_log_at = now
@@ -737,6 +740,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 continue
 
             center = np.asarray(candidate.center, dtype=np.float32)
+            last_candidate_at = time.perf_counter()
             radius = float(candidate.radius_px)
             conf = float(candidate.conf)
             geometry_quality = float(candidate.geometry_quality)
@@ -1073,6 +1077,14 @@ def _stable_measurement(
         float(np.median(qualities)),
         stable_method,
     )
+
+
+def _candidate_dropout_expired(last_candidate_at: float | None, now: float) -> bool:
+    """Reset stability only after a real detection gap, not one missed frame."""
+
+    if last_candidate_at is None:
+        return True
+    return float(now) - float(last_candidate_at) > ENGINEERED_SAMPLE_DROPOUT_GRACE_SECONDS
 
 
 def _annotate_preview(

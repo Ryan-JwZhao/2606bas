@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -185,6 +186,7 @@ from bas.geometry import TableGeometry
 from bas.schemas import Detection, TableModel
 from bas.table_boundaries import EdgeInsets
 from bas.ui.engineered_ball_compensation_wizard import (
+    EngineeredBallCompensationWizardDialog,
     _ball_compensation_completion_summary,
     _pick_ball_candidate,
     _render_target_image,
@@ -194,6 +196,87 @@ from bas.ui.engineered_ball_compensation_wizard import (
     resolve_ball_sampling_region,
     timestamped_ball_compensation_output_path,
 )
+
+
+def test_stable_sample_tolerates_isolated_detector_dropouts(monkeypatch) -> None:
+    from bas.ui import engineered_ball_compensation_wizard as wizard
+
+    detection = Detection(
+        bbox=(80.0, 80.0, 120.0, 120.0),
+        conf=0.93,
+        cls_id=0,
+        cls_name="cue",
+        refined_center_px=(100.0, 100.0),
+        refined_radius_px=20.0,
+        geometry_quality=0.9,
+        geometry_method="appearance_ellipse",
+    )
+
+    class AlternatingDetector:
+        version = "test"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def detect(self, _frame, *, mask_polygon=None):
+            del mask_polygon
+            self.calls += 1
+            return [] if self.calls % 6 == 0 else [detection]
+
+    class FakeClock:
+        def __init__(self) -> None:
+            self.now = 0.0
+
+        def perf_counter(self) -> float:
+            self.now += 0.02
+            return self.now
+
+    clock = FakeClock()
+    monkeypatch.setattr(wizard.time, "perf_counter", clock.perf_counter)
+    monkeypatch.setattr(wizard.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(wizard, "ENGINEERED_SAMPLE_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(wizard, "ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS", 0.3)
+
+    calibration = SimpleNamespace(
+        table=SimpleNamespace(ball_diameter_mm=40.0),
+        projection=SimpleNamespace(table_polygon_cam=None),
+        table_mm_to_camera_px=lambda points: np.asarray(points, dtype=np.float32),
+        camera_px_to_table_mm=lambda points: np.asarray(points, dtype=np.float32),
+    )
+    dialog = SimpleNamespace(
+        _abort_requested=False,
+        summary=SimpleNamespace(setText=lambda _text: None),
+        _set_preview_image=lambda _image: None,
+        _pump_ui=lambda: None,
+        _append_log=lambda _text: None,
+    )
+    capture = SimpleNamespace(
+        read=lambda: SimpleNamespace(image=np.zeros((240, 320, 3), dtype=np.uint8))
+    )
+
+    sample = EngineeredBallCompensationWizardDialog._wait_for_stable_sample(
+        dialog,
+        capture,
+        AlternatingDetector(),
+        calibration,
+        None,
+        1,
+        56,
+        np.asarray([100.0, 100.0], dtype=np.float32),
+        np.asarray([100.0, 100.0], dtype=np.float32),
+        np.asarray([100.0, 100.0], dtype=np.float32),
+    )
+
+    assert sample is not None
+
+
+def test_stable_sample_resets_after_sustained_detector_dropout() -> None:
+    from bas.ui import engineered_ball_compensation_wizard as wizard
+
+    grace = wizard.ENGINEERED_SAMPLE_DROPOUT_GRACE_SECONDS
+
+    assert wizard._candidate_dropout_expired(10.0, 10.0 + grace - 0.01) is False
+    assert wizard._candidate_dropout_expired(10.0, 10.0 + grace + 0.01) is True
 
 
 def test_ball_sampling_rejects_detector_bbox_fallback_near_target() -> None:

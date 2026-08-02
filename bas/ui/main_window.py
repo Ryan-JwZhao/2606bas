@@ -88,6 +88,7 @@ from .complete_calibration_wizard import CompleteCalibrationWizardDialog
 from .engineered_ball_compensation_wizard import EngineeredBallCompensationWizardDialog
 from .geometry_reference import draw_geometry_reference_lines
 from .projection_debug import append_projected_ball_overlays, append_projected_boundary_overlays
+from .projection_calibration_result import build_projection_calibration_result_overlay
 from .web_control_bridge import WebControlOperatorMixin
 from .widgets import AspectRatioPreviewFrame, CollapsibleSection, CompactButtonGrid
 
@@ -3889,12 +3890,12 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if controls.shape[0] > 0 and controls.shape == offsets.shape:
             base = calibration.projection.camera_to_projector_points(controls, refined=False).astype(np.float32)
             refined = base + offsets
-            for idx, (a, b) in enumerate(zip(base[:80], refined[:80])):
+            for idx, (a, b) in enumerate(zip(base, refined)):
                 start = (float(a[0]), float(a[1]))
                 end = (float(b[0]), float(b[1]))
                 overlay.lines.append(OverlayLine(points=[start, end], color=(255, 255, 255), width=2, label=f"r{idx}"))
                 overlay.circles.append(OverlayCircle(center=end, radius=5.0, color=(255, 255, 255)))
-            self._append_log(f"已显示 {min(80, controls.shape[0])} 个局部残差箭头")
+            self._append_log(f"已显示全部 {controls.shape[0]} 个局部残差箭头")
         else:
             self._append_log("当前校正文件没有局部残差控制点，已显示基础校正结果")
         if self.projection_window is not None:
@@ -4077,29 +4078,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
 
     def _projector_calibration_overlay(self, calibration) -> ProjectionOverlay:
         size = (int(self.config.projection.projector_width), int(self.config.projection.projector_height))
-        overlay = ProjectionOverlay(overlay_id="projector_calibration", frame_id=0, projector_size=size)
-        poly = np.asarray(calibration.projection.table_polygon_proj, dtype=np.float32).reshape((-1, 2))
-        if poly.shape[0] >= 3:
-            closed = [(float(x), float(y)) for x, y in np.vstack([poly, poly[0]])]
-            overlay.lines.append(OverlayLine(points=closed, color=(255, 255, 255), width=3, label="table"))
-        points = np.asarray(calibration.projection.proj_points, dtype=np.float32).reshape((-1, 2))
-        if points.shape[0] == 0 and poly.shape[0] >= 3:
-            points = poly
-        for idx, point in enumerate(points[:60]):
-            x, y = float(point[0]), float(point[1])
-            overlay.circles.append(OverlayCircle(center=(x, y), radius=7.0, color=(255, 255, 255)))
-            overlay.labels.append(((x + 10.0, y - 10.0), f"P{idx}", (255, 255, 255)))
-        if poly.shape[0] < 3 and points.shape[0] == 0:
-            w, h = size
-            overlay.lines.append(
-                OverlayLine(
-                    points=[(40.0, 40.0), (w - 40.0, 40.0), (w - 40.0, h - 40.0), (40.0, h - 40.0), (40.0, 40.0)],
-                    color=(255, 255, 255),
-                    width=3,
-                    label="fallback",
-                )
-            )
-        return overlay
+        return build_projection_calibration_result_overlay(calibration, size)
 
     @QtCore.pyqtSlot()
     def toggle_capture(self) -> None:
