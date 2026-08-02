@@ -11,10 +11,11 @@ from bas.calibration.linked import (
     collect_linked_pattern_observation,
     linked_calibration_runtime_summary,
     match_linked_pattern_observation,
+    linked_table_surface_polygon,
     projection_output_summary,
     solve_linked_projection_calibration,
 )
-from bas.calibration.projector import ProjectionCalibration
+from bas.calibration.projector import ProjectionCalibration, polygon_quad
 from bas.geometry import TableGeometry
 
 
@@ -67,10 +68,19 @@ def test_build_linked_patterns_covers_full_and_focus_zones() -> None:
     assert any(pattern.emphasis_zone.startswith("pocket_") for pattern in patterns)
 
 
+def test_linked_coverage_anchor_uses_coplanar_inner_table_surface() -> None:
+    geometry = _sample_geometry()
+    surface = linked_table_surface_polygon(geometry, (1920, 1080))
+    expected_inner = polygon_quad(geometry.inner_norm * np.asarray([1920.0, 1080.0], dtype=np.float32))
+
+    assert surface.shape == (4, 2)
+    assert np.allclose(surface, expected_inner, atol=1e-3)
+
+
 def test_linked_calibration_runtime_summary_identifies_loaded_implementation() -> None:
     summary = linked_calibration_runtime_summary()
 
-    assert "linked-geometry-v10" in summary
+    assert "linked-geometry-v11" in summary
     assert "coverage=85%/85%/72%" in summary
     assert "core_grid=5x4:100%" in summary
     assert "edges=100%" in summary
@@ -80,7 +90,7 @@ def test_linked_calibration_runtime_summary_identifies_loaded_implementation() -
     assert "capture_retry=2" in summary
     assert "pattern_min=4" in summary
     assert "total_min=80" in summary
-    assert "left_corner_contrast=clahe_v1" in summary
+    assert "edge_contrast=raw_plus_clahe_v2" in summary
     assert "bas" in summary and "linked.py" in summary
 
 
@@ -145,6 +155,43 @@ def test_all_linked_patterns_remain_detectable_after_camera_blur() -> None:
     assert min(matched_counts) >= 4
 
 
+def test_edge_patterns_survive_real_table_quad_clipping() -> None:
+    """Regression for the 2026-08-02 audit: left column and bottom row were clipped.
+
+    The camera sees the table up to the image boundary, while the previous
+    projector calibration describes a slanted quadrilateral.  A board planned
+    from only that quadrilateral's axis-aligned bbox spills beyond the visible
+    table and loses the ChArUco border needed for interpolation.
+    """
+
+    projector_size = (1280, 800)
+    table_quad_proj = np.asarray(
+        [[29.5053, 141.1581], [1223.8042, 89.1743], [1249.3660, 771.2333], [49.0609, 816.2275]],
+        dtype=np.float32,
+    )
+    prior = ProjectionCalibration(
+        mode="linked_hybrid_charuco",
+        homography=np.eye(3, dtype=np.float64),
+        table_polygon_proj=table_quad_proj,
+        projector_size=projector_size,
+    )
+    camera_size = (1920, 1080)
+    camera_quad = np.asarray([[0, 0], [1919, 0], [1919, 1079], [0, 1079]], dtype=np.float32)
+    projector_to_camera = cv2.getPerspectiveTransform(table_quad_proj, camera_quad)
+
+    failures: dict[str, int] = {}
+    for pattern in build_linked_patterns(_sample_geometry(), projector_size, prior_projection=prior):
+        if not pattern.pattern_id.startswith("coverage_"):
+            continue
+        warped = cv2.warpPerspective(pattern.image, projector_to_camera, camera_size)
+        observation = match_linked_pattern_observation(pattern, warped)
+        count = 0 if observation is None else observation.matched_count
+        if count < 4:
+            failures[pattern.pattern_id] = count
+
+    assert failures == {}
+
+
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")
 def test_dark_left_corner_pattern_uses_contrast_recovery() -> None:
     pattern = next(
@@ -162,6 +209,23 @@ def test_dark_left_corner_pattern_uses_contrast_recovery() -> None:
     observation = match_linked_pattern_observation(pattern, dark_bgr)
     assert observation is not None
     assert observation.matched_count >= 6
+
+
+def test_dark_edge_coverage_pattern_uses_contrast_recovery() -> None:
+    pattern = next(
+        pattern
+        for pattern in build_linked_patterns(_sample_geometry(), (1280, 800))
+        if pattern.emphasis_zone == "coverage_r4_c2"
+    )
+    gray = cv2.cvtColor(pattern.image, cv2.COLOR_BGR2GRAY).astype(np.float32) * 0.055
+    dark_bgr = cv2.cvtColor(np.clip(gray, 0, 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+
+    _raw_points, raw_ids = detect_charuco_corners(dark_bgr, pattern.board_spec)
+    assert raw_ids.size < 4
+
+    observation = match_linked_pattern_observation(pattern, dark_bgr)
+    assert observation is not None
+    assert observation.matched_count >= 4
 
 
 @pytest.mark.skipif(not _charuco_supported(), reason="OpenCV ChArUco detection support is unavailable.")

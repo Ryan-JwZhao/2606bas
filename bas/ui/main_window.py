@@ -42,6 +42,7 @@ from ..calibration import (
     collect_linked_pattern_observation,
     create_setting_aware_calibration_service,
     linked_calibration_runtime_summary,
+    linked_table_surface_polygon,
     projection_output_summary,
     solve_linked_projection_calibration,
     start_calibration_audit,
@@ -1319,14 +1320,14 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                     "请查看上方每个图样的刷新帧、识别帧和匹配成功帧；"
                     "若匹配始终为0，请检查投影画面是否完整落在台面、相机曝光和焦点是否能清楚看到黑白方格。"
                 )
-            table_polygon_cam = None
-            if not geometry.is_empty:
-                frame_h, frame_w = first_frame_shape
-                outer_px, _, _ = geometry.scaled(frame_w, frame_h)
-                if outer_px.shape[0] >= 3:
-                    table_polygon_cam = outer_px.astype(np.float32)
-                    if undistort is not None:
-                        table_polygon_cam = undistort(table_polygon_cam)
+            frame_h, frame_w = first_frame_shape
+            table_polygon_cam = linked_table_surface_polygon(
+                geometry,
+                (frame_w, frame_h),
+                undistort_points=undistort,
+            )
+            if table_polygon_cam.shape[0] < 4:
+                table_polygon_cam = None
             self._result = solve_linked_projection_calibration(
                 observations,
                 (int(self.operator.config.projection.projector_width), int(self.operator.config.projection.projector_height)),

@@ -30,13 +30,14 @@ from .linked_coverage import (
     evaluate_linked_point_coverage,
     linked_coverage_errors,
 )
+from .linked_detection import detect_linked_charuco_corners
 
 
 PointArray = np.ndarray
 MAX_LINKED_PATTERN_CV_P95_PX = 5.0
 MIN_LINKED_PATTERN_MATCHED_POINTS = 4
 MAX_LINKED_RESIDUAL_CONTROL_POINTS = 120
-LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v10"
+LINKED_CALIBRATION_ALGORITHM_VERSION = "linked-geometry-v11"
 
 
 @dataclass
@@ -92,7 +93,7 @@ def linked_calibration_runtime_summary() -> str:
         "dense_tiles=5x4 | middle_pockets=edge_v2 | "
         "corner_pockets=edge_v2 | capture_retry=2 | "
         f"pattern_min={MIN_LINKED_PATTERN_MATCHED_POINTS} total_min={MIN_LINKED_TOTAL_MATCHED_POINTS} | "
-        "left_corner_contrast=clahe_v1 | "
+        "edge_contrast=raw_plus_clahe_v2 | "
         f"source={Path(__file__).resolve()}"
     )
 
@@ -296,6 +297,34 @@ def build_linked_patterns(
     return patterns
 
 
+def linked_table_surface_polygon(
+    geometry: TableGeometry,
+    frame_size: Tuple[int, int],
+    *,
+    undistort_points: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+) -> np.ndarray:
+    """Return the coplanar cloth quad used by linked calibration coverage.
+
+    ``outer`` can include raised rails or even the whole camera frame in legacy
+    geometry files.  ChArUco calibration is a planar cloth measurement, so the
+    pocket-aware inner boundary is preferred and ``outer`` is only a fallback.
+    """
+
+    frame_w, frame_h = [max(1, int(value)) for value in frame_size]
+    outer_px, inner_px, _ = geometry.scaled(frame_w, frame_h)
+    minimum_area = float(frame_w * frame_h) * 0.10
+    for candidate in (inner_px, outer_px):
+        points = ensure_numpy_points(candidate).astype(np.float32)
+        if points.shape[0] < 4:
+            continue
+        if undistort_points is not None:
+            points = ensure_numpy_points(undistort_points(points)).astype(np.float32)
+        quad = polygon_quad(points)
+        if quad.shape[0] == 4 and abs(float(cv2.contourArea(quad.reshape((-1, 1, 2))))) >= minimum_area:
+            return quad.astype(np.float32)
+    return np.zeros((0, 2), dtype=np.float32)
+
+
 def match_linked_pattern_observation(
     pattern: LinkedCalibrationPattern,
     frame_bgr: np.ndarray,
@@ -306,18 +335,11 @@ def match_linked_pattern_observation(
         return None
     if frame_bgr is None or frame_bgr.size == 0:
         return None
-    camera_points, camera_ids = detect_charuco_corners(frame_bgr, pattern.board_spec)
-    if camera_ids.size < 4 and str(pattern.emphasis_zone).strip().lower() in {"pocket_lt", "pocket_lb"}:
-        # The installed projector/camera geometry makes the two physical-left
-        # corner boards much darker than the other six boards. Preserve the
-        # original pixels for normal detection, then recover local contrast only
-        # for these known low-light zones when the normal pass cannot match.
-        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-        enhanced_gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-        enhanced_bgr = cv2.cvtColor(enhanced_gray, cv2.COLOR_GRAY2BGR)
-        recovered_points, recovered_ids = detect_charuco_corners(enhanced_bgr, pattern.board_spec)
-        if recovered_ids.size > camera_ids.size:
-            camera_points, camera_ids = recovered_points, recovered_ids
+    camera_points, camera_ids = detect_linked_charuco_corners(
+        frame_bgr,
+        pattern.board_spec,
+        pattern.emphasis_zone,
+    )
     if camera_ids.size == 0 or pattern.projector_ids.size == 0:
         return None
     pairs = _match_ids(pattern.projector_points, pattern.projector_ids, camera_points, camera_ids)
