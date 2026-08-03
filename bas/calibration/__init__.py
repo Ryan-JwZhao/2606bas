@@ -1,6 +1,15 @@
 from __future__ import annotations
 
 from .ball_compensation import BallCompensationModel
+from .ball_compensation_checkpoint import (
+    BallCompensationCheckpoint,
+    HoldoutCheckpointObservation,
+    ball_compensation_checkpoint_compatibility_errors,
+    delete_ball_compensation_checkpoint,
+    load_ball_compensation_checkpoint,
+    make_ball_compensation_checkpoint,
+    save_ball_compensation_checkpoint,
+)
 from .audit import CalibrationAudit, load_calibration_audit_summaries, start_calibration_audit
 from .ball_compensation_sampling import (
     BallCompensationSample,
@@ -45,6 +54,13 @@ from .verification import format_holdout_report, verify_holdout_file, verify_hol
 
 __all__ = [
     "BallCompensationModel",
+    "BallCompensationCheckpoint",
+    "HoldoutCheckpointObservation",
+    "ball_compensation_checkpoint_compatibility_errors",
+    "delete_ball_compensation_checkpoint",
+    "load_ball_compensation_checkpoint",
+    "make_ball_compensation_checkpoint",
+    "save_ball_compensation_checkpoint",
     "CalibrationAudit",
     "load_calibration_audit_summaries",
     "start_calibration_audit",

@@ -158,6 +158,30 @@ def test_independent_holdout_targets_keep_every_first_pass_sample_for_training()
     assert np.ptp(points[:, 1]) >= 900.0
 
 
+def test_independent_holdout_targets_can_exclude_known_bbox_only_locations() -> None:
+    samples = [
+        _sample_from_identical_point(index, np.asarray([float(index % 8) * 300.0, float(index // 8) * 180.0]))
+        for index in range(56)
+    ]
+    for index in (0, 7, 48, 55):
+        samples[index].geometry_method = "bbox"
+        samples[index].geometry_quality = 0.45
+
+    targets = select_ball_compensation_holdout_targets(
+        samples,
+        count=10,
+        require_formal_geometry=True,
+        minimum_geometry_quality=0.70,
+    )
+
+    assert len(targets) == 10
+    assert all(ball_holdout_geometry_is_formal(sample.geometry_method) for sample in targets)
+    assert all(sample.geometry_quality >= 0.70 for sample in targets)
+    points = np.asarray([sample.target_table_mm for sample in targets], dtype=np.float64)
+    assert np.ptp(points[:, 0]) >= 1500.0
+    assert np.ptp(points[:, 1]) >= 700.0
+
+
 def test_formal_holdout_rejects_bbox_geometry() -> None:
     assert ball_holdout_geometry_is_formal("segmentation_ellipse") is True
     assert ball_holdout_geometry_is_formal("appearance_ellipse") is True
@@ -237,6 +261,7 @@ from bas.ui.engineered_ball_compensation_wizard import (
     _ball_compensation_completion_summary,
     _pick_ball_candidate,
     _render_target_image,
+    _stable_measurement,
     _target_guide_radii,
     ball_compensation_path_or_default,
     ball_compensation_path_from_input,
@@ -410,6 +435,28 @@ def test_stable_sample_resets_after_sustained_detector_dropout() -> None:
 
     assert wizard._candidate_dropout_expired(10.0, 10.0 + grace - 0.01) is False
     assert wizard._candidate_dropout_expired(10.0, 10.0 + grace + 0.01) is True
+
+
+def test_bbox_stability_ignores_two_isolated_box_center_outliers() -> None:
+    centers = (
+        (100.0, 100.0),
+        (101.0, 100.0),
+        (99.0, 100.0),
+        (100.0, 101.0),
+        (100.0, 99.0),
+        (107.0, 100.0),
+        (93.0, 100.0),
+    )
+    history = [
+        (np.asarray(center, dtype=np.float32), 20.0, 0.92, 0.45, "bbox")
+        for center in centers
+    ]
+
+    stable = _stable_measurement(history)
+
+    assert stable is not None
+    assert np.linalg.norm(stable[0] - np.asarray([100.0, 100.0], dtype=np.float32)) < 0.1
+    assert stable[3] <= 1.0
 
 
 def test_ball_sampling_accepts_stable_size_matched_bbox_at_fixed_target() -> None:

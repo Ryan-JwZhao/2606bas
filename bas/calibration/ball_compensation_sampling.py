@@ -309,6 +309,8 @@ def select_ball_compensation_holdout_targets(
     samples: Sequence[BallCompensationSample],
     *,
     count: int = 10,
+    require_formal_geometry: bool = False,
+    minimum_geometry_quality: float = 0.0,
 ) -> list[BallCompensationSample]:
     """Choose full-table validation locations without removing training data.
 
@@ -317,10 +319,20 @@ def select_ball_compensation_holdout_targets(
     training samples.
     """
 
-    items = list(samples)
+    all_items = list(samples)
+    minimum_quality = max(0.0, float(minimum_geometry_quality))
+    items = [
+        sample
+        for sample in all_items
+        if float(sample.geometry_quality) >= minimum_quality
+        and (not require_formal_geometry or ball_holdout_geometry_is_formal(sample.geometry_method))
+    ]
     requested = max(MIN_BALL_COMPENSATION_HOLDOUT_SAMPLES, int(count))
     if len(items) < requested:
-        raise ValueError(f"At least {requested} training locations are required to select holdout targets.")
+        raise ValueError(
+            f"Only {len(items)} of {len(all_items)} training locations meet formal holdout geometry quality; "
+            f"at least {requested} are required."
+        )
     return [items[index] for index in _spatially_spread_sample_indices(items, count=requested)]
 
 
