@@ -7,12 +7,13 @@ import cv2
 import numpy as np
 
 from bas.app import RuntimePipeline
-from bas.config import StateConfig
+from bas.config import CalibrationConfig, StateConfig
 from bas.geometry import TableGeometryLoader
 from bas.geometry_runtime import RuntimeGeometryReloader
 from bas.perception.pocket_observer import PocketObserver
 from bas.schemas import FramePacket, MatchPhase, TrackObservation, TracksFrame
 from bas.state import ModernMatchStateMachine
+from bas.ui.geometry_reference import draw_geometry_reference_lines
 
 
 def _write_labelme(path, shapes: list[dict[str, object]]) -> None:
@@ -76,7 +77,10 @@ def _identity_calibration() -> SimpleNamespace:
             ball_diameter_mm=12.0,
             center_playable_polygon_mm=square,
         ),
-        projection=SimpleNamespace(table_polygon_cam=np.asarray(square, dtype=np.float32)),
+        projection=SimpleNamespace(
+            is_valid=True,
+            table_polygon_cam=np.asarray(square, dtype=np.float32),
+        ),
         camera_px_to_table_mm=identity,
         ball_camera_px_to_table_mm=identity,
         table_mm_to_camera_px=identity,
@@ -165,6 +169,23 @@ def test_geometry_loader_canonicalizes_shuffled_six_pocket_shape_order(tmp_path)
     )
 
 
+def test_geometry_reload_recovers_inline_and_pocket_files_selected_in_swapped_rows(tmp_path) -> None:
+    outline_path, inline_path, pocket_path = _write_geometry_set(tmp_path / "geometry", pocket_x=50)
+    reloader = RuntimeGeometryReloader()
+
+    geometry, changed = reloader.refresh(outline_path, pocket_path, inline_path)
+    preview = np.zeros((100, 100, 3), dtype=np.uint8)
+
+    assert changed is True
+    assert reloader.is_ready is True
+    assert reloader.last_error is None
+    assert len(geometry.inline_norm) == 5
+    assert len(geometry.pockets_norm) == 1
+    assert geometry.inner_norm.shape[0] >= 3
+    assert draw_geometry_reference_lines(preview, geometry) == 8
+    assert np.count_nonzero(preview) > 0
+
+
 def test_switching_inline_and_pocket_keeps_new_pocket_observer_and_state_effective(tmp_path) -> None:
     outline_a, inline_a, pocket_a = _write_geometry_set(tmp_path / "a", pocket_x=30)
     outline_b, inline_b, pocket_b = _write_geometry_set(tmp_path / "b", pocket_x=50)
@@ -174,21 +195,38 @@ def test_switching_inline_and_pocket_keeps_new_pocket_observer_and_state_effecti
     assert changed is True
     pipeline.config = SimpleNamespace(
         geometry=SimpleNamespace(
-            outline_path=outline_b,
-            inline_path=inline_b,
-            pocket_path=pocket_b,
-        )
+            outline_path=outline_a,
+            inline_path=inline_a,
+            pocket_path=pocket_a,
+        ),
+        calibration=CalibrationConfig(),
     )
     reset_calls: list[bool] = []
     pipeline._reset_temporal_processing_state = lambda: reset_calls.append(True)
     pipeline.calibration = _identity_calibration()
+    frame = FramePacket(1, 1_000_000_000, "cam", image=_ball_image(None, None))
+    pipeline._update_table_geometry_for_frame(frame)
+    old_center_polygon = np.asarray(pipeline.calibration.table.center_playable_polygon_mm, dtype=np.float32)
+    old_pockets = list(pipeline.calibration.table.pockets_mm)
+
+    # Match the field swap found in the live settings: content labels, rather
+    # than picker-row order, must determine each geometry role.
+    pipeline.config.geometry.outline_path = outline_b
+    pipeline.config.geometry.inline_path = pocket_b
+    pipeline.config.geometry.pocket_path = inline_b
 
     pipeline._refresh_geometry_if_needed()
-    policy = pipeline._camera_detection_regions(
-        FramePacket(1, 1_000_000_000, "cam", image=_ball_image(None, None))
-    )
+    pipeline._update_table_geometry_for_frame(frame)
+    policy = pipeline._camera_detection_regions(frame)
+    new_center_polygon = np.asarray(pipeline.calibration.table.center_playable_polygon_mm, dtype=np.float32)
+    new_pockets = list(pipeline.calibration.table.pockets_mm)
 
     assert reset_calls == [True]
+    assert old_pockets != new_pockets
+    assert abs(new_pockets[0][0] - 50.0) < 0.1
+    assert old_center_polygon.shape[0] >= 3
+    assert new_center_polygon.shape[0] >= 3
+    assert not np.array_equal(old_center_polygon, new_center_polygon)
     assert policy is not None
     assert policy.detection_enabled is True
     assert len(policy.ball_guard_regions) == 1

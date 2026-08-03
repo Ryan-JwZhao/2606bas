@@ -52,6 +52,16 @@
 
 Holdout 门槛是固定的正式台面验收标准，不会根据当前数据动态放宽：10 个位置各复采 3 次后，先按位置合并为 10 个独立样本，再计算径向误差中位数、径向误差 P95，以及二维平均误差向量的模长。三项必须分别严格小于 `1.00 mm`、`2.00 mm`、`1.00 mm`，等于门槛也视为未通过。
 
+### 球心补偿多次采样与局部重采
+
+新的训练和验收流程按以下规则执行：
+
+- 56 个训练目标中的每一个都会自动采集 `3` 个相互独立的稳定检测批次，并对相机球心、台面球心和质量指标取中位数后才形成一个训练样本。三个批次期间球保持在同一目标圈内，用于降低帧级轮廓和检测噪声；如果要降低人工摆放误差，应使用后述失败区域局部重采。
+- 30 次 Holdout 仍为 `10 个位置 × 3 次重新摆放`。完成整套 30 次后，系统先做重复性预检：只计算同一位置三次观测相对其中位球心的最大距离，不计算该位置相对投影目标的绝对偏移。最大距离超过 `2.0 mm` 的位置会显示红色目标圈，并只重采该位置的 3 次观测；其余稳定位置保留。
+- 重复性预检全部通过后才进入正式 `median < 1.0 mm`、`P95 < 2.0 mm`、`mean bias < 1.0 mm` 验收。正式验收失败的位置会在投影画面以红圈汇总显示。
+- 正式验收失败时，误差不低于 `1.0 mm` 的Holdout位置会标为问题区；界面允许重采这些目标对应的56点训练位置及其最近一圈邻点（每个失败目标最多选择中心附近共 9 个训练点）。重采完成后，旧Holdout只保留在审计日志中用于诊断，不会混入训练数据；系统清空checkpoint中的旧Holdout并强制采集一套全新的30次验证。
+- 局部训练重采、局部Holdout重采以及新一代Holdout进度都会继续写入同一原子checkpoint。异常退出后只需继续尚未完成的局部位置。
+
 如果硬件设置或标定文件已经改变，界面会列出不兼容项，只允许放弃旧暂存或取消，避免把旧相机坐标误用于新标定。最终球心补偿模型通过验收并成功保存后，暂存文件会自动删除；失败或中止时则保留，供下次继续。
 
 联动校准的空间覆盖门禁按 RANSAC 内点的实际位置计算，而不是依赖“中心/全域/袋口”等图样名称。整轮至少需要 80 个有效角点；横向和纵向跨度至少 85%，归一化凸包面积至少 72%，5×4 台面网格必须 100% 有点，四条边按上/下各 8 段、左/右各 4 段检查并要求每段都有点，最大内部空洞距离不得超过归一化台面的 14%。
@@ -637,7 +647,7 @@ node --test tests\web_control_coordinates.test.js
 
 ## 更换台面几何文件后的区域规则
 
-运行时会读取设置中的 `outline.json`、`inline.json` 和 `pocket.json`。系统使用文件内容哈希检查变化；即使新旧文件大小和修改时间相同，只要内容变化也会自动重载。校验成功后会重建边界，并清空检测缓存、跟踪历史、袋口观察历史、状态机历史和规划锁定，避免旧轨迹继续绑定旧袋位。六个袋口会统一规范为 `左上、上中、右上、右下、下中、左下`，因此 `pocket.json` 中 shape 的书写顺序不会改变袋号。
+运行时会读取设置中的 `outline.json`、`inline.json` 和 `pocket.json`。几何角色以 LabelMe shape 标签为准（`outline`、`inline`、`pocket`/`pocket0…5`），不会只凭设置行或文件名判断；即使误把 inline 与 pocket 文件选反，也会恢复正确角色，避免整组几何变空。每份文件按自身的 `imageWidth`/`imageHeight` 独立归一化，因此三类线可以来自不同尺寸的标注底图并分别替换。系统使用文件内容哈希检查变化；即使新旧文件大小和修改时间相同，只要内容变化也会自动重载。校验成功后会重建边界，并清空检测缓存、跟踪历史、袋口观察历史、状态机历史和规划锁定，避免旧轨迹继续绑定旧袋位。六个袋口会统一规范为 `左上、上中、右上、右下、下中、左下`，因此 `pocket.json` 中 shape 的书写顺序不会改变袋号。
 
 球检测与球心可达域采用彼此独立的职责：
 
@@ -651,7 +661,7 @@ node --test tests\web_control_coordinates.test.js
 更换文件后建议打开“投影调试模式”，确认 `inline`、`pocket`、`physical` 和 `center` 四类参考线位置正确。定向回归测试命令：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_detection_regions.py tests\test_detection_service.py tests\test_geometry_runtime.py tests\test_geometry_pocket_integration.py tests\test_pocket_observer.py tests\test_pocket_visual_state.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_geometry_reference.py tests\test_detection_regions.py tests\test_detection_service.py tests\test_geometry_runtime.py tests\test_geometry_pocket_integration.py tests\test_table_boundaries.py tests\test_pocket_observer.py tests\test_pocket_visual_state.py
 ```
 
 ## 球心与投影几何阶段 1–4 升级（2026-08）

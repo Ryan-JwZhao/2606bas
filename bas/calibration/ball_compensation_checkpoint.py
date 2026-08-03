@@ -12,7 +12,8 @@ import numpy as np
 from .ball_compensation_sampling import BallCompensationSample
 
 
-CHECKPOINT_SCHEMA_VERSION = 1
+CHECKPOINT_SCHEMA_VERSION = 2
+SUPPORTED_CHECKPOINT_SCHEMA_VERSIONS = {1, CHECKPOINT_SCHEMA_VERSION}
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,9 @@ class BallCompensationCheckpoint:
     training_cursor: int = 0
     training_samples: tuple[BallCompensationSample, ...] = ()
     holdout_observations: tuple[HoldoutCheckpointObservation, ...] = ()
+    pending_training_resample_indices: tuple[int, ...] = ()
+    failed_holdout_targets_table_mm: tuple[tuple[float, float], ...] = ()
+    holdout_generation: int = 0
     saved_at: str = field(default_factory=lambda: datetime.now().astimezone().isoformat(timespec="seconds"))
 
     @property
@@ -51,6 +55,9 @@ class BallCompensationCheckpoint:
             "training_cursor": int(self.training_cursor),
             "training_samples": [sample.to_dict() for sample in self.training_samples],
             "holdout_observations": [item.to_dict() for item in self.holdout_observations],
+            "pending_training_resample_indices": [int(index) for index in self.pending_training_resample_indices],
+            "failed_holdout_targets_table_mm": [list(point) for point in self.failed_holdout_targets_table_mm],
+            "holdout_generation": int(self.holdout_generation),
         }
 
 
@@ -61,14 +68,21 @@ def make_ball_compensation_checkpoint(
     training_cursor: int,
     training_samples: Sequence[BallCompensationSample],
     holdout_observations: Sequence[HoldoutCheckpointObservation] = (),
+    pending_training_resample_indices: Sequence[int] = (),
+    failed_holdout_targets_table_mm: Sequence[Sequence[float]] = (),
+    holdout_generation: int = 0,
 ) -> BallCompensationCheckpoint:
     grid = np.asarray(sampling_grid_table_mm, dtype=np.float64).reshape((-1, 2))
+    failed_targets = np.asarray(failed_holdout_targets_table_mm, dtype=np.float64).reshape((-1, 2))
     return BallCompensationCheckpoint(
         context=dict(context),
         sampling_grid_table_mm=tuple((float(point[0]), float(point[1])) for point in grid),
         training_cursor=max(0, int(training_cursor)),
         training_samples=tuple(training_samples),
         holdout_observations=tuple(holdout_observations),
+        pending_training_resample_indices=tuple(sorted({int(index) for index in pending_training_resample_indices})),
+        failed_holdout_targets_table_mm=tuple((float(point[0]), float(point[1])) for point in failed_targets),
+        holdout_generation=max(0, int(holdout_generation)),
     )
 
 
@@ -89,6 +103,7 @@ def restart_ball_compensation_checkpoint_from_holdout(
         training_cursor=checkpoint.training_cursor,
         training_samples=checkpoint.training_samples,
         holdout_observations=(),
+        holdout_generation=checkpoint.holdout_generation + 1,
     )
 
 
@@ -109,7 +124,8 @@ def load_ball_compensation_checkpoint(path: str | Path) -> BallCompensationCheck
     if not source.exists():
         return None
     payload = json.loads(source.read_text(encoding="utf-8"))
-    if int(payload.get("schema_version", -1)) != CHECKPOINT_SCHEMA_VERSION:
+    schema_version = int(payload.get("schema_version", -1))
+    if schema_version not in SUPPORTED_CHECKPOINT_SCHEMA_VERSIONS:
         raise ValueError(f"Unsupported ball compensation checkpoint schema: {payload.get('schema_version')}")
     training = tuple(_sample_from_dict(item) for item in payload.get("training_samples", []))
     holdout = tuple(
@@ -121,12 +137,18 @@ def load_ball_compensation_checkpoint(path: str | Path) -> BallCompensationCheck
         for item in payload.get("holdout_observations", [])
     )
     grid = np.asarray(payload.get("sampling_grid_table_mm", []), dtype=np.float64).reshape((-1, 2))
+    failed_targets = np.asarray(payload.get("failed_holdout_targets_table_mm", []), dtype=np.float64).reshape((-1, 2))
     return BallCompensationCheckpoint(
         context=dict(payload.get("context", {})),
         sampling_grid_table_mm=tuple((float(point[0]), float(point[1])) for point in grid),
         training_cursor=max(0, int(payload.get("training_cursor", 0))),
         training_samples=training,
         holdout_observations=holdout,
+        pending_training_resample_indices=tuple(
+            sorted({int(index) for index in payload.get("pending_training_resample_indices", [])})
+        ),
+        failed_holdout_targets_table_mm=tuple((float(point[0]), float(point[1])) for point in failed_targets),
+        holdout_generation=max(0, int(payload.get("holdout_generation", 0))),
         saved_at=str(payload.get("saved_at", "unknown")),
     )
 
@@ -181,6 +203,12 @@ def ball_compensation_checkpoint_compatibility_errors(
         errors.append("training samples contain duplicate indices")
     if any(index < 0 or index >= checkpoint.training_cursor for index in training_indices):
         errors.append("training sample index is outside completed cursor")
+    pending = [int(index) for index in checkpoint.pending_training_resample_indices]
+    if any(index not in training_indices for index in pending):
+        errors.append("pending training resample index is unavailable")
+    failed_targets = np.asarray(checkpoint.failed_holdout_targets_table_mm, dtype=np.float64).reshape((-1, 2))
+    if not np.all(np.isfinite(failed_targets)):
+        errors.append("failed holdout target contains non-finite values")
     return errors
 
 

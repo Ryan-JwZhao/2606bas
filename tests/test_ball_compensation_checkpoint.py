@@ -63,6 +63,9 @@ def test_checkpoint_round_trip_and_single_slot_overwrite(tmp_path: Path) -> None
         training_cursor=2,
         training_samples=[_sample(0, (10.0, 20.0)), _sample(1, (30.0, 40.0))],
         holdout_observations=[HoldoutCheckpointObservation(0, 0, _sample(2, (10.0, 20.0)))],
+        pending_training_resample_indices=[1],
+        failed_holdout_targets_table_mm=[(10.0, 20.0)],
+        holdout_generation=2,
     )
     save_ball_compensation_checkpoint(path, second)
 
@@ -73,7 +76,34 @@ def test_checkpoint_round_trip_and_single_slot_overwrite(tmp_path: Path) -> None
     assert len(loaded.training_samples) == 2
     assert loaded.holdout_completed_count == 1
     assert loaded.holdout_observations[0].sample.geometry_method == "appearance_ellipse"
+    assert loaded.pending_training_resample_indices == (1,)
+    assert loaded.failed_holdout_targets_table_mm == ((10.0, 20.0),)
+    assert loaded.holdout_generation == 2
     assert not path.with_suffix(".json.tmp").exists()
+
+
+def test_schema_one_checkpoint_remains_loadable_after_resampling_upgrade(tmp_path: Path) -> None:
+    path = tmp_path / "legacy_checkpoint.json"
+    checkpoint = make_ball_compensation_checkpoint(
+        context=_context(),
+        sampling_grid_table_mm=[(10.0, 20.0)],
+        training_cursor=1,
+        training_samples=[_sample(0, (10.0, 20.0))],
+    )
+    payload = checkpoint.to_dict()
+    payload["schema_version"] = 1
+    payload.pop("pending_training_resample_indices")
+    payload.pop("failed_holdout_targets_table_mm")
+    payload.pop("holdout_generation")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_ball_compensation_checkpoint(path)
+
+    assert loaded is not None
+    assert loaded.training_cursor == 1
+    assert loaded.pending_training_resample_indices == ()
+    assert loaded.failed_holdout_targets_table_mm == ()
+    assert loaded.holdout_generation == 0
 
 
 def test_checkpoint_compatibility_rejects_changed_calibration_or_grid() -> None:

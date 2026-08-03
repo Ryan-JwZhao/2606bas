@@ -32,6 +32,52 @@ def test_geometry_loader_preserves_inline_segments(tmp_path) -> None:
     np.testing.assert_allclose(geometry.inline_norm[0], np.array([[0.1, 0.4], [0.9, 0.4]], dtype=np.float32))
 
 
+def test_geometry_loader_normalizes_each_replaceable_file_in_its_own_image_domain(tmp_path) -> None:
+    outline_path = tmp_path / "outline.json"
+    inline_path = tmp_path / "inline.json"
+    pocket_path = tmp_path / "pocket.json"
+    documents = [
+        (
+            outline_path,
+            200,
+            100,
+            [{"label": "outline", "points": [[20, 10], [180, 10], [180, 90], [20, 90]]}],
+        ),
+        (
+            inline_path,
+            100,
+            50,
+            [{"label": "inline", "points": [[10, 10], [90, 10]]}],
+        ),
+        (
+            pocket_path,
+            400,
+            200,
+            [{"label": "pocket0", "points": [[160, 20], [200, 4], [240, 20]]}],
+        ),
+    ]
+    for path, width, height, shapes in documents:
+        path.write_text(
+            json.dumps({"imageWidth": width, "imageHeight": height, "shapes": shapes}),
+            encoding="utf-8",
+        )
+
+    geometry = TableGeometryLoader.load(str(outline_path), str(inline_path), str(pocket_path))
+
+    np.testing.assert_allclose(
+        geometry.outer_norm,
+        np.asarray([[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]], dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        geometry.inline_norm[0],
+        np.asarray([[0.1, 0.2], [0.9, 0.2]], dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        geometry.pockets_norm[0],
+        np.asarray([[0.4, 0.1], [0.5, 0.02], [0.6, 0.1]], dtype=np.float32),
+    )
+
+
 def test_geometry_reference_lines_draw_on_frontend_frame_only() -> None:
     geometry = TableGeometry(
         outer_norm=np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32),

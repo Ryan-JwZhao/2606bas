@@ -29,6 +29,14 @@ from .ball_compensation_sampling import (
     split_ball_compensation_samples,
     update_calibration_table_boundaries_from_geometry_frame,
 )
+from .ball_compensation_resampling import (
+    FailedHoldoutRecoveryPlan,
+    HoldoutRepeatabilityAssessment,
+    LocationRepeatability,
+    aggregate_training_repeats,
+    assess_holdout_repeatability,
+    plan_failed_holdout_recovery,
+)
 from .camera import CameraCalibration
 from .geometry import CalibrationUnavailableError, IndependentGeometry, ProjectedEllipse
 from .linked import (
@@ -73,6 +81,8 @@ __all__ = [
     "MIN_BALL_COMPENSATION_TRAINING_SAMPLES",
     "ValidatedBallCompensation",
     "aggregate_ball_compensation_holdout_repeats",
+    "aggregate_training_repeats",
+    "assess_holdout_repeatability",
     "ball_holdout_geometry_is_formal",
     "CameraCalibration",
     "IndependentGeometry",
@@ -86,6 +96,10 @@ __all__ = [
     "build_engineered_ball_sampling_grid",
     "evaluate_ball_compensation_holdout",
     "fit_and_validate_ball_compensation",
+    "FailedHoldoutRecoveryPlan",
+    "HoldoutRepeatabilityAssessment",
+    "LocationRepeatability",
+    "plan_failed_holdout_recovery",
     "select_ball_compensation_holdout_targets",
     "split_ball_compensation_samples",
     "update_calibration_table_boundaries_from_geometry_frame",

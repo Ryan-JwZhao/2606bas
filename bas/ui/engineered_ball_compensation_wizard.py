@@ -40,6 +40,12 @@ from ..calibration.ball_sampling_detection import (
     ball_sampling_geometry_is_usable,
     ball_sampling_target_distance_limit_px,
 )
+from ..calibration.ball_compensation_resampling import (
+    aggregate_training_repeats,
+    assess_holdout_repeatability,
+    plan_failed_holdout_recovery,
+)
+from ..calibration.quality_standards import FORMAL_TABLE_ERROR_MEDIAN_MM
 from ..capture import create_capture_service
 from ..geometry import TableGeometryLoader
 from ..geometry_contract import calibration_context
@@ -54,6 +60,7 @@ DEFAULT_BALL_COMPENSATION_OUTPUT_DIR = PROJECT_ROOT / "local_settings" / "calibr
 BALL_COMPENSATION_CHECKPOINT_PATH = PROJECT_ROOT / "local_settings" / "checkpoints" / "ball_compensation_checkpoint.json"
 ENGINEERED_SAMPLING_COLS = 8
 ENGINEERED_SAMPLING_ROWS = 7
+ENGINEERED_TRAINING_REPEATS = 3
 ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS = 3.0
 ENGINEERED_SAMPLE_TIMEOUT_SECONDS = 28.0
 ENGINEERED_SAMPLE_DROPOUT_GRACE_SECONDS = 0.45
@@ -61,6 +68,9 @@ ENGINEERED_CENTER_PLAYABLE_SAFE_INSET_MM = 6.0
 ENGINEERED_HOLDOUT_LOCATION_COUNT = 10
 ENGINEERED_HOLDOUT_REPEATS = 3
 ENGINEERED_HOLDOUT_MIN_GEOMETRY_QUALITY = 0.70
+ENGINEERED_HOLDOUT_REPEATABILITY_MAX_DEVIATION_MM = 2.0
+ENGINEERED_FAILED_REGION_ERROR_MM = FORMAL_TABLE_ERROR_MEDIAN_MM
+ENGINEERED_FAILED_REGION_NEIGHBOR_COUNT = 8
 
 
 class _SamplingAborted(RuntimeError):
@@ -142,8 +152,8 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         layout = QtWidgets.QVBoxLayout(self)
 
         intro = QtWidgets.QLabel(
-            "该向导会先按 8×7、共 56 个全桌目标点完成训练采样，第一遍有效样本全部用于拟合，"
-            "不会再扣除边角点。随后会在 10 个空间分散位置进行 3 轮独立 Holdout 复采。"
+            "该向导会先按 8×7、共 56 个全桌目标点完成训练采样；每个目标自动采集 3 个稳定批次并取中位数，"
+            "第一遍有效样本全部用于拟合，不会再扣除边角点。随后会在 10 个空间分散位置进行 3 轮独立 Holdout 复采。"
             "请确保投影平面校准文件与球检测模型都有效。"
             f"采样时建议清空台面，仅保留一颗球；允许跳过异常点，但至少要获得 {MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个有效样本。"
         )
@@ -159,9 +169,12 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     "2. 启用可用的球检测后端；向导严格沿用当前工业相机畸变校正开关，不会自行开启校正。",
                     "3. 清空台面，仅保留一颗标准球。",
                     "4. 点击“开始自动采样”，按提示把球逐个移动到贴近球边缘的短弧目标圈。",
-                    f"5. 第一遍至少保留 {MIN_BALL_COMPENSATION_TRAINING_SAMPLES} 个训练样本；随后按提示完成 "
+                    f"5. 每个训练位置自动完成 {ENGINEERED_TRAINING_REPEATS} 个稳定批次并取中位数；第一遍至少保留 "
+                    f"{MIN_BALL_COMPENSATION_TRAINING_SAMPLES} 个训练样本；随后按提示完成 "
                     f"{ENGINEERED_HOLDOUT_LOCATION_COUNT} 个位置 × {ENGINEERED_HOLDOUT_REPEATS} 轮独立 Holdout。",
                     "6. 正式 Holdout 只接受轮廓椭圆球心；若画面只能得到 bbox，向导会等待重试而不会写入验收数据。",
+                    f"7. 30次完成后先按每个位置最大复采离散度 {ENGINEERED_HOLDOUT_REPEATABILITY_MAX_DEVIATION_MM:.1f} mm 预检；"
+                    "只重采超限位置。正式验收失败时，失败区域会标红，并可重采对应训练点及周边一圈。",
                 ]
             )
         )
@@ -369,6 +382,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         sample_points: np.ndarray,
         training_cursor: int,
         holdout_observations: list[HoldoutCheckpointObservation],
+        pending_training_resample_indices: list[int] | tuple[int, ...] = (),
+        failed_holdout_targets_table_mm: list[tuple[float, float]] | tuple[tuple[float, float], ...] = (),
+        holdout_generation: int = 0,
     ) -> None:
         checkpoint = make_ball_compensation_checkpoint(
             context=context,
@@ -376,6 +392,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             training_cursor=training_cursor,
             training_samples=self._samples,
             holdout_observations=holdout_observations,
+            pending_training_resample_indices=pending_training_resample_indices,
+            failed_holdout_targets_table_mm=failed_holdout_targets_table_mm,
+            holdout_generation=holdout_generation,
         )
         save_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH, checkpoint)
 
@@ -583,6 +602,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             )
             training_cursor = 0
             checkpoint_holdout_observations: list[HoldoutCheckpointObservation] = []
+            pending_training_resample_indices: list[int] = []
+            failed_holdout_targets_table_mm: list[tuple[float, float]] = []
+            holdout_generation = 0
             try:
                 saved_checkpoint = load_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH)
             except Exception as exc:
@@ -625,6 +647,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     self._samples = list(saved_checkpoint.training_samples)
                     training_cursor = int(saved_checkpoint.training_cursor)
                     checkpoint_holdout_observations = list(saved_checkpoint.holdout_observations)
+                    pending_training_resample_indices = list(saved_checkpoint.pending_training_resample_indices)
+                    failed_holdout_targets_table_mm = list(saved_checkpoint.failed_holdout_targets_table_mm)
+                    holdout_generation = int(saved_checkpoint.holdout_generation)
                     self._hydrate_resumed_training_samples(self._samples, calibration)
                     self.progress.setValue(
                         int(round(training_cursor / max(1, len(sample_points)) * 70.0))
@@ -666,7 +691,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 self._append_log(
                     f"切换到采样点 {idx + 1}/{total}: table=({target_table_mm[0]:.1f}, {target_table_mm[1]:.1f}) mm"
                 )
-                outcome = self._collect_sample_for_target(
+                outcome = self._collect_training_repeats(
                     capture,
                     detector,
                     calibration,
@@ -698,6 +723,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                         sample_points=sample_points,
                         training_cursor=training_cursor,
                         holdout_observations=checkpoint_holdout_observations,
+                        pending_training_resample_indices=pending_training_resample_indices,
+                        failed_holdout_targets_table_mm=failed_holdout_targets_table_mm,
+                        holdout_generation=holdout_generation,
                     )
                     continue
                 self._samples.append(outcome)
@@ -729,6 +757,9 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     sample_points=sample_points,
                     training_cursor=training_cursor,
                     holdout_observations=checkpoint_holdout_observations,
+                    pending_training_resample_indices=pending_training_resample_indices,
+                    failed_holdout_targets_table_mm=failed_holdout_targets_table_mm,
+                    holdout_generation=holdout_generation,
                 )
 
             if len(self._samples) < MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES:
@@ -736,172 +767,89 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     f"有效采样点只有 {len(self._samples)} 个，至少需要 "
                     f"{MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个第一遍训练样本。"
                 )
-            # Validate the complete first pass before asking the operator for a
-            # second pass.  Unlike the legacy split, no edge/corner sample is
-            # removed from model training.
-            build_ball_compensation_model(
-                self._samples,
-                ball_diameter_mm=float(calibration.table.ball_diameter_mm),
-                table_width_mm=float(calibration.table.width_mm),
-                table_height_mm=float(calibration.table.height_mm),
-            )
-            holdout_targets = select_ball_compensation_holdout_targets(
-                self._samples,
-                count=ENGINEERED_HOLDOUT_LOCATION_COUNT,
-                require_formal_geometry=True,
-                minimum_geometry_quality=ENGINEERED_HOLDOUT_MIN_GEOMETRY_QUALITY,
-            )
-            repeated_holdout: list[list[BallCompensationSample]] = [
-                [] for _ in holdout_targets
-            ]
-            holdout_observation_total = len(holdout_targets) * ENGINEERED_HOLDOUT_REPEATS
-            completed_holdout_keys: set[tuple[int, int]] = set()
-            resumed_holdout_samples = [item.sample for item in checkpoint_holdout_observations]
-            self._hydrate_resumed_training_samples(resumed_holdout_samples, calibration)
-            for item in checkpoint_holdout_observations:
-                key = (int(item.repeat_index), int(item.location_index))
-                if key in completed_holdout_keys:
-                    raise RuntimeError(f"球心补偿暂存包含重复 Holdout 记录: repeat/location={key}")
-                if not (0 <= item.repeat_index < ENGINEERED_HOLDOUT_REPEATS):
-                    raise RuntimeError(f"球心补偿暂存的 Holdout 轮次越界: {item.repeat_index}")
-                if not (0 <= item.location_index < len(holdout_targets)):
-                    raise RuntimeError(f"球心补偿暂存的 Holdout 位置越界: {item.location_index}")
-                expected_target = np.asarray(
-                    holdout_targets[item.location_index].target_table_mm,
-                    dtype=np.float64,
-                )
-                saved_target = np.asarray(item.sample.target_table_mm, dtype=np.float64)
-                if float(np.linalg.norm(expected_target - saved_target)) > 0.5:
-                    raise RuntimeError("球心补偿暂存的 Holdout 选点与当前选点策略不兼容，请选择不继承后重新开始。")
-                completed_holdout_keys.add(key)
-                repeated_holdout[item.location_index].append(item.sample)
-            self._append_log(
-                f"训练采样完成；开始独立 Holdout 复采：{len(holdout_targets)} 个位置 × "
-                f"{ENGINEERED_HOLDOUT_REPEATS} 轮。正式复采只接受轮廓椭圆球心。"
-            )
-            audit.event(
-                "holdout_sampling_started",
-                metrics={
-                    "training_count": len(self._samples),
-                    "location_count": len(holdout_targets),
-                    "repeat_count": ENGINEERED_HOLDOUT_REPEATS,
-                },
-                details={
-                    "selected_targets": [
-                        {
-                            "training_sample_index": int(sample.sample_index) + 1,
-                            "target_table_mm": list(sample.target_table_mm),
-                            "first_pass_geometry_method": str(sample.geometry_method),
-                            "first_pass_geometry_quality": float(sample.geometry_quality),
-                        }
-                        for sample in holdout_targets
-                    ]
-                },
-            )
-            holdout_schedule: list[tuple[int, int]] = []
-            for repeat_index in range(ENGINEERED_HOLDOUT_REPEATS):
-                location_order = list(range(len(holdout_targets)))
-                rotation = (repeat_index * 3) % max(1, len(location_order))
-                location_order = location_order[rotation:] + location_order[:rotation]
-                holdout_schedule.extend((repeat_index, location_index) for location_index in location_order)
-            for observation_index, (repeat_index, location_index) in enumerate(holdout_schedule):
-                if (repeat_index, location_index) in completed_holdout_keys:
-                    continue
-                if self._abort_requested:
-                    raise _SamplingAborted()
-                target_sample = holdout_targets[location_index]
-                target_table_mm = np.asarray(target_sample.target_table_mm, dtype=np.float32)
-                target_arr = target_table_mm.reshape((1, 2))
-                target_proj = calibration.table_mm_to_projector_px(target_arr)[0]
-                expected_cam = calibration.table_mm_to_camera_px(target_arr)[0]
-                target_ellipse = calibration.table_circle_to_projector_ellipse(
-                    target_table_mm,
-                    0.5 * float(calibration.table.ball_diameter_mm),
-                )
-                self._show_target(target_ellipse, observation_index + 1, holdout_observation_total)
-                self.progress.setValue(
-                    70 + int(round(observation_index / max(1, holdout_observation_total) * 30.0))
-                )
-                self.summary.setText(
-                    f"Holdout 第 {repeat_index + 1}/{ENGINEERED_HOLDOUT_REPEATS} 轮，"
-                    f"位置 {location_index + 1}/{len(holdout_targets)}。请重新移动球到目标圈中心。"
-                )
-                outcome = self._collect_sample_for_target(
-                    capture,
-                    detector,
-                    calibration,
-                    geometry,
-                    observation_index,
-                    holdout_observation_total,
-                    target_table_mm,
-                    target_proj.astype(np.float32),
-                    expected_cam.astype(np.float32),
-                    formal_geometry_required=True,
-                    allow_skip=False,
-                )
-                if outcome is None:
-                    raise RuntimeError("正式 Holdout 复采不可跳过；请重试当前点或结束向导。")
-                outcome.sample_index = len(self._samples) + observation_index
-                repeated_holdout[location_index].append(outcome)
-                checkpoint_holdout_observations.append(
-                    HoldoutCheckpointObservation(
-                        location_index=location_index,
-                        repeat_index=repeat_index,
-                        sample=outcome,
+            validated = None
+            while validated is None:
+                if pending_training_resample_indices:
+                    checkpoint_holdout_observations.clear()
+                    holdout_generation += 1
+                    self._resample_training_regions(
+                        capture=capture,
+                        detector=detector,
+                        calibration=calibration,
+                        geometry=geometry,
+                        sample_points=sample_points,
+                        training_cursor=training_cursor,
+                        checkpoint_context=checkpoint_context,
+                        pending_indices=pending_training_resample_indices,
+                        failed_targets=failed_holdout_targets_table_mm,
+                        holdout_generation=holdout_generation,
+                        audit=audit,
                     )
-                )
-                completed_holdout_keys.add((repeat_index, location_index))
-                audit.event(
-                    "holdout_sample_accepted",
-                    metrics={
-                        "location_index": location_index + 1,
-                        "repeat_index": repeat_index + 1,
-                        "geometry_quality": outcome.geometry_quality,
-                        "stability_spread_px": outcome.stability_spread_px,
-                    },
-                    details={
-                        "target_table_mm": outcome.target_table_mm,
-                        "detected_camera_px": outcome.detected_camera_px,
-                        "geometry_method": outcome.geometry_method,
-                    },
-                )
-                self._write_sampling_checkpoint(
-                    context=checkpoint_context,
-                    sample_points=sample_points,
-                    training_cursor=training_cursor,
-                    holdout_observations=checkpoint_holdout_observations,
-                )
-            holdout_samples, holdout_repeatability = aggregate_ball_compensation_holdout_repeats(
-                repeated_holdout,
-                minimum_repeats=ENGINEERED_HOLDOUT_REPEATS,
-            )
-            audit.event(
-                "holdout_repeats_aggregated",
-                metrics={
-                    "location_count": len(holdout_samples),
-                    "observation_count": holdout_repeatability["observation_count"],
-                },
-                details={"repeatability": holdout_repeatability},
-            )
-            try:
-                validated = fit_and_validate_ball_compensation(
+                    failed_holdout_targets_table_mm.clear()
+
+                # The complete first pass remains the only training set. Failed
+                # Holdout observations are diagnostic and are never promoted.
+                build_ball_compensation_model(
                     self._samples,
-                    calibration,
-                    holdout_samples=holdout_samples,
-                    holdout_repeatability=holdout_repeatability,
-                    calibration_context=model_context,
+                    ball_diameter_mm=float(calibration.table.ball_diameter_mm),
+                    table_width_mm=float(calibration.table.width_mm),
+                    table_height_mm=float(calibration.table.height_mm),
                 )
-            except BallCompensationValidationError as exc:
-                audit.event(
-                    "holdout_evaluated",
-                    status="failed",
-                    metrics={
-                        "training_count": exc.training_count,
-                        "holdout_count": exc.holdout_count,
-                    },
-                    details={"holdout_quality": exc.report},
-                )
-                raise
+                try:
+                    validated = self._run_holdout_cycle(
+                        capture=capture,
+                        detector=detector,
+                        calibration=calibration,
+                        geometry=geometry,
+                        sample_points=sample_points,
+                        training_cursor=training_cursor,
+                        checkpoint_context=checkpoint_context,
+                        checkpoint_observations=checkpoint_holdout_observations,
+                        model_context=model_context,
+                        holdout_generation=holdout_generation,
+                        audit=audit,
+                    )
+                except BallCompensationValidationError as exc:
+                    audit.event(
+                        "holdout_evaluated",
+                        status="failed",
+                        metrics={
+                            "training_count": exc.training_count,
+                            "holdout_count": exc.holdout_count,
+                        },
+                        details={"holdout_quality": exc.report},
+                    )
+                    recovery = plan_failed_holdout_recovery(
+                        self._samples,
+                        exc.report,
+                        failure_error_mm=ENGINEERED_FAILED_REGION_ERROR_MM,
+                        surrounding_neighbor_count=ENGINEERED_FAILED_REGION_NEIGHBOR_COUNT,
+                    )
+                    failed_holdout_targets_table_mm[:] = list(recovery.failed_targets_table_mm)
+                    self._show_failed_regions(calibration, recovery.failed_targets_table_mm)
+                    if recovery.training_sample_indices and self._prompt_failed_holdout_recovery(recovery):
+                        pending_training_resample_indices[:] = list(recovery.training_sample_indices)
+                        checkpoint_holdout_observations.clear()
+                        self._write_sampling_checkpoint(
+                            context=checkpoint_context,
+                            sample_points=sample_points,
+                            training_cursor=training_cursor,
+                            holdout_observations=checkpoint_holdout_observations,
+                            pending_training_resample_indices=pending_training_resample_indices,
+                            failed_holdout_targets_table_mm=failed_holdout_targets_table_mm,
+                            holdout_generation=holdout_generation,
+                        )
+                        validated = None
+                        continue
+                    self._write_sampling_checkpoint(
+                        context=checkpoint_context,
+                        sample_points=sample_points,
+                        training_cursor=training_cursor,
+                        holdout_observations=checkpoint_holdout_observations,
+                        failed_holdout_targets_table_mm=failed_holdout_targets_table_mm,
+                        holdout_generation=holdout_generation,
+                    )
+                    raise
             model = validated.model
             training_samples = list(validated.training_samples)
             holdout_samples = list(validated.holdout_samples)
@@ -994,7 +942,386 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 capture.release()
             self._set_busy(False)
 
-    def _show_target(self, target_ellipse, index: int, total: int) -> None:
+    def _resample_training_regions(
+        self,
+        *,
+        capture,
+        detector,
+        calibration,
+        geometry,
+        sample_points: np.ndarray,
+        training_cursor: int,
+        checkpoint_context: dict,
+        pending_indices: list[int],
+        failed_targets: list[tuple[float, float]],
+        holdout_generation: int,
+        audit,
+    ) -> None:
+        total = len(pending_indices)
+        for ordinal, sample_index in enumerate(list(pending_indices), start=1):
+            target_table_mm = np.asarray(sample_points[int(sample_index)], dtype=np.float32)
+            target_arr = target_table_mm.reshape((1, 2))
+            target_proj = calibration.table_mm_to_projector_px(target_arr)[0]
+            expected_cam = calibration.table_mm_to_camera_px(target_arr)[0]
+            target_ellipse = calibration.table_circle_to_projector_ellipse(
+                target_table_mm,
+                0.5 * float(calibration.table.ball_diameter_mm),
+            )
+            self._show_target(target_ellipse, ordinal, total, alert=True)
+            self.summary.setText(
+                f"正在重采失败区域训练点 {ordinal}/{total}（原第 {sample_index + 1}/56 点）。"
+            )
+            outcome = self._collect_training_repeats(
+                capture,
+                detector,
+                calibration,
+                geometry,
+                int(sample_index),
+                len(sample_points),
+                target_table_mm,
+                target_proj.astype(np.float32),
+                expected_cam.astype(np.float32),
+            )
+            if outcome is None:
+                raise RuntimeError("失败区域训练点重采不可跳过；请重试当前点或结束向导。")
+            replaced = False
+            for position, existing in enumerate(self._samples):
+                if int(existing.sample_index) == int(sample_index):
+                    self._samples[position] = outcome
+                    replaced = True
+                    break
+            if not replaced:
+                raise RuntimeError(f"无法找到待重采的训练样本索引: {sample_index}")
+            pending_indices.remove(sample_index)
+            audit.event(
+                "training_region_resampled",
+                metrics={
+                    "sample_index": int(sample_index) + 1,
+                    "remaining_count": len(pending_indices),
+                    "repeat_count": ENGINEERED_TRAINING_REPEATS,
+                },
+                details={"target_table_mm": outcome.target_table_mm},
+            )
+            self._write_sampling_checkpoint(
+                context=checkpoint_context,
+                sample_points=sample_points,
+                training_cursor=training_cursor,
+                holdout_observations=[],
+                pending_training_resample_indices=pending_indices,
+                failed_holdout_targets_table_mm=failed_targets,
+                holdout_generation=holdout_generation,
+            )
+
+    def _run_holdout_cycle(
+        self,
+        *,
+        capture,
+        detector,
+        calibration,
+        geometry,
+        sample_points: np.ndarray,
+        training_cursor: int,
+        checkpoint_context: dict,
+        checkpoint_observations: list[HoldoutCheckpointObservation],
+        model_context: dict,
+        holdout_generation: int,
+        audit,
+    ):
+        holdout_targets = select_ball_compensation_holdout_targets(
+            self._samples,
+            count=ENGINEERED_HOLDOUT_LOCATION_COUNT,
+            require_formal_geometry=True,
+            minimum_geometry_quality=ENGINEERED_HOLDOUT_MIN_GEOMETRY_QUALITY,
+        )
+        repeated_holdout: list[list[BallCompensationSample]] = [[] for _ in holdout_targets]
+        completed_keys: set[tuple[int, int]] = set()
+        resumed_samples = [item.sample for item in checkpoint_observations]
+        self._hydrate_resumed_training_samples(resumed_samples, calibration)
+        for item in checkpoint_observations:
+            key = (int(item.repeat_index), int(item.location_index))
+            if key in completed_keys:
+                raise RuntimeError(f"球心补偿暂存包含重复 Holdout 记录: repeat/location={key}")
+            if not (0 <= item.repeat_index < ENGINEERED_HOLDOUT_REPEATS):
+                raise RuntimeError(f"球心补偿暂存的 Holdout 轮次越界: {item.repeat_index}")
+            if not (0 <= item.location_index < len(holdout_targets)):
+                raise RuntimeError(f"球心补偿暂存的 Holdout 位置越界: {item.location_index}")
+            expected_target = np.asarray(holdout_targets[item.location_index].target_table_mm, dtype=np.float64)
+            saved_target = np.asarray(item.sample.target_table_mm, dtype=np.float64)
+            if float(np.linalg.norm(expected_target - saved_target)) > 0.5:
+                raise RuntimeError("球心补偿暂存的 Holdout 选点与当前选点策略不兼容，请重新开始30次验证。")
+            completed_keys.add(key)
+            repeated_holdout[item.location_index].append(item.sample)
+
+        total = len(holdout_targets) * ENGINEERED_HOLDOUT_REPEATS
+        self._append_log(
+            f"开始第 {holdout_generation + 1} 套独立 Holdout："
+            f"{len(holdout_targets)} 个位置 × {ENGINEERED_HOLDOUT_REPEATS} 轮。"
+        )
+        audit.event(
+            "holdout_sampling_started",
+            metrics={
+                "training_count": len(self._samples),
+                "location_count": len(holdout_targets),
+                "repeat_count": ENGINEERED_HOLDOUT_REPEATS,
+                "holdout_generation": holdout_generation,
+            },
+            details={
+                "selected_targets": [
+                    {
+                        "training_sample_index": int(sample.sample_index) + 1,
+                        "target_table_mm": list(sample.target_table_mm),
+                        "first_pass_geometry_method": str(sample.geometry_method),
+                        "first_pass_geometry_quality": float(sample.geometry_quality),
+                    }
+                    for sample in holdout_targets
+                ]
+            },
+        )
+        schedule: list[tuple[int, int]] = []
+        for repeat_index in range(ENGINEERED_HOLDOUT_REPEATS):
+            order = list(range(len(holdout_targets)))
+            rotation = (repeat_index * 3) % max(1, len(order))
+            order = order[rotation:] + order[:rotation]
+            schedule.extend((repeat_index, location_index) for location_index in order)
+        for observation_index, (repeat_index, location_index) in enumerate(schedule):
+            if (repeat_index, location_index) in completed_keys:
+                continue
+            outcome = self._collect_holdout_observation(
+                capture=capture,
+                detector=detector,
+                calibration=calibration,
+                geometry=geometry,
+                target_sample=holdout_targets[location_index],
+                location_index=location_index,
+                repeat_index=repeat_index,
+                display_index=observation_index,
+                total=total,
+                alert=False,
+            )
+            outcome.sample_index = len(self._samples) + observation_index
+            repeated_holdout[location_index].append(outcome)
+            checkpoint_observations.append(HoldoutCheckpointObservation(location_index, repeat_index, outcome))
+            completed_keys.add((repeat_index, location_index))
+            self._audit_and_checkpoint_holdout(
+                outcome=outcome,
+                location_index=location_index,
+                repeat_index=repeat_index,
+                audit=audit,
+                checkpoint_context=checkpoint_context,
+                sample_points=sample_points,
+                training_cursor=training_cursor,
+                checkpoint_observations=checkpoint_observations,
+                holdout_generation=holdout_generation,
+            )
+
+        precheck_round = 0
+        while True:
+            assessment = assess_holdout_repeatability(
+                repeated_holdout,
+                maximum_deviation_mm=ENGINEERED_HOLDOUT_REPEATABILITY_MAX_DEVIATION_MM,
+                minimum_repeats=ENGINEERED_HOLDOUT_REPEATS,
+            )
+            audit.event(
+                "holdout_repeatability_prechecked",
+                status="ok" if assessment.passed else "failed",
+                metrics={
+                    "unstable_location_count": len(assessment.unstable_location_indices),
+                    "maximum_deviation_mm": assessment.maximum_deviation_mm,
+                    "precheck_round": precheck_round,
+                },
+                details={
+                    "locations": [
+                        {
+                            "location_index": item.location_index + 1,
+                            "repeat_count": item.repeat_count,
+                            "maximum_deviation_mm": item.maximum_deviation_mm,
+                            "passed": item.passed,
+                        }
+                        for item in assessment.locations
+                    ]
+                },
+            )
+            if assessment.passed:
+                break
+            precheck_round += 1
+            self._append_log(
+                "Holdout 重复性预检未通过，仅重采位置："
+                + ", ".join(str(index + 1) for index in assessment.unstable_location_indices)
+            )
+            for location_index in assessment.unstable_location_indices:
+                repeated_holdout[location_index] = []
+                checkpoint_observations[:] = [
+                    item for item in checkpoint_observations if int(item.location_index) != location_index
+                ]
+                for repeat_index in range(ENGINEERED_HOLDOUT_REPEATS):
+                    outcome = self._collect_holdout_observation(
+                        capture=capture,
+                        detector=detector,
+                        calibration=calibration,
+                        geometry=geometry,
+                        target_sample=holdout_targets[location_index],
+                        location_index=location_index,
+                        repeat_index=repeat_index,
+                        display_index=repeat_index,
+                        total=ENGINEERED_HOLDOUT_REPEATS,
+                        alert=True,
+                    )
+                    outcome.sample_index = len(self._samples) + location_index * ENGINEERED_HOLDOUT_REPEATS + repeat_index
+                    repeated_holdout[location_index].append(outcome)
+                    checkpoint_observations.append(
+                        HoldoutCheckpointObservation(location_index, repeat_index, outcome)
+                    )
+                    self._audit_and_checkpoint_holdout(
+                        outcome=outcome,
+                        location_index=location_index,
+                        repeat_index=repeat_index,
+                        audit=audit,
+                        checkpoint_context=checkpoint_context,
+                        sample_points=sample_points,
+                        training_cursor=training_cursor,
+                        checkpoint_observations=checkpoint_observations,
+                        holdout_generation=holdout_generation,
+                        resampled=True,
+                    )
+
+        holdout_samples, holdout_repeatability = aggregate_ball_compensation_holdout_repeats(
+            repeated_holdout,
+            minimum_repeats=ENGINEERED_HOLDOUT_REPEATS,
+        )
+        audit.event(
+            "holdout_repeats_aggregated",
+            metrics={
+                "location_count": len(holdout_samples),
+                "observation_count": holdout_repeatability["observation_count"],
+            },
+            details={"repeatability": holdout_repeatability},
+        )
+        return fit_and_validate_ball_compensation(
+            self._samples,
+            calibration,
+            holdout_samples=holdout_samples,
+            holdout_repeatability=holdout_repeatability,
+            calibration_context=model_context,
+        )
+
+    def _collect_holdout_observation(
+        self,
+        *,
+        capture,
+        detector,
+        calibration,
+        geometry,
+        target_sample: BallCompensationSample,
+        location_index: int,
+        repeat_index: int,
+        display_index: int,
+        total: int,
+        alert: bool,
+    ) -> BallCompensationSample:
+        if self._abort_requested:
+            raise _SamplingAborted()
+        target_table_mm = np.asarray(target_sample.target_table_mm, dtype=np.float32)
+        target_arr = target_table_mm.reshape((1, 2))
+        target_proj = calibration.table_mm_to_projector_px(target_arr)[0]
+        expected_cam = calibration.table_mm_to_camera_px(target_arr)[0]
+        target_ellipse = calibration.table_circle_to_projector_ellipse(
+            target_table_mm,
+            0.5 * float(calibration.table.ball_diameter_mm),
+        )
+        self._show_target(target_ellipse, display_index + 1, total, alert=alert)
+        self.summary.setText(
+            f"Holdout位置 {location_index + 1}，第 {repeat_index + 1}/{ENGINEERED_HOLDOUT_REPEATS} 次。"
+            + ("该位置重复性超限，正在局部重采；只判断三次一致性。" if alert else "请重新移动球到目标圈中心。")
+        )
+        outcome = self._collect_sample_for_target(
+            capture,
+            detector,
+            calibration,
+            geometry,
+            display_index,
+            total,
+            target_table_mm,
+            target_proj.astype(np.float32),
+            expected_cam.astype(np.float32),
+            formal_geometry_required=True,
+            allow_skip=False,
+        )
+        if outcome is None:
+            raise RuntimeError("正式 Holdout 复采不可跳过；请重试当前点或结束向导。")
+        return outcome
+
+    def _audit_and_checkpoint_holdout(
+        self,
+        *,
+        outcome: BallCompensationSample,
+        location_index: int,
+        repeat_index: int,
+        audit,
+        checkpoint_context: dict,
+        sample_points: np.ndarray,
+        training_cursor: int,
+        checkpoint_observations: list[HoldoutCheckpointObservation],
+        holdout_generation: int,
+        resampled: bool = False,
+    ) -> None:
+        audit.event(
+            "holdout_sample_resampled" if resampled else "holdout_sample_accepted",
+            metrics={
+                "location_index": location_index + 1,
+                "repeat_index": repeat_index + 1,
+                "geometry_quality": outcome.geometry_quality,
+                "stability_spread_px": outcome.stability_spread_px,
+                "holdout_generation": holdout_generation,
+            },
+            details={
+                "target_table_mm": outcome.target_table_mm,
+                "detected_camera_px": outcome.detected_camera_px,
+                "geometry_method": outcome.geometry_method,
+            },
+        )
+        self._write_sampling_checkpoint(
+            context=checkpoint_context,
+            sample_points=sample_points,
+            training_cursor=training_cursor,
+            holdout_observations=checkpoint_observations,
+            holdout_generation=holdout_generation,
+        )
+
+    def _prompt_failed_holdout_recovery(self, recovery) -> bool:
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("球心补偿固定失败区域")
+        box.setIcon(QtWidgets.QMessageBox.Warning)
+        box.setText(
+            f"正式Holdout仍有 {len(recovery.failed_holdout_location_indices)} 个位置误差不低于 "
+            f"{ENGINEERED_FAILED_REGION_ERROR_MM:.1f} mm，已在投影画面标红。\n\n"
+            f"可以重采这些位置对应的56点训练点及周边一圈，共 "
+            f"{len(recovery.training_sample_indices)} 个训练点；旧Holdout只保留为诊断，"
+            "随后必须重新采集一套全新的30次Holdout。"
+        )
+        resample_btn = box.addButton("重采标红区域训练点及周边", QtWidgets.QMessageBox.AcceptRole)
+        finish_btn = box.addButton("保留当前56点并结束", QtWidgets.QMessageBox.RejectRole)
+        del finish_btn
+        box.exec_()
+        return box.clickedButton() is resample_btn
+
+    def _show_failed_regions(self, calibration, targets: tuple[tuple[float, float], ...]) -> None:
+        if self.operator.projection_window is None or not targets:
+            return
+        ellipses = [
+            calibration.table_circle_to_projector_ellipse(
+                np.asarray(target, dtype=np.float32),
+                0.5 * float(calibration.table.ball_diameter_mm),
+            )
+            for target in targets
+        ]
+        image = _render_failed_regions_image(
+            (int(self.operator.config.projection.projector_width), int(self.operator.config.projection.projector_height)),
+            ellipses,
+        )
+        self.operator.projection_window.set_image(image)
+        self._pump_ui()
+
+    def _show_target(self, target_ellipse, index: int, total: int, *, alert: bool = False) -> None:
         if self.operator.projection_window is None:
             return
         image = _render_target_image(
@@ -1002,9 +1329,44 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             target_ellipse,
             index,
             total,
+            alert=alert,
         )
         self.operator.projection_window.set_image(image)
         self._pump_ui()
+
+    def _collect_training_repeats(
+        self,
+        capture,
+        detector,
+        calibration,
+        geometry,
+        sample_index: int,
+        total_count: int,
+        target_table_mm: np.ndarray,
+        target_proj: np.ndarray,
+        expected_cam: np.ndarray,
+    ) -> Optional[BallCompensationSample]:
+        repeats: list[BallCompensationSample] = []
+        for repeat_index in range(ENGINEERED_TRAINING_REPEATS):
+            self._append_log(
+                f"训练点 {sample_index + 1}/{total_count}，稳定批次 "
+                f"{repeat_index + 1}/{ENGINEERED_TRAINING_REPEATS}。"
+            )
+            sample = self._collect_sample_for_target(
+                capture,
+                detector,
+                calibration,
+                geometry,
+                sample_index,
+                total_count,
+                target_table_mm,
+                target_proj,
+                expected_cam,
+            )
+            if sample is None:
+                return None
+            repeats.append(sample)
+        return aggregate_training_repeats(repeats, minimum_repeats=ENGINEERED_TRAINING_REPEATS)
 
     def _collect_sample_for_target(
         self,
@@ -1248,6 +1610,8 @@ def _render_target_image(
     target_ellipse,
     index: int,
     total: int,
+    *,
+    alert: bool = False,
 ) -> np.ndarray:
     width, height = int(projector_size[0]), int(projector_size[1])
     image = np.zeros((max(1, height), max(1, width), 3), dtype=np.uint8)
@@ -1258,6 +1622,7 @@ def _render_target_image(
     # contour refinement fail. The surrounding ring and ticks still provide a
     # precise physical centering guide.
     radius_x, radius_y = _target_guide_radii(target_ellipse)
+    guide_color = (40, 40, 255) if alert else (80, 255, 160)
     for start, end in ((-12.0, 12.0), (78.0, 102.0), (168.0, 192.0), (258.0, 282.0)):
         cv2.ellipse(
             image,
@@ -1266,7 +1631,7 @@ def _render_target_image(
             float(target_ellipse.rotation_deg),
             start,
             end,
-            (80, 255, 160),
+            guide_color,
             3,
             cv2.LINE_AA,
         )
@@ -1290,11 +1655,51 @@ def _render_target_image(
     )
     cv2.putText(
         image,
-        "Move the single ball into the ring",
+        "RESAMPLE FAILED REGION" if alert else "Move the single ball into the ring",
         (32, 90),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.8,
-        (180, 255, 220),
+        (80, 80, 255) if alert else (180, 255, 220),
+        2,
+        cv2.LINE_AA,
+    )
+    return image
+
+
+def _render_failed_regions_image(projector_size: tuple[int, int], target_ellipses) -> np.ndarray:
+    width, height = int(projector_size[0]), int(projector_size[1])
+    image = np.zeros((max(1, height), max(1, width), 3), dtype=np.uint8)
+    image[:] = (8, 10, 18)
+    for index, ellipse in enumerate(target_ellipses, start=1):
+        center = (int(round(float(ellipse.center_px[0]))), int(round(float(ellipse.center_px[1]))))
+        cv2.ellipse(
+            image,
+            center,
+            _target_guide_radii(ellipse),
+            float(ellipse.rotation_deg),
+            0.0,
+            360.0,
+            (30, 30, 255),
+            4,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            image,
+            str(index),
+            (center[0] + 12, center[1] - 12),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+    cv2.putText(
+        image,
+        "FAILED HOLDOUT REGIONS",
+        (32, 48),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (40, 40, 255),
         2,
         cv2.LINE_AA,
     )

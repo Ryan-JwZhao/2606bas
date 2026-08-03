@@ -276,6 +276,7 @@ from bas.ui.engineered_ball_compensation_wizard import (
     _ball_compensation_completion_summary,
     _pick_ball_candidate,
     _render_target_image,
+    _render_failed_regions_image,
     _stable_measurement,
     _target_guide_radii,
     ball_compensation_path_or_default,
@@ -559,6 +560,21 @@ def test_ball_sampling_target_keeps_ball_interior_dark() -> None:
     interior = image[228:253, 306:335]
 
     assert int(np.max(interior)) <= 20
+
+
+def test_failed_sampling_target_and_region_overview_are_rendered_red() -> None:
+    target = type(
+        "TargetEllipse",
+        (),
+        {"center_px": (320.0, 240.0), "radius_x_px": 28.0, "radius_y_px": 24.0, "rotation_deg": 0.0},
+    )()
+
+    alert = _render_target_image((640, 480), target, 1, 3, alert=True)
+    overview = _render_failed_regions_image((640, 480), [target])
+
+    assert int(alert[:, :, 2].max()) == 255
+    assert int(overview[:, :, 2].max()) == 255
+    assert int(overview[:, :, 2].sum()) > int(overview[:, :, 1].sum())
 
 
 def test_ball_sampling_target_guide_stays_close_to_physical_ball_edge() -> None:

@@ -55,6 +55,16 @@ class TableGeometry:
         return scale(self.inner_norm), [scale(seg) for seg in self.boundary_segments_norm]
 
 
+@dataclass(frozen=True)
+class _GeometrySource:
+    """One LabelMe document with its own coordinate domain and UI role hint."""
+
+    role_hint: str
+    data: Dict[str, Any]
+    width: float
+    height: float
+
+
 class TableGeometryLoader:
     @classmethod
     def load_optional(cls, outline_path: Optional[str], inline_path: Optional[str], pocket_path: Optional[str]) -> TableGeometry:
@@ -67,19 +77,24 @@ class TableGeometryLoader:
 
     @classmethod
     def load(cls, outline_path: Optional[str], inline_path: Optional[str], pocket_path: Optional[str]) -> TableGeometry:
-        out_data = cls._load_json(outline_path) if outline_path else {}
-        in_data = cls._load_json(inline_path) if inline_path else {}
-        pk_data = cls._load_json(pocket_path) if pocket_path else {}
+        sources = cls._load_sources(outline_path, inline_path, pocket_path)
 
-        src_w = float(out_data.get("imageWidth") or in_data.get("imageWidth") or pk_data.get("imageWidth") or 1920)
-        src_h = float(out_data.get("imageHeight") or in_data.get("imageHeight") or pk_data.get("imageHeight") or 1080)
-
-        outer = cls._first_shape_with_label(out_data, "outline", src_w, src_h)
+        # Geometry identity comes from the LabelMe labels, not from whichever
+        # file-picker row supplied the document.  The role hint only controls
+        # precedence, so accidentally swapping inline/pocket rows cannot blank
+        # the whole runtime geometry.
+        outer = cls._first_shape_from_sources(sources, "outline", preferred_role="outline")
         if outer.shape[0] < 3:
-            outer = cls._first_any_shape(out_data, src_w, src_h)
+            outline_source = cls._preferred_source(sources, "outline")
+            if outline_source is not None and not cls._contains_geometry_label(outline_source.data):
+                outer = cls._first_any_shape(
+                    outline_source.data,
+                    outline_source.width,
+                    outline_source.height,
+                )
 
-        inline_lines = cls._all_shapes_with_label(in_data, "inline", src_w, src_h)
-        pockets = cls._all_shapes_with_label(pk_data, "pocket", src_w, src_h)
+        inline_lines = cls._all_shapes_from_sources(sources, "inline", preferred_role="inline")
+        pockets = cls._all_shapes_from_sources(sources, "pocket", preferred_role="pocket")
         pocket_order = canonical_pocket_indices(pockets)
         pockets = [pockets[index] for index in pocket_order]
 
@@ -101,6 +116,90 @@ class TableGeometryLoader:
             pockets_norm=pockets,
             boundary_segments_norm=boundary_segments,
         )
+
+    @classmethod
+    def _load_sources(
+        cls,
+        outline_path: Optional[str],
+        inline_path: Optional[str],
+        pocket_path: Optional[str],
+    ) -> List[_GeometrySource]:
+        loaded: List[tuple[str, Dict[str, Any]]] = []
+        seen_paths: set[str] = set()
+        for role_hint, path in (
+            ("outline", outline_path),
+            ("inline", inline_path),
+            ("pocket", pocket_path),
+        ):
+            if not path:
+                continue
+            canonical_path = str(Path(path).resolve()).casefold()
+            if canonical_path in seen_paths:
+                continue
+            seen_paths.add(canonical_path)
+            loaded.append((role_hint, cls._load_json(path)))
+
+        fallback_width = float(
+            next((data.get("imageWidth") for _, data in loaded if data.get("imageWidth")), 1920)
+        )
+        fallback_height = float(
+            next((data.get("imageHeight") for _, data in loaded if data.get("imageHeight")), 1080)
+        )
+        return [
+            _GeometrySource(
+                role_hint=role_hint,
+                data=data,
+                width=float(data.get("imageWidth") or fallback_width),
+                height=float(data.get("imageHeight") or fallback_height),
+            )
+            for role_hint, data in loaded
+        ]
+
+    @staticmethod
+    def _preferred_source(sources: List[_GeometrySource], role: str) -> Optional[_GeometrySource]:
+        return next((source for source in sources if source.role_hint == role), None)
+
+    @staticmethod
+    def _sources_in_role_order(sources: List[_GeometrySource], preferred_role: str) -> List[_GeometrySource]:
+        return sorted(sources, key=lambda source: source.role_hint != preferred_role)
+
+    @classmethod
+    def _first_shape_from_sources(
+        cls,
+        sources: List[_GeometrySource],
+        label_key: str,
+        *,
+        preferred_role: str,
+    ) -> np.ndarray:
+        for source in cls._sources_in_role_order(sources, preferred_role):
+            points = cls._first_shape_with_label(source.data, label_key, source.width, source.height)
+            if points.shape[0] > 0:
+                return points
+        return np.zeros((0, 2), dtype=np.float32)
+
+    @classmethod
+    def _all_shapes_from_sources(
+        cls,
+        sources: List[_GeometrySource],
+        label_key: str,
+        *,
+        preferred_role: str,
+    ) -> List[np.ndarray]:
+        for source in cls._sources_in_role_order(sources, preferred_role):
+            shapes = cls._all_shapes_with_label(source.data, label_key, source.width, source.height)
+            if shapes:
+                return shapes
+        return []
+
+    @staticmethod
+    def _contains_geometry_label(data: Dict[str, Any]) -> bool:
+        for shape in data.get("shapes", []):
+            if not isinstance(shape, dict):
+                continue
+            label = str(shape.get("label", "")).lower()
+            if any(key in label for key in ("outline", "inline", "pocket")):
+                return True
+        return False
 
     @staticmethod
     def _load_json(path: Optional[str]) -> Dict[str, Any]:
