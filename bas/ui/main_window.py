@@ -3672,10 +3672,11 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
                 0.0,
             )
 
-        for point in (ghost, target, *object_nodes[1:-1]):
+        for point in (cue, ghost, target, *object_nodes[1:-1]):
             cam = self._table_mm_to_camera_px([point])
             if cam.shape[0] >= 1:
-                cv2.circle(image, _point_int(cam[0]), radius_px, route_color, style.circle_width, cv2.LINE_AA)
+                point_radius_px = max(6, int(round(self._camera_radius_px(point, radius_mm))))
+                cv2.circle(image, _point_int(cam[0]), point_radius_px, route_color, style.circle_width, cv2.LINE_AA)
         pocket_px = self._table_mm_to_camera_px([pocket])
         if pocket_px.shape[0] >= 1:
             cv2.circle(image, _point_int(pocket_px[0]), max(6, radius_px // 2), route_color, style.circle_width, cv2.LINE_AA)

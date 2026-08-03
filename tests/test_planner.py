@@ -1699,6 +1699,11 @@ def test_rule_overlay_includes_dashed_object_and_cue_separation_lines() -> None:
     assert all(line.width == style.dashed_line_width for line in overlay.lines if line.style == "dashed")
     assert overlay.circles
     assert all(circle.width == style.circle_width for circle in overlay.circles)
+    cue_center = service.table_circle_to_projector_ellipse(
+        candidate.cue_ball,
+        0.5 * service.table.ball_diameter_mm,
+    ).center_px
+    assert any(np.linalg.norm(np.asarray(circle.center) - np.asarray(cue_center)) < 1e-3 for circle in overlay.circles)
 
 
 def test_planner_can_force_black_target_for_current_turn() -> None:

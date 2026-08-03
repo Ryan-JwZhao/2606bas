@@ -111,6 +111,7 @@ class OverlayBuilder:
             circle_points.extend((float(point[0]), float(point[1])) for point in object_nodes[1:-1])
         circles = self.calibration.table_mm_to_projector_px(np.asarray(circle_points, dtype=np.float32))
         radius_px = self._projector_radius_px(candidate.ghost_ball, ball_radius)
+        overlay.circles.append(self._projector_ellipse_circle(candidate.cue_ball, ball_radius, ROUTE_COLOR, style.circle_width))
         overlay.circles.append(self._projector_ellipse_circle(candidate.ghost_ball, ball_radius, ROUTE_COLOR, style.circle_width))
         overlay.circles.append(self._projector_ellipse_circle(candidate.object_ball, ball_radius, ROUTE_COLOR, style.circle_width))
         overlay.circles.append(

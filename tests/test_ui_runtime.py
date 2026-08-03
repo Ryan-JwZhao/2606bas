@@ -756,10 +756,12 @@ def test_draw_rule_plan_preview_uses_computed_stroke_style() -> None:
         risk=0.2,
     )
 
-    main_window.OperatorWindow._draw_rule_plan_preview(window, np.zeros((32, 32, 3), dtype=np.uint8), candidate)
+    image = np.zeros((400, 400, 3), dtype=np.uint8)
+    main_window.OperatorWindow._draw_rule_plan_preview(window, image, candidate)
 
     assert len(called) >= 2
     assert called[1][0][4] == 4
+    assert np.count_nonzero(image[90:111, 90:111]) > 0
 
 
 def test_refresh_current_plan_uses_live_state_machine_turn_group() -> None:
