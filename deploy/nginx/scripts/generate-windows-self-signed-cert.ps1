@@ -117,9 +117,9 @@ if ((Test-Path -LiteralPath $certificatePath) -or (Test-Path -LiteralPath $priva
     Remove-Item -LiteralPath $certificatePath, $privateKeyPath -Force
 }
 
-$san = "2.5.29.17={text}IPAddress=10.1.5.175&IPAddress=fc00::10:872e:e311:780f:f456"
+$san = "2.5.29.17={text}IPAddress=172.16.10.166&IPAddress=fc00::10:872e:e311:780f:f456"
 $certificate = New-SelfSignedCertificate `
-    -Subject "CN=10.1.5.175" `
+    -Subject "CN=172.16.10.166" `
     -TextExtension @($san) `
     -CertStoreLocation "Cert:\CurrentUser\My" `
     -KeyAlgorithm RSA `

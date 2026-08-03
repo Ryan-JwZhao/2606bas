@@ -35,7 +35,7 @@ if ((Test-Path -LiteralPath $certificatePath) -or (Test-Path -LiteralPath $priva
 
 # Include both addresses in the certificate SAN. Nginx listens on IPv4 by default;
 # the same certificate can be reused if the IPv6 listener is enabled later.
-$subjectAltName = "subjectAltName=IP:10.1.5.175,IP:fc00::10:872e:e311:780f:f456"
+$subjectAltName = "subjectAltName=IP:172.16.10.166,IP:fc00::10:872e:e311:780f:f456"
 $arguments = @(
     "req",
     "-x509",
@@ -45,7 +45,7 @@ $arguments = @(
     "-days", "$Days",
     "-keyout", $privateKeyPath,
     "-out", $certificatePath,
-    "-subj", "/CN=10.1.5.175",
+    "-subj", "/CN=172.16.10.166",
     "-addext", $subjectAltName
 )
 

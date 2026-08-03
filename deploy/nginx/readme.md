@@ -6,7 +6,7 @@
 
 ```text
 手机浏览器
-    │ https://10.1.5.175/
+    │ https://172.16.10.166/
     ▼
 Nginx（服务端 IPv4 443）
     │ http://127.0.0.1:17070
@@ -14,7 +14,7 @@ Nginx（服务端 IPv4 443）
 BAS WebControlServer
 ```
 
-BAS 原有的 `http://10.1.5.175:17070` 不会被修改，普通用户仍然可以使用原来的 HTTP 入口。Nginx 当前只监听 `10.1.5.175:443`，IPv6 配置暂时保持注释状态。
+BAS 原有的 `http://172.16.10.166:17070` 不会被修改，普通用户仍然可以使用原来的 HTTP 入口。Nginx 当前只监听 `172.16.10.166:443`，IPv6 配置暂时保持注释状态。
 
 ## 部署步骤
 
@@ -27,7 +27,7 @@ BAS 原有的 `http://10.1.5.175:17070` 不会被修改，普通用户仍然可�
    deploy/nginx/certs/bas-lan.key
    ```
 
-   如果服务端已有证书，直接放入上述路径即可。证书的 SAN 必须包含 `IP:10.1.5.175`。
+   如果服务端已有证书，直接放入上述路径即可。证书的 SAN 必须包含 `IP:172.16.10.166`。
 
    如果服务端有 OpenSSL，可以生成临时自签名证书：
 
@@ -74,7 +74,7 @@ BAS 原有的 `http://10.1.5.175:17070` 不会被修改，普通用户仍然可�
 6. 手机访问：
 
    ```text
-   https://10.1.5.175/
+   https://172.16.10.166/
    ```
 
 ## 已安装到 `C:\nginx` 时
@@ -112,9 +112,9 @@ New-NetFirewallRule -DisplayName "BAS Nginx HTTPS 443" -Direction Inbound -Proto
 服务端验证：
 
 ```powershell
-Test-NetConnection 10.1.5.175 -Port 17070
-Test-NetConnection 10.1.5.175 -Port 443
-curl.exe -vk https://10.1.5.175/manifest.webmanifest
+Test-NetConnection 172.16.10.166 -Port 17070
+Test-NetConnection 172.16.10.166 -Port 443
+curl.exe -vk https://172.16.10.166/manifest.webmanifest
 ```
 
 预期结果是 HTTPS 请求返回 `200`，并能读取 PWA manifest；自签名证书测试时 `curl` 需要 `-k`，浏览器仍可能显示证书警告。

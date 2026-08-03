@@ -10,7 +10,7 @@ NGINX_DIR = ROOT / "deploy" / "nginx"
 def test_nginx_proxy_targets_bas_http_and_ipv4_listener() -> None:
     config = (NGINX_DIR / "nginx.conf").read_text(encoding="utf-8")
 
-    assert "listen 10.1.5.175:443 ssl;" in config
+    assert "listen 172.16.10.166:443 ssl;" in config
     assert "server 127.0.0.1:17070;" in config
     assert "ssl_certificate certs/bas-lan.crt;" in config
     assert "ssl_certificate_key certs/bas-lan.key;" in config
