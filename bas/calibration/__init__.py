@@ -8,6 +8,7 @@ from .ball_compensation_checkpoint import (
     delete_ball_compensation_checkpoint,
     load_ball_compensation_checkpoint,
     make_ball_compensation_checkpoint,
+    restart_ball_compensation_checkpoint_from_holdout,
     save_ball_compensation_checkpoint,
 )
 from .audit import CalibrationAudit, load_calibration_audit_summaries, start_calibration_audit
@@ -60,6 +61,7 @@ __all__ = [
     "delete_ball_compensation_checkpoint",
     "load_ball_compensation_checkpoint",
     "make_ball_compensation_checkpoint",
+    "restart_ball_compensation_checkpoint_from_holdout",
     "save_ball_compensation_checkpoint",
     "CalibrationAudit",
     "load_calibration_audit_summaries",

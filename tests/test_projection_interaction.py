@@ -114,6 +114,25 @@ def test_projection_interaction_blends_rgba_sequence_without_geometry_warp(tmp_p
     assert int(image[0, 1, 2]) == 0
 
 
+def test_projection_calibration_cannot_change_star_formula_pixels(tmp_path: Path) -> None:
+    controller = ProjectionInteractionController(asset_root=tmp_path, time_source=lambda: 0.0)
+    overlay = ProjectionOverlay(overlay_id="star-only", frame_id=1, projector_size=(320, 200))
+    star_formula = StarFormulaConfig(enabled=True)
+
+    without_calibration = controller.compose_frame(
+        overlay,
+        star_formula=star_formula,
+        calibration=None,
+    )
+    with_unrelated_calibration_object = controller.compose_frame(
+        overlay,
+        star_formula=star_formula,
+        calibration=object(),
+    )
+
+    assert np.array_equal(without_calibration, with_unrelated_calibration_object)
+
+
 def test_projection_interaction_deduplicates_pocket_events_and_notices_target_activation(tmp_path: Path) -> None:
     pocket_dir = tmp_path / "Goal" / "pocket0"
     victory_dir = tmp_path / "Win"

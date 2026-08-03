@@ -72,6 +72,26 @@ def make_ball_compensation_checkpoint(
     )
 
 
+def restart_ball_compensation_checkpoint_from_holdout(
+    checkpoint: BallCompensationCheckpoint,
+) -> BallCompensationCheckpoint:
+    """Keep a completed first-pass training set and discard Holdout observations."""
+
+    training_total = len(checkpoint.sampling_grid_table_mm)
+    if checkpoint.training_cursor != training_total:
+        raise ValueError(
+            "ball compensation checkpoint training is not complete: "
+            f"{checkpoint.training_cursor}/{training_total}"
+        )
+    return make_ball_compensation_checkpoint(
+        context=checkpoint.context,
+        sampling_grid_table_mm=checkpoint.sampling_grid_table_mm,
+        training_cursor=checkpoint.training_cursor,
+        training_samples=checkpoint.training_samples,
+        holdout_observations=(),
+    )
+
+
 def save_ball_compensation_checkpoint(path: str | Path, checkpoint: BallCompensationCheckpoint) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)

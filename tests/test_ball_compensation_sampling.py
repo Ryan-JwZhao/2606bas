@@ -82,6 +82,21 @@ def test_ball_holdout_rejects_bad_median_even_when_p95_and_directional_bias_pass
     assert errors == ["holdout median 1.50 mm is not below 1.00 mm"]
 
 
+def test_reported_holdout_failure_uses_fixed_formal_thresholds() -> None:
+    errors = ball_holdout_quality_errors(
+        sample_count=10,
+        median_mm=2.97,
+        p95_mm=6.71,
+        mean_bias_mm=1.87,
+    )
+
+    assert errors == [
+        "holdout median 2.97 mm is not below 1.00 mm",
+        "holdout P95 6.71 mm is not below 2.00 mm",
+        "holdout mean bias 1.87 mm is not below 1.00 mm",
+    ]
+
+
 def test_wizard_fit_seam_builds_and_activates_holdout_validated_model() -> None:
     projection = ProjectionCalibration.fit_from_correspondences(
         np.asarray([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]]),

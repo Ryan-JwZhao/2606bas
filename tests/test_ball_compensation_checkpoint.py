@@ -11,6 +11,7 @@ from bas.calibration.ball_compensation_checkpoint import (
     checkpoint_from_audit_events,
     load_ball_compensation_checkpoint,
     make_ball_compensation_checkpoint,
+    restart_ball_compensation_checkpoint_from_holdout,
     save_ball_compensation_checkpoint,
 )
 from bas.calibration.ball_compensation_sampling import BallCompensationSample
@@ -139,3 +140,39 @@ def test_checkpoint_can_be_recovered_from_complete_training_audit(tmp_path: Path
     assert len(checkpoint.training_samples) == 2
     assert np.allclose(checkpoint.training_samples[1].observed_table_mm, (29.0, 38.0))
     assert checkpoint.context["frame_width"] == 1920
+
+
+def test_completed_checkpoint_can_restart_holdout_without_losing_historical_training() -> None:
+    grid = [(float(index), float(index * 2)) for index in range(56)]
+    training = [_sample(index, point) for index, point in enumerate(grid)]
+    holdout = [
+        HoldoutCheckpointObservation(index % 10, index // 10, _sample(56 + index, grid[index % 10]))
+        for index in range(30)
+    ]
+    checkpoint = make_ball_compensation_checkpoint(
+        context=_context(),
+        sampling_grid_table_mm=grid,
+        training_cursor=56,
+        training_samples=training,
+        holdout_observations=holdout,
+    )
+
+    restarted = restart_ball_compensation_checkpoint_from_holdout(checkpoint)
+
+    assert restarted.training_cursor == 56
+    assert restarted.training_samples == checkpoint.training_samples
+    assert restarted.sampling_grid_table_mm == checkpoint.sampling_grid_table_mm
+    assert restarted.context == checkpoint.context
+    assert restarted.holdout_observations == ()
+
+
+def test_incomplete_training_checkpoint_cannot_restart_from_holdout() -> None:
+    checkpoint = make_ball_compensation_checkpoint(
+        context=_context(),
+        sampling_grid_table_mm=[(10.0, 20.0), (30.0, 40.0)],
+        training_cursor=1,
+        training_samples=[_sample(0, (10.0, 20.0))],
+    )
+
+    with np.testing.assert_raises_regex(ValueError, "training is not complete"):
+        restart_ball_compensation_checkpoint_from_holdout(checkpoint)

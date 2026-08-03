@@ -28,6 +28,7 @@ from ..calibration import (
     fit_and_validate_ball_compensation,
     load_ball_compensation_checkpoint,
     make_ball_compensation_checkpoint,
+    restart_ball_compensation_checkpoint_from_holdout,
     save_ball_compensation_checkpoint,
     select_ball_compensation_holdout_targets,
     start_calibration_audit,
@@ -324,6 +325,31 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             cancel_btn = box.addButton("取消", QtWidgets.QMessageBox.RejectRole)
             box.exec_()
             return "discard" if box.clickedButton() is discard_btn else "cancel"
+        holdout_total = ENGINEERED_HOLDOUT_LOCATION_COUNT * ENGINEERED_HOLDOUT_REPEATS
+        training_complete = checkpoint.training_cursor == len(checkpoint.sampling_grid_table_mm)
+        holdout_complete = checkpoint.holdout_completed_count >= holdout_total
+        if training_complete and holdout_complete:
+            box.setText(
+                progress_text
+                + "\n\n上一轮 56 点训练已完成，但 30 次 Holdout 已采完后仍未通过验收。"
+                "请选择本轮重新采集范围："
+            )
+            restart_holdout_btn = box.addButton(
+                "保留 56 点，重新采集 30 点",
+                QtWidgets.QMessageBox.AcceptRole,
+            )
+            restart_all_btn = box.addButton(
+                "清空全部，重新采集 56+30",
+                QtWidgets.QMessageBox.DestructiveRole,
+            )
+            cancel_btn = box.addButton("取消", QtWidgets.QMessageBox.RejectRole)
+            del cancel_btn
+            box.exec_()
+            if box.clickedButton() is restart_holdout_btn:
+                return "restart_holdout"
+            if box.clickedButton() is restart_all_btn:
+                return "discard"
+            return "cancel"
         box.setText(progress_text + "\n\n是否从该进度继续？")
         resume_btn = box.addButton("继续暂存进度", QtWidgets.QMessageBox.AcceptRole)
         discard_btn = box.addButton("不继承，重新开始", QtWidgets.QMessageBox.DestructiveRole)
@@ -584,6 +610,18 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     delete_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH)
                     audit.event("checkpoint_discarded", details={"path": str(BALL_COMPENSATION_CHECKPOINT_PATH)})
                 else:
+                    if checkpoint_action == "restart_holdout":
+                        saved_checkpoint = restart_ball_compensation_checkpoint_from_holdout(saved_checkpoint)
+                        save_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH, saved_checkpoint)
+                        audit.event(
+                            "checkpoint_holdout_restarted",
+                            metrics={
+                                "training_cursor": saved_checkpoint.training_cursor,
+                                "training_sample_count": len(saved_checkpoint.training_samples),
+                            },
+                            details={"path": str(BALL_COMPENSATION_CHECKPOINT_PATH)},
+                        )
+                        self._append_log("已保留第一遍 56 点训练记录，并清空旧 Holdout；本轮将重新采集 30 点。")
                     self._samples = list(saved_checkpoint.training_samples)
                     training_cursor = int(saved_checkpoint.training_cursor)
                     checkpoint_holdout_observations = list(saved_checkpoint.holdout_observations)
