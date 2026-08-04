@@ -36,6 +36,7 @@ class FramePacket:
     image_uri: Optional[str] = None
     exposure_meta: Dict[str, Any] = field(default_factory=dict)
     calib_version: str = "unversioned"
+    geometry_version: str = "unversioned"
 
 
 @dataclass

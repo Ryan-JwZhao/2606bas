@@ -132,4 +132,11 @@ def _configured_geometry_validation_error(
         return "configured pocket file contains no usable curves"
     if inline_path and pocket_path and geometry.inner_norm.shape[0] < 3:
         return "inline and pocket curves did not form a usable boundary"
+    if inline_path and pocket_path and not geometry.boundary_complete:
+        return (
+            "inline and pocket curves formed an incomplete boundary "
+            f"({len(geometry.boundary_segments_norm)}/{geometry.boundary_source_count} segments used)"
+        )
+    if pocket_path and len(geometry.pockets_norm) != 6:
+        return f"configured pocket file must contain exactly six usable curves (found {len(geometry.pockets_norm)})"
     return None

@@ -39,6 +39,7 @@ class ReplayRecorder:
             "image_uri": frame.image_uri,
             "exposure_meta": frame.exposure_meta,
             "calib_version": frame.calib_version,
+            "geometry_version": frame.geometry_version,
         }
         self._write("frame", payload)
         if self.config.write_debug_frames and frame.image is not None:
@@ -86,4 +87,3 @@ class ReplayRecorder:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
-

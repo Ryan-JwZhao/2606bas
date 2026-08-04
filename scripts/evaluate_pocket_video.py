@@ -13,13 +13,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from bas.calibration import create_calibration_service
+from bas.calibration import create_setting_aware_calibration_service
+from bas.capture import capture_frames_are_distortion_corrected
 from bas.config import AppConfig
-from bas.geometry import TableGeometry, TableGeometryLoader
+from bas.geometry import TableGeometry, table_geometry_fingerprint
+from bas.geometry_runtime import RuntimeGeometryReloader
 from bas.perception import PocketObserver, build_detection_region_policy
 from bas.schemas import FramePacket, MatchPhase, TrackObservation, TracksFrame
 from bas.state.pocket import PerBallPocketFSM
 from bas.table_boundaries import EdgeInsets, derive_table_boundaries
+from bas.user_settings import UserSettings
 from bas.web_control.pocket_notice import BALL_CODE_BY_GROUP
 
 
@@ -34,10 +37,57 @@ def parse_args() -> argparse.Namespace:
         help="小型人工复核标签清单",
     )
     parser.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
+    parser.add_argument(
+        "--ignore-user-settings",
+        action="store_true",
+        help="Only use --config and do not apply local_settings/user_settings.json.",
+    )
+    parser.add_argument(
+        "--allow-context-mismatch",
+        action="store_true",
+        help="Allow legacy or mismatched calibration/geometry replay metadata for deliberate historical diagnosis.",
+    )
     parser.add_argument("--trace-shot", type=int, action="append", default=[], help="输出指定杆号的袋口证据")
     parser.add_argument("--stop-frame", type=int, default=None, help="诊断时在指定帧结束回放")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出结果")
     return parser.parse_args()
+
+
+def _load_effective_config(
+    config_path: Path,
+    *,
+    user_settings: UserSettings | None = None,
+    apply_user_settings: bool = True,
+) -> AppConfig:
+    config = AppConfig.load(config_path)
+    if not apply_user_settings:
+        return config.resolve_paths()
+    settings = user_settings if user_settings is not None else UserSettings.load()
+    return settings.apply_to_config(config).resolve_paths()
+
+
+def _create_evaluation_calibration(config: AppConfig, width: int, height: int) -> Any:
+    return create_setting_aware_calibration_service(
+        config.calibration,
+        config.camera,
+        frame_undistorted=capture_frames_are_distortion_corrected(config.camera),
+        detector_config=config.detector,
+        projection_config=config.projection,
+        actual_frame_size=(int(width), int(height)),
+    )
+
+
+def _load_evaluation_geometry(config: AppConfig) -> TableGeometry:
+    reloader = RuntimeGeometryReloader()
+    geometry, _ = reloader.refresh(
+        config.geometry.outline_path,
+        config.geometry.inline_path,
+        config.geometry.pocket_path,
+    )
+    if not reloader.is_ready or geometry.is_empty:
+        detail = reloader.last_error or "configured geometry is empty"
+        raise RuntimeError(f"Evaluation geometry is not runtime-ready: {detail}")
+    return geometry
 
 
 def main() -> int:
@@ -45,7 +95,10 @@ def main() -> int:
     replay_path = args.replay / "events.jsonl" if args.replay.is_dir() else args.replay
     labels = json.loads(args.labels.read_text(encoding="utf-8"))
     contact_by_shot = {int(item["shot"]): int(item["contact_frame"]) for item in labels.get("goals") or []}
-    config = AppConfig.load(args.config).resolve_paths()
+    config = _load_effective_config(
+        args.config,
+        apply_user_settings=not args.ignore_user_settings,
+    )
     config.state.engine = "modern"
     config.state.pocket_entry_candidate_depth_mm = 125.0
     config.state.pocket_entry_handoff_ms = 450
@@ -53,18 +106,21 @@ def main() -> int:
     config.state.pocket_entry_history_ms = 1500
     config.state.pocket_visual_confirmation_ms = 1300
 
-    phases, shot_starts = _read_replay_index(replay_path)
-    calibration = create_calibration_service(config.calibration, frame_undistorted=True)
-    geometry = TableGeometryLoader.load_optional(
-        config.geometry.outline_path,
-        config.geometry.inline_path,
-        config.geometry.pocket_path,
-    )
+    phases, shot_starts, replay_calibrations, replay_geometries = _read_replay_index(replay_path)
+    geometry = _load_evaluation_geometry(config)
     capture = cv2.VideoCapture(str(args.video))
     if not capture.isOpened():
         raise RuntimeError(f"无法打开视频: {args.video}")
     width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    calibration = _create_evaluation_calibration(config, width, height)
+    _validate_replay_context(
+        replay_calibrations=replay_calibrations,
+        replay_geometries=replay_geometries,
+        calibration_version=str(calibration.calib_version),
+        geometry_version=table_geometry_fingerprint(geometry),
+        allow_mismatch=bool(args.allow_context_mismatch),
+    )
     policy, table_context = _build_context(config, calibration, geometry, width, height)
     observer = PocketObserver(history_ms=config.state.pocket_entry_history_ms)
     fsm = PerBallPocketFSM(config.state)
@@ -191,11 +247,24 @@ def main() -> int:
     return 0 if result["passed"] else 1
 
 
-def _read_replay_index(path: Path) -> tuple[dict[int, str], list[tuple[int, int]]]:
+def _read_replay_index(
+    path: Path,
+) -> tuple[dict[int, str], list[tuple[int, int]], set[str], set[str]]:
     phases: dict[int, str] = {}
     shot_starts: list[tuple[int, int]] = []
+    calibration_versions: set[str] = set()
+    geometry_versions: set[str] = set()
     shot_number = 0
     for row in _iter_jsonl(path):
+        if row.get("type") == "frame":
+            payload = dict(row.get("payload") or {})
+            calibration_version = str(payload.get("calib_version") or "").strip()
+            geometry_version = str(payload.get("geometry_version") or "").strip()
+            if calibration_version:
+                calibration_versions.add(calibration_version)
+            if geometry_version and geometry_version != "unversioned":
+                geometry_versions.add(geometry_version)
+            continue
         if row.get("type") != "state":
             continue
         payload = dict(row.get("payload") or {})
@@ -205,7 +274,32 @@ def _read_replay_index(path: Path) -> tuple[dict[int, str], list[tuple[int, int]
             if str(event.get("name")) == "SHOT_STARTED":
                 shot_number += 1
                 shot_starts.append((shot_number, frame_id))
-    return phases, shot_starts
+    return phases, shot_starts, calibration_versions, geometry_versions
+
+
+def _validate_replay_context(
+    *,
+    replay_calibrations: set[str],
+    replay_geometries: set[str],
+    calibration_version: str,
+    geometry_version: str,
+    allow_mismatch: bool,
+) -> None:
+    problems: list[str] = []
+    if replay_calibrations != {calibration_version}:
+        problems.append(
+            f"calibration replay={sorted(replay_calibrations) or ['missing']} current={calibration_version}"
+        )
+    if replay_geometries != {geometry_version}:
+        problems.append(
+            f"geometry replay={sorted(replay_geometries) or ['missing']} current={geometry_version}"
+        )
+    if problems and not allow_mismatch:
+        raise RuntimeError(
+            "Replay context does not match the active configuration: "
+            + "; ".join(problems)
+            + ". Re-record with the active geometry, or pass --allow-context-mismatch only for deliberate historical diagnosis."
+        )
 
 
 def _iter_tracks(path: Path) -> Iterator[TracksFrame]:

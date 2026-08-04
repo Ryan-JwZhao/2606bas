@@ -185,16 +185,16 @@ FOURCC、分辨率和帧率，并在打开后读回 FOURCC；如果驱动返回 
 
 从仍保存 `projection_calibration_rotation_degrees` / `projection_output_rotation_degrees` 的旧版本升级时，程序会启用隐藏兼容层，保持旧校准画面和运行输出方向，避免升级后现场投影突然翻转。该兼容层不是新设置项；将“工业相机安装方向”迁移到非 `0°` 后会自动关闭，防止相机旋转与旧投影旋转重复叠加。
 
-`0730_DrawLine` 的 Labelme 标注需要与新相机坐标域同步时，可运行：
+旧 Labelme 标注需要与当前相机坐标域同步时，可运行：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\rotate_labelme_180.py `
-  C:\CodeProject\data\0730_DrawLine\0730_inline.json `
-  C:\CodeProject\data\0730_DrawLine\0730_outline.json `
-  C:\CodeProject\data\0730_DrawLine\0730_pocket.json
+  C:\CodeProject\data\<旧标注目录>\inline.json `
+  C:\CodeProject\data\<旧标注目录>\outline.json `
+  C:\CodeProject\data\<旧标注目录>\pocket.json
 ```
 
-脚本按 `x' = imageWidth - 1 - x`、`y' = imageHeight - 1 - y` 旋转全部标注点，并为每个原文件保留 `.pre180.bak` 备份。检测到备份已存在时会拒绝再次执行，防止误操作把标注旋转回原方向。
+脚本按 `x' = imageWidth - 1 - x`、`y' = imageHeight - 1 - y` 旋转全部标注点，并为每个原文件保留 `.pre180.bak` 备份。检测到备份已存在时会拒绝再次执行，防止误操作把标注旋转回原方向。当前 `0803_DrawLine` 已处于运行时坐标域，不要重复旋转。
 
 ### 工业相机畸变校正总开关
 
@@ -224,6 +224,13 @@ FOURCC、分辨率和帧率，并在打开后读回 FOURCC；如果驱动返回 
 
 工程球心补偿向导固定生成 `6 × 5 = 30` 个目标圆圈。圆圈位置根据当前
 `inline + pocket` 拼接区域实时生成，而不是使用固定像素坐标：
+
+如果某条 `inline` 连续穿过中袋、而袋唇另存在于 `pocket` JSON，加载器会在袋唇
+两端自动切开该 `inline`，再把真实袋唇嵌入闭合边界。运行时要求恰好六条有效
+`pocket` 曲线，且所有切分后的 `inline` 和全部 `pocket` segment 都参与闭合；任何孤立或未使用 segment 都会
+失败关闭并保留上一份有效几何，避免球心可达区、进洞判定和规划边界彼此不一致。
+当前 0803 的下方 inline 正是一条倾斜且穿过下方中袋的连续线；运行时会将其切成
+袋口左右两段，并把规范袋号 `pocket4` 的全部曲线点嵌在两段之间。
 
 - 先从当前画面重建 physical rail 和 ball-center reachable 区域。
 - 六个袋口各保留一个最近的安全边界锚点，避免袋口附近缺少样本。
@@ -392,21 +399,15 @@ state:
 
 旧 `pocket_confirm_missing_ms` 仍可作为 commit-ready 门槛别名；只在新字段未配置时生效。修改代码或配置后必须正常重启 BAS，再验证新逻辑。
 
-长视频标签位于 `tests/fixtures/long_video_goal_labels.json`。本地放好被 `.gitignore` 排除的视频和回放后执行：
+进球视频评估必须使用同一套几何、标定、相机方向录制的回放和原视频。评估脚本会和桌面程序一样，先读取 `configs/default.yaml`，再应用 `local_settings/user_settings.json`，因此默认使用当前现场的 inline、outline、pocket、相机方向和标定路径：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\evaluate_pocket_video.py --replay replays\session_20260720_135725_516792 --video local_settings\captures\no_line_video_20260627_185946_1_1.mp4
+.\.venv\Scripts\python.exe scripts\evaluate_pocket_video.py --replay <0803几何下录制的回放目录> --video <该回放对应的原视频> --labels <该录像对应的标签.json>
 ```
 
-逐帧复核确认第 4 杆右上袋 `stb` 和第 27 杆中上袋 `stb` 都属于真实进球，因此完整验收基准为最初统计的 13 球。当前结果为 `PASS: matched=13/13 detected=13`、0 误报、0 重复，观察器 p95 为 `3.87 ms`，估算整体帧率下降 `4.84%`。第 2 杆为 `sob`、第 4 杆为 `stb`、第 27 杆为 `stb`、第 34 杆为 `bb`，第 3/18/24/30 杆无播报，所有决定延迟不超过 `1.5 s`。回放验收按 `contact_frame` 对齐真实击球，不依赖可能被空杆误触发影响的内部杆号，并会把同一杆多报的错误袋号单独计为误报。
+新回放的每一帧都会记录标定版本和台面几何指纹。inline、outline 或 pocket 任一内容改变后，评估器会拒绝使用旧回放，避免把旧边线下的轨迹和录像误当成 0803 验收结果。如需只使用 `--config` 指定的独立配置，同时传入 `--ignore-user-settings`；仅在有意诊断历史数据时，才可用 `--allow-context-mismatch` 绕过版本保护。
 
-只复现本次第 3/4 杆问题可执行：
-
-```powershell
-.\.venv\Scripts\python.exe scripts\evaluate_pocket_video.py --replay replays\session_20260720_172814_256157 --video local_settings\captures\no_line_video_20260627_185946_1_1.mp4 --labels tests\fixtures\shot3_shot4_regression_labels.json --stop-frame 878
-```
-
-当前该片段结果为 2/2 命中、0 误报、0 重复；第 4 杆在 774 帧播报 `stb`、袋号 `2`、决定延迟 `1328 ms`，第 3 杆不播报。观察器 p95 约 `4.04 ms`，估算整体帧率下降约 `4.53%`。
+`tests/fixtures/long_video_goal_labels.json`、`tests/fixtures/shot3_shot4_regression_labels.json` 和 2026-06-27 的录像属于旧几何历史数据，不能用于验证当前 0803 边界。切换几何后需要重新录制视频、回放并逐帧生成对应标签。
 
 桌面预览和 Web 前端会明显显示 `wb进球`、`bb进球`、`sob进球` 或 `stb进球`。提示只消费服务端状态事件；投影交互层明确忽略 `POCKET_DETECTED`/`POT_PROBABLE`，不会显示进球文字。
 

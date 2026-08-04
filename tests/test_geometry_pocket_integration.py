@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import cv2
@@ -48,20 +49,26 @@ def _write_geometry_set(root, *, pocket_x: int) -> tuple[str, str, str]:
     _write_labelme(
         inline,
         [
-            {"label": "inline", "points": [[10, 10], [10, 90]]},
-            {"label": "inline", "points": [[10, 90], [90, 90]]},
-            {"label": "inline", "points": [[90, 90], [90, 10]]},
-            {"label": "inline", "points": [[90, 10], [gap_right, 10]]},
-            {"label": "inline", "points": [[gap_left, 10], [10, 10]]},
+            {"label": "inline", "points": [[15, 10], [gap_left, 10]]},
+            {"label": "inline", "points": [[gap_right, 10], [85, 10]]},
+            {"label": "inline", "points": [[90, 15], [90, 85]]},
+            {"label": "inline", "points": [[85, 90], [55, 90]]},
+            {"label": "inline", "points": [[45, 90], [15, 90]]},
+            {"label": "inline", "points": [[10, 85], [10, 15]]},
         ],
     )
     _write_labelme(
         pocket,
         [
+            {"label": "pocket0", "points": [[10, 15], [8, 8], [15, 10]]},
             {
-                "label": "pocket",
+                "label": "pocket1",
                 "points": [[gap_left, 10], [pocket_x, 2], [gap_right, 10]],
-            }
+            },
+            {"label": "pocket2", "points": [[85, 10], [92, 8], [90, 15]]},
+            {"label": "pocket3", "points": [[90, 85], [92, 92], [85, 90]]},
+            {"label": "pocket4", "points": [[55, 90], [50, 98], [45, 90]]},
+            {"label": "pocket5", "points": [[15, 90], [8, 92], [10, 85]]},
         ],
     )
     return str(outline), str(inline), str(pocket)
@@ -169,6 +176,78 @@ def test_geometry_loader_canonicalizes_shuffled_six_pocket_shape_order(tmp_path)
     )
 
 
+def test_geometry_loader_splices_pocket_curve_into_continuous_inline_rail(tmp_path) -> None:
+    outline_path = tmp_path / "outline.json"
+    inline_path = tmp_path / "inline.json"
+    pocket_path = tmp_path / "pocket.json"
+    _write_labelme(
+        outline_path,
+        [{"label": "outline", "points": [[5, 5], [95, 5], [95, 95], [5, 95]]}],
+    )
+    _write_labelme(
+        inline_path,
+        [
+            {"label": "inline", "points": [[10, 10], [10, 88]]},
+            {"label": "inline", "points": [[10, 88], [90, 92]]},
+            {"label": "inline", "points": [[90, 92], [90, 10]]},
+            {"label": "inline", "points": [[90, 10], [10, 10]]},
+        ],
+    )
+    _write_labelme(
+        pocket_path,
+        [{"label": "pocket", "points": [[40, 89.5], [50, 98], [60, 90.5]]}],
+    )
+
+    geometry = TableGeometryLoader.load(str(outline_path), str(inline_path), str(pocket_path))
+
+    assert len(geometry.inline_norm) == 5
+    assert geometry.boundary_complete is True
+    assert geometry.boundary_source_count == 6
+    assert len(geometry.boundary_segments_norm) == geometry.boundary_source_count
+    for pocket_point in geometry.pockets_norm[0]:
+        assert any(np.allclose(point, pocket_point) for point in geometry.inner_norm)
+    assert any(np.allclose(line[-1], (0.4, 0.895)) for line in geometry.inline_norm)
+    assert any(np.allclose(line[0], (0.6, 0.905)) for line in geometry.inline_norm)
+
+    reloader = RuntimeGeometryReloader()
+    retained, changed = reloader.refresh(str(outline_path), str(inline_path), str(pocket_path))
+    assert changed is False
+    assert retained.is_empty is True
+    assert reloader.last_error is not None
+    assert "exactly six" in reloader.last_error
+
+
+def test_runtime_geometry_reloader_rejects_disconnected_boundary_segments(tmp_path) -> None:
+    outline_path = tmp_path / "outline.json"
+    inline_path = tmp_path / "inline.json"
+    pocket_path = tmp_path / "pocket.json"
+    _write_labelme(
+        outline_path,
+        [{"label": "outline", "points": [[5, 5], [95, 5], [95, 95], [5, 95]]}],
+    )
+    _write_labelme(
+        inline_path,
+        [
+            {"label": "inline", "points": [[10, 10], [10, 90]]},
+            {"label": "inline", "points": [[10, 90], [90, 90]]},
+            {"label": "inline", "points": [[90, 90], [90, 10]]},
+            {"label": "inline", "points": [[90, 10], [10, 10]]},
+        ],
+    )
+    _write_labelme(
+        pocket_path,
+        [{"label": "pocket", "points": [[45, 45], [50, 40], [55, 45]]}],
+    )
+    reloader = RuntimeGeometryReloader()
+
+    geometry, changed = reloader.refresh(str(outline_path), str(inline_path), str(pocket_path))
+
+    assert changed is False
+    assert geometry.is_empty is True
+    assert reloader.is_ready is False
+    assert reloader.last_error is not None
+    assert "incomplete boundary" in reloader.last_error
+
 def test_geometry_reload_recovers_inline_and_pocket_files_selected_in_swapped_rows(tmp_path) -> None:
     outline_path, inline_path, pocket_path = _write_geometry_set(tmp_path / "geometry", pocket_x=50)
     reloader = RuntimeGeometryReloader()
@@ -179,10 +258,10 @@ def test_geometry_reload_recovers_inline_and_pocket_files_selected_in_swapped_ro
     assert changed is True
     assert reloader.is_ready is True
     assert reloader.last_error is None
-    assert len(geometry.inline_norm) == 5
-    assert len(geometry.pockets_norm) == 1
+    assert len(geometry.inline_norm) == 6
+    assert len(geometry.pockets_norm) == 6
     assert geometry.inner_norm.shape[0] >= 3
-    assert draw_geometry_reference_lines(preview, geometry) == 8
+    assert draw_geometry_reference_lines(preview, geometry) == 14
     assert np.count_nonzero(preview) > 0
 
 
@@ -223,22 +302,26 @@ def test_switching_inline_and_pocket_keeps_new_pocket_observer_and_state_effecti
 
     assert reset_calls == [True]
     assert old_pockets != new_pockets
-    assert abs(new_pockets[0][0] - 50.0) < 0.1
+    assert abs(new_pockets[1][0] - 50.0) < 0.1
     assert old_center_polygon.shape[0] >= 3
     assert new_center_polygon.shape[0] >= 3
     assert not np.array_equal(old_center_polygon, new_center_polygon)
     assert policy is not None
     assert policy.detection_enabled is True
-    assert len(policy.ball_guard_regions) == 1
-    guard = policy.ball_guard_regions[0]
+    assert len(policy.ball_guard_regions) == 6
+    guard = policy.ball_guard_regions[1]
     assert abs(guard.center_px[0] - 50.0) < 0.1
+    selected_policy = replace(
+        policy,
+        ball_guard_regions=(replace(guard, pocket_index=0),),
+    )
 
     observer = PocketObserver(history_ms=1500)
     state = ModernMatchStateMachine(
         StateConfig(engine="modern", pocket_visual_confirmation_ms=1300)
     )
     inner_px = np.asarray(policy.ball_polygon, dtype=np.float32)
-    pocket_curve_px = pipeline.geometry.scaled(100, 100)[2][0]
+    pocket_curve_px = pipeline.geometry.scaled(100, 100)[2][1]
     state.set_table_context(
         inner_polygon_mm=[tuple(map(float, point)) for point in inner_px],
         pockets_mm=[guard.center_px],
@@ -253,27 +336,27 @@ def test_switching_inline_and_pocket_keeps_new_pocket_observer_and_state_effecti
     approach_track = _track(7, 50.0, 32.0)
     first_frame = FramePacket(1, 1_000_000_000, "cam", image=_ball_image(50, 32))
     first_tracks = TracksFrame(1, 1_000_000_000, [approach_track])
-    first_visual = observer.update(first_frame, first_tracks, policy)
+    first_visual = observer.update(first_frame, first_tracks, selected_policy)
     state.update(first_tracks, first_visual)
 
     crossing_track = _track(7, 50.0, 8.0)
     crossing_frame = FramePacket(2, 1_100_000_000, "cam", image=_ball_image(50, 8))
     crossing_tracks = TracksFrame(2, 1_100_000_000, [crossing_track])
-    crossing_visual = observer.update(crossing_frame, crossing_tracks, policy)
+    crossing_visual = observer.update(crossing_frame, crossing_tracks, selected_policy)
     candidate = state.update(crossing_tracks, crossing_visual)
 
     empty_tracks = TracksFrame(3, 1_200_000_000, [])
     empty_visual = observer.update(
         FramePacket(3, 1_200_000_000, "cam", image=_ball_image(None, None)),
         empty_tracks,
-        policy,
+        selected_policy,
     )
     state.update(empty_tracks, empty_visual)
     confirm_tracks = TracksFrame(4, 2_500_000_000, [])
     confirm_visual = observer.update(
         FramePacket(4, 2_500_000_000, "cam", image=_ball_image(None, None)),
         confirm_tracks,
-        policy,
+        selected_policy,
     )
     detected = state.update(confirm_tracks, confirm_visual)
 

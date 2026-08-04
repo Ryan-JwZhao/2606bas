@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,6 +17,8 @@ class TableGeometry:
     inline_norm: List[np.ndarray] = field(default_factory=list)
     pockets_norm: List[np.ndarray] = field(default_factory=list)
     boundary_segments_norm: List[np.ndarray] = field(default_factory=list)
+    boundary_source_count: int = 0
+    boundary_complete: bool = True
 
     @property
     def is_empty(self) -> bool:
@@ -53,6 +56,25 @@ class TableGeometry:
             return out
 
         return scale(self.inner_norm), [scale(seg) for seg in self.boundary_segments_norm]
+
+
+def table_geometry_fingerprint(geometry: TableGeometry) -> str:
+    """Return a stable identity for the geometry that affects runtime decisions."""
+
+    digest = hashlib.sha256(b"bas-table-geometry-v1")
+    groups = (
+        ("outer", [geometry.outer_norm]),
+        ("inline", geometry.inline_norm),
+        ("pockets", geometry.pockets_norm),
+    )
+    for label, arrays in groups:
+        digest.update(label.encode("ascii"))
+        digest.update(len(arrays).to_bytes(4, "little"))
+        for value in arrays:
+            points = np.asarray(value, dtype="<f4").reshape((-1, 2))
+            digest.update(points.shape[0].to_bytes(4, "little"))
+            digest.update(points.tobytes(order="C"))
+    return f"table_geometry_v1:{digest.hexdigest()[:20]}"
 
 
 @dataclass(frozen=True)
@@ -98,11 +120,21 @@ class TableGeometryLoader:
         pocket_order = canonical_pocket_indices(pockets)
         pockets = [pockets[index] for index in pocket_order]
 
+        # Some field annotations draw one continuous rail through a middle
+        # pocket and provide the pocket lip as a separate curve.  Cut that rail
+        # at the pocket endpoints so the real lip participates in the closed
+        # table boundary instead of being silently discarded by the stitcher.
+        inline_lines = cls._split_inline_lines_at_embedded_pockets(inline_lines, pockets)
+
         inner = np.zeros((0, 2), dtype=np.float32)
         boundary_segments: List[np.ndarray] = []
         stitch_lines = [*inline_lines, *pockets]
+        boundary_complete = not stitch_lines
         if stitch_lines:
             inner, boundary_segments = cls._stitch_lines_to_polygon(stitch_lines)
+            boundary_complete = bool(
+                inner.shape[0] >= 3 and len(boundary_segments) == len(stitch_lines)
+            )
             if inner.shape[0] < 3:
                 stack = np.vstack(stitch_lines).astype(np.float32)
                 hull = cv2.convexHull((stack * np.array([1000.0, 1000.0], dtype=np.float32)).astype(np.float32))
@@ -115,6 +147,8 @@ class TableGeometryLoader:
             inline_norm=inline_lines,
             pockets_norm=pockets,
             boundary_segments_norm=boundary_segments,
+            boundary_source_count=len(stitch_lines),
+            boundary_complete=boundary_complete,
         )
 
     @classmethod
@@ -246,6 +280,105 @@ class TableGeometryLoader:
             if arr.shape[0] >= 2:
                 out.append(arr)
         return out
+
+    @classmethod
+    def _split_inline_lines_at_embedded_pockets(
+        cls,
+        inline_lines: List[np.ndarray],
+        pockets: List[np.ndarray],
+        join_eps: float = 0.03,
+    ) -> List[np.ndarray]:
+        fragments = [np.asarray(line, dtype=np.float32).reshape((-1, 2)).copy() for line in inline_lines]
+        for pocket in pockets:
+            curve = np.asarray(pocket, dtype=np.float32).reshape((-1, 2))
+            if curve.shape[0] < 2:
+                continue
+            endpoints = (curve[0], curve[-1])
+            best: Optional[
+                tuple[
+                    float,
+                    int,
+                    tuple[float, float, int, float],
+                    tuple[float, float, int, float],
+                ]
+            ] = None
+            for index, line in enumerate(fragments):
+                if line.shape[0] < 2:
+                    continue
+                first = cls._project_point_to_polyline(endpoints[0], line)
+                second = cls._project_point_to_polyline(endpoints[1], line)
+                score = max(first[0], second[0])
+                if score > float(join_eps):
+                    continue
+                if abs(first[1] - second[1]) <= float(join_eps) * 0.25:
+                    continue
+                candidate = (score, index, first, second)
+                if best is None or candidate[0] < best[0]:
+                    best = candidate
+            if best is None:
+                continue
+
+            _, index, first, second = best
+            line = fragments[index]
+            if first[1] <= second[1]:
+                early_endpoint, early_projection = endpoints[0], first
+                late_endpoint, late_projection = endpoints[1], second
+            else:
+                early_endpoint, early_projection = endpoints[1], second
+                late_endpoint, late_projection = endpoints[0], first
+            prefix = cls._polyline_prefix_to_endpoint(line, early_projection, early_endpoint)
+            suffix = cls._polyline_suffix_from_endpoint(line, late_projection, late_endpoint)
+            replacements = [part for part in (prefix, suffix) if part.shape[0] >= 2]
+            if len(replacements) == 2:
+                fragments[index : index + 1] = replacements
+        return fragments
+
+    @staticmethod
+    def _project_point_to_polyline(
+        point: np.ndarray,
+        line: np.ndarray,
+    ) -> tuple[float, float, int, float]:
+        best_distance = float("inf")
+        best_arc = 0.0
+        best_index = 0
+        best_t = 0.0
+        cumulative = 0.0
+        for index in range(line.shape[0] - 1):
+            start = line[index]
+            delta = line[index + 1] - start
+            length = float(np.linalg.norm(delta))
+            if length <= 1e-9:
+                continue
+            t = float(np.clip(np.dot(point - start, delta) / (length * length), 0.0, 1.0))
+            projected = start + t * delta
+            distance = float(np.linalg.norm(point - projected))
+            if distance < best_distance:
+                best_distance = distance
+                best_arc = cumulative + t * length
+                best_index = index
+                best_t = t
+            cumulative += length
+        return best_distance, best_arc, best_index, best_t
+
+    @staticmethod
+    def _polyline_prefix_to_endpoint(
+        line: np.ndarray,
+        projection: tuple[float, float, int, float],
+        endpoint: np.ndarray,
+    ) -> np.ndarray:
+        segment_index = int(projection[2])
+        points = [*line[: segment_index + 1], np.asarray(endpoint, dtype=np.float32)]
+        return np.asarray(points, dtype=np.float32).reshape((-1, 2))
+
+    @staticmethod
+    def _polyline_suffix_from_endpoint(
+        line: np.ndarray,
+        projection: tuple[float, float, int, float],
+        endpoint: np.ndarray,
+    ) -> np.ndarray:
+        segment_index = int(projection[2])
+        points = [np.asarray(endpoint, dtype=np.float32), *line[segment_index + 1 :]]
+        return np.asarray(points, dtype=np.float32).reshape((-1, 2))
 
     @staticmethod
     def _stitch_lines_to_polygon(lines: List[np.ndarray], join_eps: float = 0.03) -> Tuple[np.ndarray, List[np.ndarray]]:

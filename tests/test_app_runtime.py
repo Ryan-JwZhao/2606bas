@@ -65,6 +65,7 @@ def test_runtime_pipeline_updates_state_on_cached_detection_frames() -> None:
         calib_version="test",
         table=SimpleNamespace(inner_polygon_mm=[], pockets_mm=[], ball_diameter_mm=57.15),
     )
+    pipeline._geometry_version = "geometry-test"
     pipeline.geometry = SimpleNamespace(is_empty=True)
     pipeline.detector = _Detector()
     pipeline.tracker = SimpleNamespace(
@@ -132,6 +133,46 @@ def test_uncalibrated_runtime_keeps_camera_acquisition_available() -> None:
     pipeline._update_table_geometry_for_frame(frame)
 
     assert pipeline._last_table_edge_polygon_mm == []
+
+
+def test_clearing_runtime_geometry_clears_all_derived_table_context() -> None:
+    pipeline = RuntimePipeline.__new__(RuntimePipeline)
+    from bas.geometry import TableGeometry
+
+    nonempty_geometry = TableGeometry(
+        inner_norm=np.asarray([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+    )
+    pipeline.geometry = nonempty_geometry
+    pipeline.geometry_reloader = SimpleNamespace(
+        refresh=lambda *_paths: (TableGeometry(), True)
+    )
+    pipeline.config = SimpleNamespace(
+        geometry=SimpleNamespace(outline_path=None, inline_path=None, pocket_path=None)
+    )
+    pipeline.calibration = SimpleNamespace(
+        table=SimpleNamespace(
+            projection_visible_polygon_mm=[(0.0, 0.0)],
+            inner_polygon_mm=[(0.0, 0.0)],
+            center_playable_polygon_mm=[(0.0, 0.0)],
+            projection_visible_pockets_mm=[(0.0, 0.0)],
+            pockets_mm=[(0.0, 0.0)],
+        )
+    )
+    pipeline._last_table_edge_polygon_mm = [(0.0, 0.0)]
+    pipeline._last_pocket_curves_mm = [[(0.0, 0.0)]]
+    reset_calls: list[bool] = []
+    pipeline._reset_temporal_processing_state = lambda: reset_calls.append(True)
+
+    pipeline._refresh_geometry_if_needed()
+
+    assert pipeline._last_table_edge_polygon_mm == []
+    assert pipeline._last_pocket_curves_mm == []
+    assert pipeline.calibration.table.projection_visible_polygon_mm == []
+    assert pipeline.calibration.table.inner_polygon_mm == []
+    assert pipeline.calibration.table.center_playable_polygon_mm == []
+    assert pipeline.calibration.table.projection_visible_pockets_mm == []
+    assert pipeline.calibration.table.pockets_mm == []
+    assert reset_calls == [True]
 
 
 def test_uncalibrated_pipeline_returns_camera_frame_with_dense_geometry() -> None:

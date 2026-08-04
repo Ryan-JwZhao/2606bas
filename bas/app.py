@@ -10,7 +10,7 @@ import numpy as np
 from .calibration import CalibrationService, create_setting_aware_calibration_service
 from .capture import CaptureService, VideoTimelineState, create_capture_service
 from .config import AppConfig
-from .geometry import TableGeometry
+from .geometry import TableGeometry, table_geometry_fingerprint
 from .geometry_runtime import RuntimeGeometryReloader
 from .learning import LearningSampleRecorder
 from .logging_config import configure_logging
@@ -80,6 +80,7 @@ class RuntimePipeline:
             config.geometry.inline_path,
             config.geometry.pocket_path,
         )
+        self._geometry_version = table_geometry_fingerprint(self.geometry)
         self.operating_mode = normalize_operating_mode(config.training.operating_mode)
         self.detector = ModeAwareDetectService(
             config.detector,
@@ -140,6 +141,7 @@ class RuntimePipeline:
             }
             return None
         frame.calib_version = self.calibration.calib_version
+        frame.geometry_version = self._geometry_version
         stage_start = time.perf_counter()
         if projection_only_training:
             detection_regions = None
@@ -443,6 +445,7 @@ class RuntimePipeline:
             self.learning_recorder.close()
 
     def _refresh_geometry_if_needed(self) -> None:
+        previous_geometry = self.geometry
         geometry, changed = self.geometry_reloader.refresh(
             self.config.geometry.outline_path,
             self.config.geometry.inline_path,
@@ -451,6 +454,9 @@ class RuntimePipeline:
         if not changed:
             return
         self.geometry = geometry
+        self._geometry_version = table_geometry_fingerprint(geometry)
+        if self.geometry.is_empty and not previous_geometry.is_empty:
+            self._clear_derived_table_geometry()
         self._reset_temporal_processing_state()
         LOGGER.info(
             "Geometry hot-reloaded: outline=%s inline=%s pocket=%s empty=%s",
@@ -459,6 +465,16 @@ class RuntimePipeline:
             self.config.geometry.pocket_path,
             self.geometry.is_empty,
         )
+
+    def _clear_derived_table_geometry(self) -> None:
+        self._last_pocket_curves_mm = []
+        self._last_table_edge_polygon_mm = []
+        table = self.calibration.table
+        table.projection_visible_polygon_mm = []
+        table.inner_polygon_mm = []
+        table.center_playable_polygon_mm = []
+        table.projection_visible_pockets_mm = []
+        table.pockets_mm = []
 
     def _camera_detection_regions(
         self,
