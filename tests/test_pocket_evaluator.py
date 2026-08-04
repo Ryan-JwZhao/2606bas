@@ -17,9 +17,9 @@ from scripts.evaluate_pocket_video import (
 
 def test_evaluator_applies_runtime_user_geometry_settings(tmp_path) -> None:
     paths = {
-        "outline_path": str(tmp_path / "0803-outline.json"),
-        "inline_path": str(tmp_path / "0803-inline.json"),
-        "pocket_path": str(tmp_path / "0803-pocket.json"),
+        "outline_path": str(tmp_path / "0804-outline.json"),
+        "inline_path": str(tmp_path / "0804-inline.json"),
+        "pocket_path": str(tmp_path / "0804-pocket.json"),
         "frame_rotation_degrees": 180,
     }
     settings_path = tmp_path / "user_settings.json"
@@ -49,7 +49,7 @@ def test_evaluator_can_use_explicit_config_without_runtime_user_settings(tmp_pat
         apply_user_settings=False,
     )
 
-    assert config.geometry.outline_path.endswith("0803-outline.json")
+    assert config.geometry.outline_path.endswith("0804_outline.json")
 
 
 def test_evaluator_builds_setting_aware_calibration_for_video_dimensions() -> None:
@@ -113,12 +113,12 @@ def test_evaluator_uses_runtime_geometry_validation(tmp_path) -> None:
 
 
 def test_evaluator_rejects_replay_recorded_with_other_geometry() -> None:
-    with pytest.raises(RuntimeError, match="geometry replay=.*0802.*current=0803"):
+    with pytest.raises(RuntimeError, match="geometry replay=.*previous.*current=current"):
         _validate_replay_context(
             replay_calibrations={"calib-current"},
-            replay_geometries={"0802"},
+            replay_geometries={"previous"},
             calibration_version="calib-current",
-            geometry_version="0803",
+            geometry_version="current",
             allow_mismatch=False,
         )
 
@@ -129,7 +129,7 @@ def test_evaluator_requires_explicit_override_for_legacy_replay_without_geometry
             replay_calibrations={"calib-current"},
             replay_geometries=set(),
             calibration_version="calib-current",
-            geometry_version="0803",
+            geometry_version="current",
             allow_mismatch=False,
         )
 
@@ -137,7 +137,7 @@ def test_evaluator_requires_explicit_override_for_legacy_replay_without_geometry
         replay_calibrations={"calib-old"},
         replay_geometries=set(),
         calibration_version="calib-current",
-        geometry_version="0803",
+        geometry_version="current",
         allow_mismatch=True,
     )
 

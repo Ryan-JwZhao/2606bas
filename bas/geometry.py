@@ -19,6 +19,7 @@ class TableGeometry:
     boundary_segments_norm: List[np.ndarray] = field(default_factory=list)
     boundary_source_count: int = 0
     boundary_complete: bool = True
+    boundary_self_intersections: int = 0
 
     @property
     def is_empty(self) -> bool:
@@ -61,7 +62,7 @@ class TableGeometry:
 def table_geometry_fingerprint(geometry: TableGeometry) -> str:
     """Return a stable identity for the geometry that affects runtime decisions."""
 
-    digest = hashlib.sha256(b"bas-table-geometry-v1")
+    digest = hashlib.sha256(b"bas-table-geometry-v2-endpoint-snap")
     groups = (
         ("outer", [geometry.outer_norm]),
         ("inline", geometry.inline_norm),
@@ -74,7 +75,7 @@ def table_geometry_fingerprint(geometry: TableGeometry) -> str:
             points = np.asarray(value, dtype="<f4").reshape((-1, 2))
             digest.update(points.shape[0].to_bytes(4, "little"))
             digest.update(points.tobytes(order="C"))
-    return f"table_geometry_v1:{digest.hexdigest()[:20]}"
+    return f"table_geometry_v2:{digest.hexdigest()[:20]}"
 
 
 @dataclass(frozen=True)
@@ -90,12 +91,11 @@ class _GeometrySource:
 class TableGeometryLoader:
     @classmethod
     def load_optional(cls, outline_path: Optional[str], inline_path: Optional[str], pocket_path: Optional[str]) -> TableGeometry:
+        """Load configured geometry, returning empty only when no paths were configured."""
+
         if not any([outline_path, inline_path, pocket_path]):
             return TableGeometry()
-        try:
-            return cls.load(outline_path, inline_path, pocket_path)
-        except Exception:
-            return TableGeometry()
+        return cls.load(outline_path, inline_path, pocket_path)
 
     @classmethod
     def load(cls, outline_path: Optional[str], inline_path: Optional[str], pocket_path: Optional[str]) -> TableGeometry:
@@ -128,6 +128,7 @@ class TableGeometryLoader:
 
         inner = np.zeros((0, 2), dtype=np.float32)
         boundary_segments: List[np.ndarray] = []
+        boundary_self_intersections = 0
         stitch_lines = [*inline_lines, *pockets]
         boundary_complete = not stitch_lines
         if stitch_lines:
@@ -135,6 +136,8 @@ class TableGeometryLoader:
             boundary_complete = bool(
                 inner.shape[0] >= 3 and len(boundary_segments) == len(stitch_lines)
             )
+            if inner.shape[0] >= 3:
+                boundary_self_intersections = cls._count_polygon_self_intersections(inner)
             if inner.shape[0] < 3:
                 stack = np.vstack(stitch_lines).astype(np.float32)
                 hull = cv2.convexHull((stack * np.array([1000.0, 1000.0], dtype=np.float32)).astype(np.float32))
@@ -149,6 +152,7 @@ class TableGeometryLoader:
             boundary_segments_norm=boundary_segments,
             boundary_source_count=len(stitch_lines),
             boundary_complete=boundary_complete,
+            boundary_self_intersections=boundary_self_intersections,
         )
 
     @classmethod
@@ -413,8 +417,8 @@ class TableGeometryLoader:
                     if best_i < 0 or best_dist > join_eps:
                         break
                     nxt = candidates[best_i][::-1] if best_rev else candidates[best_i]
-                    parts.append(nxt[1:])
-                    end = parts[-1][-1]
+                    parts.append(nxt.copy())
+                    end = nxt[-1]
                     used[best_i] = True
                     cost += best_dist
                 merged = np.vstack(parts).astype(np.float32)
@@ -427,8 +431,67 @@ class TableGeometryLoader:
                     best, best_used, best_cost = merged, used_count, total
                     best_parts = [part.copy() for part in parts]
         if best.shape[0] >= 3 and float(np.linalg.norm(best[0] - best[-1])) <= join_eps:
-            return best, best_parts
+            snapped_parts = TableGeometryLoader._snap_closed_segment_endpoints(best_parts)
+            merged = np.vstack(
+                [snapped_parts[0], *[part[1:] for part in snapped_parts[1:]]]
+            ).astype(np.float32)
+            return merged, snapped_parts
         return np.zeros((0, 2), dtype=np.float32), []
+
+    @staticmethod
+    def _snap_closed_segment_endpoints(parts: List[np.ndarray]) -> List[np.ndarray]:
+        """Make stitched joins exact without creating short loops at annotation gaps."""
+
+        snapped = [np.asarray(part, dtype=np.float32).reshape((-1, 2)).copy() for part in parts]
+        for index in range(len(snapped)):
+            next_index = (index + 1) % len(snapped)
+            joint = (snapped[index][-1] + snapped[next_index][0]) * np.float32(0.5)
+            snapped[index][-1] = joint
+            snapped[next_index][0] = joint
+        return snapped
+
+    @staticmethod
+    def _count_polygon_self_intersections(polygon: np.ndarray) -> int:
+        points = np.asarray(polygon, dtype=np.float64).reshape((-1, 2))
+        count = 0
+        size = points.shape[0]
+        for first in range(size):
+            a = points[first]
+            b = points[(first + 1) % size]
+            for second in range(first + 1, size):
+                if second == first or second == (first + 1) % size:
+                    continue
+                if (second + 1) % size == first:
+                    continue
+                if first == 0 and second == size - 1:
+                    continue
+                c = points[second]
+                d = points[(second + 1) % size]
+                if TableGeometryLoader._segments_properly_intersect(a, b, c, d):
+                    count += 1
+        return count
+
+    @staticmethod
+    def _segments_properly_intersect(
+        a: np.ndarray,
+        b: np.ndarray,
+        c: np.ndarray,
+        d: np.ndarray,
+        epsilon: float = 1e-10,
+    ) -> bool:
+        def cross(start: np.ndarray, end: np.ndarray, point: np.ndarray) -> float:
+            edge = end - start
+            offset = point - start
+            return float(edge[0] * offset[1] - edge[1] * offset[0])
+
+        ab_c = cross(a, b, c)
+        ab_d = cross(a, b, d)
+        cd_a = cross(c, d, a)
+        cd_b = cross(c, d, b)
+        return bool(
+            ab_c * ab_d < -float(epsilon)
+            and cd_a * cd_b < -float(epsilon)
+        )
 
 
 def canonical_pocket_indices(pockets: List[np.ndarray]) -> List[int]:

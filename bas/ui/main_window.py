@@ -55,7 +55,7 @@ from ..capture import (
     probe_cameras,
 )
 from ..capture.nori_sdk import NoriProtocolController
-from ..geometry import TableGeometryLoader
+from ..geometry_runtime import load_validated_table_geometry
 from ..geometry_contract import projection_calibration_context
 from ..logging_config import configure_logging
 from ..instant_replay import InstantReplayBuffer
@@ -1178,10 +1178,11 @@ class JointCalibrationWizardDialog(QtWidgets.QDialog):
                 self._append_log("检测到实时采集正在运行，先自动停止以释放相机。")
                 self.operator.stop_pipeline()
 
-            geometry = TableGeometryLoader.load_optional(
+            geometry = load_validated_table_geometry(
                 self.operator.config.geometry.outline_path,
                 self.operator.config.geometry.inline_path,
                 self.operator.config.geometry.pocket_path,
+                allow_empty=False,
             )
             capture = create_capture_service(self.operator.config.camera)
             capture_info = capture.info()
@@ -3969,7 +3970,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._append_log("正在初始化图形图像模块")
         try:
             calibration = _create_runtime_calibration_service(self.config, self.pipeline)
-            geometry = TableGeometryLoader.load_optional(
+            geometry = load_validated_table_geometry(
                 self.config.geometry.outline_path,
                 self.config.geometry.inline_path,
                 self.config.geometry.pocket_path,

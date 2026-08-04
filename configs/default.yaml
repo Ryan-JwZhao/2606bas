@@ -88,9 +88,9 @@ calibration:
   ball_center_compensation_scale_y_pct: 0.0
 
 geometry:
-  outline_path: C:/CodeProject/data/0803_DrawLine/0803-outline.json
-  inline_path: C:/CodeProject/data/0803_DrawLine/0803-inline.json
-  pocket_path: C:/CodeProject/data/0803_DrawLine/0803-pocket.json
+  outline_path: C:/CodeProject/data/0804_DrawLine/0804_outline.json
+  inline_path: C:/CodeProject/data/0804_DrawLine/0804_inline.json
+  pocket_path: C:/CodeProject/data/0804_DrawLine/0804_pocket.json
 
 state:
   engine: modern

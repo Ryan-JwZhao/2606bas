@@ -17,7 +17,7 @@ from bas.calibration import create_setting_aware_calibration_service
 from bas.capture import capture_frames_are_distortion_corrected
 from bas.config import AppConfig
 from bas.geometry import TableGeometry, table_geometry_fingerprint
-from bas.geometry_runtime import RuntimeGeometryReloader
+from bas.geometry_runtime import load_validated_table_geometry
 from bas.perception import PocketObserver, build_detection_region_policy
 from bas.schemas import FramePacket, MatchPhase, TrackObservation, TracksFrame
 from bas.state.pocket import PerBallPocketFSM
@@ -78,16 +78,12 @@ def _create_evaluation_calibration(config: AppConfig, width: int, height: int) -
 
 
 def _load_evaluation_geometry(config: AppConfig) -> TableGeometry:
-    reloader = RuntimeGeometryReloader()
-    geometry, _ = reloader.refresh(
+    return load_validated_table_geometry(
         config.geometry.outline_path,
         config.geometry.inline_path,
         config.geometry.pocket_path,
+        allow_empty=False,
     )
-    if not reloader.is_ready or geometry.is_empty:
-        detail = reloader.last_error or "configured geometry is empty"
-        raise RuntimeError(f"Evaluation geometry is not runtime-ready: {detail}")
-    return geometry
 
 
 def main() -> int:

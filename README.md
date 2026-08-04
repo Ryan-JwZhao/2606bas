@@ -194,7 +194,7 @@ FOURCC、分辨率和帧率，并在打开后读回 FOURCC；如果驱动返回 
   C:\CodeProject\data\<旧标注目录>\pocket.json
 ```
 
-脚本按 `x' = imageWidth - 1 - x`、`y' = imageHeight - 1 - y` 旋转全部标注点，并为每个原文件保留 `.pre180.bak` 备份。检测到备份已存在时会拒绝再次执行，防止误操作把标注旋转回原方向。当前 `0803_DrawLine` 已处于运行时坐标域，不要重复旋转。
+脚本按 `x' = imageWidth - 1 - x`、`y' = imageHeight - 1 - y` 旋转全部标注点，并为每个原文件保留 `.pre180.bak` 备份。检测到备份已存在时会拒绝再次执行，防止误操作把标注旋转回原方向。当前 `0804_DrawLine` 已处于运行时坐标域，不要重复旋转。
 
 ### 工业相机畸变校正总开关
 
@@ -229,8 +229,9 @@ FOURCC、分辨率和帧率，并在打开后读回 FOURCC；如果驱动返回 
 两端自动切开该 `inline`，再把真实袋唇嵌入闭合边界。运行时要求恰好六条有效
 `pocket` 曲线，且所有切分后的 `inline` 和全部 `pocket` segment 都参与闭合；任何孤立或未使用 segment 都会
 失败关闭并保留上一份有效几何，避免球心可达区、进洞判定和规划边界彼此不一致。
-当前 0803 的下方 inline 正是一条倾斜且穿过下方中袋的连续线；运行时会将其切成
-袋口左右两段，并把规范袋号 `pocket4` 的全部曲线点嵌在两段之间。
+当前 0804 已将上下中袋两侧分别标成独立 inline。由于人工标注的相邻端点通常不会
+逐像素重合，加载器会将每一对相邻端点吸附到共同中点，再生成无短环、无自交的闭合边界；
+若吸附后仍存在自交，运行时、联动校准、球心补偿和离线评估都会统一拒绝该几何。
 
 - 先从当前画面重建 physical rail 和 ball-center reachable 区域。
 - 六个袋口各保留一个最近的安全边界锚点，避免袋口附近缺少样本。
@@ -402,12 +403,12 @@ state:
 进球视频评估必须使用同一套几何、标定、相机方向录制的回放和原视频。评估脚本会和桌面程序一样，先读取 `configs/default.yaml`，再应用 `local_settings/user_settings.json`，因此默认使用当前现场的 inline、outline、pocket、相机方向和标定路径：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\evaluate_pocket_video.py --replay <0803几何下录制的回放目录> --video <该回放对应的原视频> --labels <该录像对应的标签.json>
+.\.venv\Scripts\python.exe scripts\evaluate_pocket_video.py --replay <0804几何下录制的回放目录> --video <该回放对应的原视频> --labels <该录像对应的标签.json>
 ```
 
-新回放的每一帧都会记录标定版本和台面几何指纹。inline、outline 或 pocket 任一内容改变后，评估器会拒绝使用旧回放，避免把旧边线下的轨迹和录像误当成 0803 验收结果。如需只使用 `--config` 指定的独立配置，同时传入 `--ignore-user-settings`；仅在有意诊断历史数据时，才可用 `--allow-context-mismatch` 绕过版本保护。
+新回放的每一帧都会记录标定版本和台面几何指纹。inline、outline 或 pocket 任一内容改变后，评估器会拒绝使用旧回放，避免把旧边线下的轨迹和录像误当成 0804 验收结果。如需只使用 `--config` 指定的独立配置，同时传入 `--ignore-user-settings`；仅在有意诊断历史数据时，才可用 `--allow-context-mismatch` 绕过版本保护。
 
-`tests/fixtures/long_video_goal_labels.json`、`tests/fixtures/shot3_shot4_regression_labels.json` 和 2026-06-27 的录像属于旧几何历史数据，不能用于验证当前 0803 边界。切换几何后需要重新录制视频、回放并逐帧生成对应标签。
+`tests/fixtures/long_video_goal_labels.json`、`tests/fixtures/shot3_shot4_regression_labels.json` 和 2026-06-27 的录像属于旧几何历史数据，不能用于验证当前 0804 边界。切换几何后需要重新录制视频、回放并逐帧生成对应标签。
 
 桌面预览和 Web 前端会明显显示 `wb进球`、`bb进球`、`sob进球` 或 `stb进球`。提示只消费服务端状态事件；投影交互层明确忽略 `POCKET_DETECTED`/`POT_PROBABLE`，不会显示进球文字。
 

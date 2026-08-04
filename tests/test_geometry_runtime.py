@@ -5,8 +5,9 @@ import os
 from pathlib import Path
 
 import numpy as np
+import pytest
 
-from bas.geometry_runtime import RuntimeGeometryReloader
+from bas.geometry_runtime import GeometryValidationError, RuntimeGeometryReloader, load_validated_table_geometry
 
 
 def _write_labelme(path: Path, label: str, points: list[list[float]]) -> None:
@@ -128,3 +129,27 @@ def test_runtime_geometry_reloader_reports_not_ready_on_cold_invalid_geometry(tm
     assert changed is True
     assert reloader.is_ready is True
     assert geometry.inline_norm
+
+
+def test_shared_validated_loader_rejects_invalid_or_forbidden_empty_geometry(tmp_path) -> None:
+    missing_inline = tmp_path / "missing-inline.json"
+
+    with pytest.raises(GeometryValidationError, match="missing-inline.json"):
+        load_validated_table_geometry(None, str(missing_inline), None)
+
+    with pytest.raises(GeometryValidationError, match="empty"):
+        load_validated_table_geometry(None, None, None, allow_empty=False)
+
+    assert load_validated_table_geometry(None, None, None).is_empty is True
+
+
+def test_shared_validated_loader_rejects_self_intersecting_boundary(tmp_path) -> None:
+    inline_path = tmp_path / "inline.json"
+    _write_labelme(
+        inline_path,
+        "inline",
+        [[10, 10], [90, 90], [10, 90], [90, 10], [10, 10]],
+    )
+
+    with pytest.raises(GeometryValidationError, match="self-intersecting"):
+        load_validated_table_geometry(None, str(inline_path), None)

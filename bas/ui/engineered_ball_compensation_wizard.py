@@ -47,7 +47,7 @@ from ..calibration.ball_compensation_resampling import (
 )
 from ..calibration.quality_standards import FORMAL_TABLE_ERROR_MEDIAN_MM
 from ..capture import create_capture_service
-from ..geometry import TableGeometryLoader
+from ..geometry_runtime import load_validated_table_geometry
 from ..geometry_contract import calibration_context
 from ..paths import PROJECT_ROOT
 from ..perception import build_detection_region_policy, create_detector, filter_detections_by_region
@@ -501,10 +501,11 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             detector = create_detector(self.operator.config.detector)
             if getattr(detector, "version", "disabled") == "disabled":
                 raise RuntimeError("工程球体补偿向导需要启用球检测后端，当前 detector.backend=disabled。")
-            geometry = TableGeometryLoader.load_optional(
+            geometry = load_validated_table_geometry(
                 self.operator.config.geometry.outline_path,
                 self.operator.config.geometry.inline_path,
                 self.operator.config.geometry.pocket_path,
+                allow_empty=False,
             )
             self.operator.ensure_projection_window_for_operator()
             prime_frame = _prime_capture_frame(capture)

@@ -11,6 +11,10 @@ from .geometry import TableGeometry, TableGeometryLoader
 LOGGER = logging.getLogger(__name__)
 
 
+class GeometryValidationError(RuntimeError):
+    """Configured table geometry is missing, incomplete, or internally inconsistent."""
+
+
 @dataclass(frozen=True)
 class GeometryFileFingerprint:
     path: Optional[str]
@@ -117,6 +121,24 @@ class RuntimeGeometryReloader:
         self._last_error = str(error)
 
 
+def load_validated_table_geometry(
+    outline_path: Optional[str],
+    inline_path: Optional[str],
+    pocket_path: Optional[str],
+    *,
+    allow_empty: bool = True,
+) -> TableGeometry:
+    """Load geometry through the same fail-closed contract used by runtime hot reload."""
+
+    reloader = RuntimeGeometryReloader()
+    geometry, _ = reloader.refresh(outline_path, inline_path, pocket_path)
+    if not reloader.is_ready:
+        raise GeometryValidationError(reloader.last_error or "configured geometry is not runtime-ready")
+    if geometry.is_empty and not allow_empty:
+        raise GeometryValidationError("configured geometry is empty")
+    return geometry
+
+
 def _configured_geometry_validation_error(
     geometry: TableGeometry,
     *,
@@ -136,6 +158,11 @@ def _configured_geometry_validation_error(
         return (
             "inline and pocket curves formed an incomplete boundary "
             f"({len(geometry.boundary_segments_norm)}/{geometry.boundary_source_count} segments used)"
+        )
+    if geometry.boundary_self_intersections:
+        return (
+            "inline and pocket curves formed a self-intersecting boundary "
+            f"({geometry.boundary_self_intersections} intersections)"
         )
     if pocket_path and len(geometry.pockets_norm) != 6:
         return f"configured pocket file must contain exactly six usable curves (found {len(geometry.pockets_norm)})"

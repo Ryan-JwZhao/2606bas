@@ -217,6 +217,40 @@ def test_geometry_loader_splices_pocket_curve_into_continuous_inline_rail(tmp_pa
     assert "exactly six" in reloader.last_error
 
 
+def test_geometry_loader_snaps_misaligned_segment_ends_without_short_loops(tmp_path) -> None:
+    outline_path = tmp_path / "outline.json"
+    inline_path = tmp_path / "inline.json"
+    pocket_path = tmp_path / "pocket.json"
+    _write_labelme(
+        outline_path,
+        [{"label": "outline", "points": [[5, 5], [95, 5], [95, 95], [5, 95]]}],
+    )
+    _write_labelme(
+        inline_path,
+        [
+            {"label": "inline", "points": [[10, 10], [10, 90]]},
+            {"label": "inline", "points": [[10, 90], [40, 90]]},
+            {"label": "inline", "points": [[60, 90], [90, 90]]},
+            {"label": "inline", "points": [[90, 90], [90, 10]]},
+            {"label": "inline", "points": [[90, 10], [10, 10]]},
+        ],
+    )
+    _write_labelme(
+        pocket_path,
+        [{"label": "pocket", "points": [[39.5, 89.8], [50, 98], [60.5, 90.2]]}],
+    )
+
+    geometry = TableGeometryLoader.load(str(outline_path), str(inline_path), str(pocket_path))
+
+    assert geometry.boundary_complete is True
+    assert geometry.boundary_self_intersections == 0
+    assert len(geometry.boundary_segments_norm) == 6
+    for index, segment in enumerate(geometry.boundary_segments_norm):
+        next_segment = geometry.boundary_segments_norm[(index + 1) % 6]
+        np.testing.assert_allclose(segment[-1], next_segment[0], atol=1e-7)
+    assert any(np.allclose(point, (0.5, 0.98)) for point in geometry.inner_norm)
+
+
 def test_runtime_geometry_reloader_rejects_disconnected_boundary_segments(tmp_path) -> None:
     outline_path = tmp_path / "outline.json"
     inline_path = tmp_path / "inline.json"
