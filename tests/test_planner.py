@@ -85,9 +85,10 @@ def test_planner_generates_candidate() -> None:
     assert plan.best.score > -5
 
 
-def test_planner_rejects_low_reliability_bbox_ball_centers() -> None:
+def test_planner_rejects_low_confidence_bbox_ball_centers() -> None:
     planner = GeometryPhysicsPlanner(PlannerConfig(top_k=3), _service())
     cue = _obs(1, "cue", 120, 250)
+    cue.quality = 0.40
     cue.geometry_quality = 0.45
     cue.geometry_method = "bbox"
     target = _obs(2, "solid", 620, 250)
@@ -98,6 +99,33 @@ def test_planner_rejects_low_reliability_bbox_ball_centers() -> None:
     plan = planner.plan(state)
 
     assert plan.best is None
+
+
+def test_planner_keeps_high_confidence_target_when_center_refinement_falls_back_to_bbox() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=3), _service())
+    cue = _obs(1, "cue", 120, 250)
+    cue.geometry_quality = 0.95
+    cue.geometry_method = "appearance_ellipse"
+    target = _obs(2, "solid", 620, 250)
+    target.geometry_quality = 0.90
+    target.geometry_method = "appearance_ellipse"
+
+    route_signatures = []
+    for frame_id in range(1, 13):
+        if frame_id % 2:
+            target.geometry_quality = 0.90
+            target.geometry_method = "appearance_ellipse"
+        else:
+            target.geometry_quality = 0.45
+            target.geometry_method = "bbox"
+        plan = planner.plan(
+            MatchStateFrame(frame_id=frame_id, ts_cam_ns=frame_id, phase="STABLE_IDLE", layout=[cue, target])
+        )
+        assert plan.best is not None
+        route_signatures.append((plan.best.target_track_id, plan.best.pocket_index))
+
+    assert len(set(route_signatures)) == 1
+    assert route_signatures[0][0] == 2
 
 
 def test_planner_manual_web_target_limits_candidates_until_cleared() -> None:

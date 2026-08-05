@@ -20,6 +20,23 @@ from .target_shot import TargetShotDecision, TargetShotModeController, TargetSho
 from .target_lock import TargetLockController, TargetLockDecision
 
 
+MIN_PLANNING_BALL_QUALITY = 0.25
+GEOMETRY_RELIABILITY_FLOOR = 0.50
+
+
+def _planning_ball_quality(track_quality: float, geometry_reliability: float) -> float:
+    """Attenuate uncertain geometry without dropping a stable, confident track.
+
+    The tracker has already folded per-frame geometry quality into track_quality.
+    Keeping a non-zero geometry floor avoids applying the same penalty twice when
+    an otherwise stable ball temporarily falls back from ellipse to bbox geometry.
+    """
+
+    reliability = float(np.clip(geometry_reliability, 0.0, 1.0))
+    geometry_factor = GEOMETRY_RELIABILITY_FLOOR + (1.0 - GEOMETRY_RELIABILITY_FLOOR) * reliability
+    return float(np.clip(track_quality, 0.0, 1.0)) * geometry_factor
+
+
 @dataclass
 class _Ball:
     track_id: int
@@ -283,7 +300,8 @@ class GeometryPhysicsPlanner:
                 continue
             if str(getattr(tr, "visibility", "visible")).strip().lower() != "visible":
                 continue
-            if float(getattr(tr, "quality", 0.0)) <= 0.25:
+            track_quality = float(getattr(tr, "quality", 0.0))
+            if track_quality <= MIN_PLANNING_BALL_QUALITY:
                 continue
             located = self.calibration.ball_geometry.locate(
                 tr.center_px,
@@ -293,8 +311,8 @@ class GeometryPhysicsPlanner:
             )
             center = np.asarray(located.table_center_mm, dtype=np.float32)
             radius_mm = float(located.radius_mm)
-            effective_quality = float(tr.quality) * float(located.reliability)
-            if effective_quality <= 0.25:
+            effective_quality = _planning_ball_quality(track_quality, float(located.reliability))
+            if effective_quality <= MIN_PLANNING_BALL_QUALITY:
                 continue
             if radius_mm <= 1.0 or radius_mm > 80.0:
                 radius_mm = 0.5 * self.calibration.table.ball_diameter_mm
