@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from .ball_compensation_sampling import BallCompensationSample
+from ..geometry_contract import context_compatibility_errors
+from .ball_compensation_sampling import (
+    BallCompensationSample,
+    ball_compensation_sample_from_dict,
+    ball_compensation_sample_weights,
+)
 
 
 @dataclass(frozen=True)
@@ -33,6 +40,124 @@ class FailedHoldoutRecoveryPlan:
     failed_holdout_location_indices: tuple[int, ...]
     failed_targets_table_mm: tuple[tuple[float, float], ...]
     training_sample_indices: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class BallCompensationTrainingSource:
+    source_path: Path
+    samples: tuple[BallCompensationSample, ...]
+    sampling_grid_table_mm: tuple[tuple[float, float], ...]
+    calibration_context: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class HighResidualTrainingResamplePlan:
+    threshold_mm: float
+    training_sample_indices: tuple[int, ...]
+    sample_indices: tuple[int, ...]
+    residuals_mm: tuple[float, ...]
+
+    @property
+    def selected_residuals_mm(self) -> tuple[float, ...]:
+        selected = set(self.training_sample_indices)
+        return tuple(
+            residual
+            for sample_index, residual in zip(self.sample_indices, self.residuals_mm)
+            if sample_index in selected
+        )
+
+
+@dataclass(frozen=True)
+class HighResidualTrainingResamplingTask:
+    source: BallCompensationTrainingSource
+    plan: HighResidualTrainingResamplePlan
+
+
+def load_ball_compensation_training_source(path: str | Path) -> BallCompensationTrainingSource:
+    """Load the training portion of a saved ball-compensation artifact."""
+
+    source = Path(path)
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    raw_samples = payload.get("samples", [])
+    if not isinstance(raw_samples, list) or not raw_samples:
+        raise ValueError("球心补偿文件不包含可重采的训练 samples")
+    samples = tuple(ball_compensation_sample_from_dict(dict(item)) for item in raw_samples)
+    raw_grid = payload.get("sampling_grid_table_mm") or [sample.target_table_mm for sample in samples]
+    grid = np.asarray(raw_grid, dtype=np.float64).reshape((-1, 2))
+    return BallCompensationTrainingSource(
+        source_path=source,
+        samples=samples,
+        sampling_grid_table_mm=tuple((float(point[0]), float(point[1])) for point in grid),
+        calibration_context=dict(payload.get("calibration_context", {})),
+    )
+
+
+def plan_high_residual_training_resampling(
+    samples: Sequence[BallCompensationSample],
+    *,
+    threshold_mm: float = 5.0,
+) -> HighResidualTrainingResamplePlan:
+    """Select persisted training points whose runtime-map residual reaches a threshold."""
+
+    training = list(samples)
+    threshold = max(0.0, float(threshold_mm))
+    if len(training) < 4:
+        raise ValueError("至少需要 4 个训练样本才能计算球心映射残差")
+    controls = np.asarray([sample.detected_camera_px for sample in training], dtype=np.float64).reshape((-1, 2))
+    targets = np.asarray([sample.target_table_mm for sample in training], dtype=np.float64).reshape((-1, 2))
+    weights = ball_compensation_sample_weights(training)
+
+    from .geometry import ball_center_map_training_residuals
+
+    residuals = ball_center_map_training_residuals(
+        controls,
+        targets,
+        sample_weights=weights,
+    )
+    selected = tuple(
+        int(sample.sample_index)
+        for sample, residual in zip(training, residuals)
+        if float(residual) >= threshold
+    )
+    return HighResidualTrainingResamplePlan(
+        threshold_mm=threshold,
+        training_sample_indices=tuple(sorted(selected)),
+        sample_indices=tuple(int(sample.sample_index) for sample in training),
+        residuals_mm=tuple(float(value) for value in residuals),
+    )
+
+
+def prepare_high_residual_training_resampling(
+    path: str | Path,
+    *,
+    current_sampling_grid_table_mm: Sequence[Sequence[float]],
+    expected_calibration_context: Mapping[str, Any],
+    threshold_mm: float = 5.0,
+) -> HighResidualTrainingResamplingTask:
+    """Validate and prepare a safe partial-resampling task from one saved artifact."""
+
+    source = load_ball_compensation_training_source(path)
+    context_errors = context_compatibility_errors(
+        dict(source.calibration_context),
+        dict(expected_calibration_context),
+    )
+    if context_errors:
+        raise ValueError(
+            "当前球心补偿文件与相机/投影/检测模型不兼容，不能安全重采："
+            + ", ".join(context_errors)
+        )
+    saved_grid = np.asarray(source.sampling_grid_table_mm, dtype=np.float64).reshape((-1, 2))
+    current_grid = np.asarray(current_sampling_grid_table_mm, dtype=np.float64).reshape((-1, 2))
+    if saved_grid.shape != current_grid.shape or not np.allclose(saved_grid, current_grid, atol=0.5):
+        raise ValueError("当前球心补偿文件的 56 点采样网格与当前台面网格不一致，不能安全替换样本。")
+    expected_indices = list(range(len(current_grid)))
+    actual_indices = sorted(int(sample.sample_index) for sample in source.samples)
+    if actual_indices != expected_indices:
+        raise ValueError("当前球心补偿文件必须完整包含编号 1–56 的训练样本，才能执行定点重采。")
+    plan = plan_high_residual_training_resampling(source.samples, threshold_mm=threshold_mm)
+    if not plan.training_sample_indices:
+        raise ValueError(f"当前 56 点中没有训练残差 ≥ {plan.threshold_mm:.1f} mm 的点，无需重采。")
+    return HighResidualTrainingResamplingTask(source=source, plan=plan)
 
 
 def aggregate_training_repeats(

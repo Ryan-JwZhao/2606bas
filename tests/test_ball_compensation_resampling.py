@@ -5,7 +5,10 @@ import numpy as np
 from bas.calibration.ball_compensation_resampling import (
     aggregate_training_repeats,
     assess_holdout_repeatability,
+    load_ball_compensation_training_source,
     plan_failed_holdout_recovery,
+    plan_high_residual_training_resampling,
+    prepare_high_residual_training_resampling,
 )
 from bas.calibration.ball_compensation_sampling import BallCompensationSample
 
@@ -156,3 +159,73 @@ def test_failed_holdout_recovery_never_promotes_holdout_samples_into_training() 
 
     assert 999 not in recovery.training_sample_indices
     assert set(recovery.training_sample_indices).issubset({sample.sample_index for sample in training})
+
+
+def test_high_residual_resampling_selects_only_runtime_map_outliers() -> None:
+    training = []
+    for row in range(4):
+        for col in range(5):
+            index = row * 5 + col
+            target = (float(col * 100), float(row * 100))
+            detected = target if index != 7 else (target[0] + 30.0, target[1] - 20.0)
+            training.append(_sample(index, target, detected))
+
+    plan = plan_high_residual_training_resampling(training, threshold_mm=5.0)
+
+    assert plan.training_sample_indices == (7,)
+    assert plan.selected_residuals_mm[0] >= 5.0
+
+
+def test_training_resample_source_loads_samples_grid_and_context(tmp_path) -> None:
+    import json
+
+    samples = [_sample(index, (float(index), 0.0), (float(index), 0.0)) for index in range(4)]
+    path = tmp_path / "ball.json"
+    path.write_text(
+        json.dumps(
+            {
+                "samples": [sample.to_dict() for sample in samples],
+                "sampling_grid_table_mm": [sample.target_table_mm for sample in samples],
+                "calibration_context": {"frame_width": 1920},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    source = load_ball_compensation_training_source(path)
+
+    assert source.source_path == path
+    assert [sample.sample_index for sample in source.samples] == [0, 1, 2, 3]
+    assert source.sampling_grid_table_mm[-1] == (3.0, 0.0)
+    assert source.calibration_context["frame_width"] == 1920
+
+
+def test_prepare_high_residual_resampling_rejects_changed_calibration_context(tmp_path) -> None:
+    import json
+    import pytest
+
+    samples = []
+    for row in range(4):
+        for col in range(5):
+            index = row * 5 + col
+            target = (float(col * 100), float(row * 100))
+            samples.append(_sample(index, target, target))
+    path = tmp_path / "ball.json"
+    path.write_text(
+        json.dumps(
+            {
+                "samples": [sample.to_dict() for sample in samples],
+                "sampling_grid_table_mm": [sample.target_table_mm for sample in samples],
+                "calibration_context": {"frame_width": 1920},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="frame_width"):
+        prepare_high_residual_training_resampling(
+            path,
+            current_sampling_grid_table_mm=[sample.target_table_mm for sample in samples],
+            expected_calibration_context={"frame_width": 1280},
+            threshold_mm=5.0,
+        )

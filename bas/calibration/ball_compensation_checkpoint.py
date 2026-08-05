@@ -9,7 +9,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from .ball_compensation_sampling import BallCompensationSample
+from .ball_compensation_sampling import BallCompensationSample, ball_compensation_sample_from_dict
 
 
 CHECKPOINT_SCHEMA_VERSION = 2
@@ -127,12 +127,12 @@ def load_ball_compensation_checkpoint(path: str | Path) -> BallCompensationCheck
     schema_version = int(payload.get("schema_version", -1))
     if schema_version not in SUPPORTED_CHECKPOINT_SCHEMA_VERSIONS:
         raise ValueError(f"Unsupported ball compensation checkpoint schema: {payload.get('schema_version')}")
-    training = tuple(_sample_from_dict(item) for item in payload.get("training_samples", []))
+    training = tuple(ball_compensation_sample_from_dict(item) for item in payload.get("training_samples", []))
     holdout = tuple(
         HoldoutCheckpointObservation(
             location_index=int(item["location_index"]),
             repeat_index=int(item["repeat_index"]),
-            sample=_sample_from_dict(item["sample"]),
+            sample=ball_compensation_sample_from_dict(item["sample"]),
         )
         for item in payload.get("holdout_observations", [])
     )
@@ -280,28 +280,6 @@ def _sample_from_audit_event(event: Mapping[str, Any]) -> BallCompensationSample
         geometry_quality=float(metrics.get("geometry_quality", 0.0)),
         geometry_method=str(details.get("geometry_method", "unknown")),
         detector_version=str(details.get("detector_version", "unknown")),
-    )
-
-
-def _sample_from_dict(payload: Mapping[str, Any]) -> BallCompensationSample:
-    def point(key: str) -> tuple[float, float]:
-        values = np.asarray(payload.get(key, [0.0, 0.0]), dtype=np.float64).reshape((2,))
-        return float(values[0]), float(values[1])
-
-    return BallCompensationSample(
-        sample_index=int(payload.get("sample_index", 0)),
-        target_table_mm=point("target_table_mm"),
-        detected_camera_px=point("detected_camera_px"),
-        projected_target_px=point("projected_target_px"),
-        expected_camera_px=point("expected_camera_px"),
-        observed_table_mm=point("observed_table_mm"),
-        delta_table_mm=point("delta_table_mm"),
-        detected_radius_px=float(payload.get("detected_radius_px", 0.0)),
-        detection_confidence=float(payload.get("detection_confidence", 0.0)),
-        stability_spread_px=float(payload.get("stability_spread_px", 0.0)),
-        geometry_quality=float(payload.get("geometry_quality", 0.0)),
-        geometry_method=str(payload.get("geometry_method", "unknown")),
-        detector_version=str(payload.get("detector_version", "unknown")),
     )
 
 

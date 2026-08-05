@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Mapping, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -60,6 +60,51 @@ class BallCompensationSample:
             "geometry_method": str(self.geometry_method),
             "detector_version": str(self.detector_version),
         }
+
+
+def ball_compensation_sample_from_dict(payload: Mapping[str, Any]) -> BallCompensationSample:
+    """Deserialize one persisted training or Holdout observation."""
+
+    def point(key: str) -> tuple[float, float]:
+        values = np.asarray(payload.get(key, [0.0, 0.0]), dtype=np.float64).reshape((2,))
+        return float(values[0]), float(values[1])
+
+    return BallCompensationSample(
+        sample_index=int(payload.get("sample_index", 0)),
+        target_table_mm=point("target_table_mm"),
+        detected_camera_px=point("detected_camera_px"),
+        projected_target_px=point("projected_target_px"),
+        expected_camera_px=point("expected_camera_px"),
+        observed_table_mm=point("observed_table_mm"),
+        delta_table_mm=point("delta_table_mm"),
+        detected_radius_px=float(payload.get("detected_radius_px", 0.0)),
+        detection_confidence=float(payload.get("detection_confidence", 0.0)),
+        stability_spread_px=float(payload.get("stability_spread_px", 0.0)),
+        geometry_quality=float(payload.get("geometry_quality", 0.0)),
+        geometry_method=str(payload.get("geometry_method", "unknown")),
+        detector_version=str(payload.get("detector_version", "unknown")),
+    )
+
+
+def ball_compensation_sample_weights(
+    samples: Sequence[BallCompensationSample],
+) -> np.ndarray:
+    """Build the runtime fitting weights for persisted or newly collected samples."""
+
+    return np.asarray(
+        [
+            np.clip(
+                float(sample.detection_confidence)
+                * float(sample.geometry_quality) ** 2
+                * _geometry_method_weight(sample.geometry_method)
+                / (1.0 + float(sample.stability_spread_px) ** 2),
+                0.01,
+                1.0,
+            )
+            for sample in samples
+        ],
+        dtype=np.float64,
+    )
 
 
 @dataclass(frozen=True)
@@ -226,20 +271,7 @@ def build_ball_compensation_model(
     spreads = np.asarray([float(sample.stability_spread_px) for sample in samples], dtype=np.float64)
     confidences = np.asarray([float(sample.detection_confidence) for sample in samples], dtype=np.float64)
     geometry_qualities = np.asarray([float(sample.geometry_quality) for sample in samples], dtype=np.float64)
-    sample_weights = np.asarray(
-        [
-            np.clip(
-                float(sample.detection_confidence)
-                * float(sample.geometry_quality) ** 2
-                * _geometry_method_weight(sample.geometry_method)
-                / (1.0 + float(sample.stability_spread_px) ** 2),
-                0.01,
-                1.0,
-            )
-            for sample in samples
-        ],
-        dtype=np.float64,
-    )
+    sample_weights = ball_compensation_sample_weights(samples)
     delta_norms = np.linalg.norm(deltas, axis=1)
 
     quality_gate = evaluate_ball_compensation_quality(

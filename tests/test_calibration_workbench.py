@@ -101,6 +101,39 @@ def test_workbench_enables_ball_and_holdout_after_joint_calibration() -> None:
     assert status.verification_enabled is True
 
 
+def test_workbench_high_residual_button_requires_valid_ball_model_and_starts_targeted_wizard() -> None:
+    app = _app()
+    calls: list[dict] = []
+    config = AppConfig()
+    config.detector.backend = "debug_color"
+    operator = SimpleNamespace(
+        config=config,
+        pipeline=None,
+        start_pipeline=lambda: None,
+        stop_pipeline=lambda: None,
+        open_settings=lambda: None,
+        run_linked_projector_calibration=lambda: None,
+        run_engineered_ball_compensation_wizard=lambda **kwargs: calls.append(kwargs),
+        run_complete_calibration_wizard=lambda: None,
+        show_projector_calibration_result=lambda _calibration: None,
+        show_projector_residual_overlay=lambda _calibration: None,
+    )
+    parent = QtWidgets.QWidget()
+    dialog = CalibrationWorkbenchDialog(
+        operator,
+        parent,
+        service_factory=lambda: _calibration(projection_valid=True, ball_valid=True),
+    )
+
+    assert dialog.resample_ball_btn.isEnabled() is True
+    dialog.resample_ball_btn.click()
+    assert calls == [{"resample_residual_threshold_mm": 5.0}]
+
+    dialog.close()
+    parent.close()
+    app.processEvents()
+
+
 def test_workbench_reuses_last_actual_capture_size_after_pipeline_stops(tmp_path) -> None:
     app = _app()
     config = AppConfig()

@@ -44,6 +44,7 @@ from ..calibration.ball_compensation_resampling import (
     aggregate_training_repeats,
     assess_holdout_repeatability,
     plan_failed_holdout_recovery,
+    prepare_high_residual_training_resampling,
 )
 from ..calibration.quality_standards import FORMAL_TABLE_ERROR_MEDIAN_MM
 from ..capture import create_capture_service
@@ -138,6 +139,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         *,
         auto_start: bool = False,
         auto_close_on_success: bool = False,
+        resample_residual_threshold_mm: float | None = None,
     ):
         super().__init__(parent or operator)
         self.operator = operator
@@ -146,25 +148,46 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         self._saved_path: Optional[Path] = None
         self._samples: list[BallCompensationSample] = []
         self._auto_close_on_success = bool(auto_close_on_success)
+        self._resample_residual_threshold_mm = (
+            None
+            if resample_residual_threshold_mm is None
+            else max(0.0, float(resample_residual_threshold_mm))
+        )
         self.setWindowTitle("工程球体补偿自动采样向导")
         self.resize(980, 820)
 
         layout = QtWidgets.QVBoxLayout(self)
 
-        intro = QtWidgets.QLabel(
-            "该向导会先按 8×7、共 56 个全桌目标点完成训练采样；每个目标自动采集 3 个稳定批次并取中位数，"
-            "第一遍有效样本全部用于拟合，不会再扣除边角点。随后会在 10 个空间分散位置进行 3 轮独立 Holdout 复采。"
-            "请确保投影平面校准文件与球检测模型都有效。"
-            f"采样时建议清空台面，仅保留一颗球；允许跳过异常点，但至少要获得 {MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个有效样本。"
-        )
+        if self._resample_residual_threshold_mm is not None:
+            intro_text = (
+                f"当前为高残差定点重采模式：系统会从当前启用的 56 点结果中自动筛选训练残差不低于 "
+                f"{self._resample_residual_threshold_mm:.1f} mm 的点。每个新样本替换原编号样本，其余训练数据保持不变；"
+                "旧 Holdout 不会复用，定点重采后将重新采集一套全新的 30 次 Holdout。"
+            )
+        else:
+            intro_text = (
+                "该向导会先按 8×7、共 56 个全桌目标点完成训练采样；每个目标自动采集 3 个稳定批次并取中位数，"
+                "第一遍有效样本全部用于拟合，不会再扣除边角点。随后会在 10 个空间分散位置进行 3 轮独立 Holdout 复采。"
+                "请确保投影平面校准文件与球检测模型都有效。"
+                f"采样时建议清空台面，仅保留一颗球；允许跳过异常点，但至少要获得 {MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个有效样本。"
+            )
+        intro = QtWidgets.QLabel(intro_text)
         intro.setWordWrap(True)
         layout.addWidget(intro)
 
         steps = QtWidgets.QPlainTextEdit()
         steps.setReadOnly(True)
-        steps.setPlainText(
-            "\n".join(
-                [
+        if self._resample_residual_threshold_mm is not None:
+            step_lines = [
+                "1. 确认当前启用的是需要修正的 56 点球心补偿文件，且相机、投影和检测模型没有改变。",
+                "2. 清空台面，仅保留一颗标准球。",
+                "3. 点击“开始重采高残差点”；日志会列出自动筛出的原始点号与残差。",
+                f"4. 每个待重采位置自动完成 {ENGINEERED_TRAINING_REPEATS} 个稳定批次并取中位数，不允许跳过。",
+                f"5. 完成定点重采后，继续采集 {ENGINEERED_HOLDOUT_LOCATION_COUNT} 个位置 × "
+                f"{ENGINEERED_HOLDOUT_REPEATS} 轮全新独立 Holdout。",
+            ]
+        else:
+            step_lines = [
                     "1. 在设置中确认当前投影平面校准文件可加载。",
                     "2. 启用可用的球检测后端；向导严格沿用当前工业相机畸变校正开关，不会自行开启校正。",
                     "3. 清空台面，仅保留一颗标准球。",
@@ -176,8 +199,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     f"7. 30次完成后先按每个位置最大复采离散度 {ENGINEERED_HOLDOUT_REPEATABILITY_MAX_DEVIATION_MM:.1f} mm 预检；"
                     "只重采超限位置。正式验收失败时，失败区域会标红，并可重采对应训练点及周边一圈。",
                 ]
-            )
-        )
+        steps.setPlainText("\n".join(step_lines))
         layout.addWidget(steps)
 
         file_box = QtWidgets.QGroupBox("输出文件模板")
@@ -213,7 +235,11 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         layout.addWidget(self.log_box, 1)
 
         button_row = QtWidgets.QHBoxLayout()
-        self.start_btn = QtWidgets.QPushButton("开始自动采样")
+        self.start_btn = QtWidgets.QPushButton(
+            "开始重采高残差点"
+            if self._resample_residual_threshold_mm is not None
+            else "开始自动采样"
+        )
         self.start_btn.clicked.connect(self.run_sampling)
         button_row.addWidget(self.start_btn)
         self.stop_btn = QtWidgets.QPushButton("停止")
@@ -606,69 +632,120 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             pending_training_resample_indices: list[int] = []
             failed_holdout_targets_table_mm: list[tuple[float, float]] = []
             holdout_generation = 0
-            try:
-                saved_checkpoint = load_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH)
-            except Exception as exc:
-                choice = QtWidgets.QMessageBox.question(
-                    self,
-                    "球心补偿暂存损坏",
-                    f"暂存文件无法读取：{exc}\n\n是否删除损坏暂存并重新开始？",
-                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
-                    QtWidgets.QMessageBox.Yes,
+            targeted_resampling = self._resample_residual_threshold_mm is not None
+            if targeted_resampling:
+                ball_path = self.operator.config.calibration.engineered_ball_compensation_file
+                if not ball_path:
+                    raise RuntimeError("当前未启用球心补偿文件，无法计算高残差重采点。")
+                task = prepare_high_residual_training_resampling(
+                    ball_path,
+                    current_sampling_grid_table_mm=sample_points,
+                    expected_calibration_context=model_context,
+                    threshold_mm=float(self._resample_residual_threshold_mm),
                 )
-                if choice != QtWidgets.QMessageBox.Yes:
-                    raise _SamplingAborted()
-                delete_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH)
-                saved_checkpoint = None
-            if saved_checkpoint is not None:
-                compatibility_errors = ball_compensation_checkpoint_compatibility_errors(
-                    saved_checkpoint,
+                source = task.source
+                plan = task.plan
+                self._samples = list(source.samples)
+                training_cursor = len(sample_points)
+                pending_training_resample_indices = list(plan.training_sample_indices)
+                checkpoint_holdout_observations.clear()
+                holdout_generation = 0
+                self._hydrate_resumed_training_samples(self._samples, calibration)
+                residual_by_index = dict(zip(plan.sample_indices, plan.residuals_mm))
+                selected_text = ", ".join(
+                    f"{index + 1}({residual_by_index[index]:.2f}mm)"
+                    for index in plan.training_sample_indices
+                )
+                self._append_log(
+                    f"已从当前校准筛出 {len(plan.training_sample_indices)} 个训练残差 ≥ "
+                    f"{plan.threshold_mm:.1f} mm 的点：{selected_text}。"
+                )
+                self._append_log("其余训练样本保持不变；旧 Holdout 已清空，重采后将生成全新 30 次 Holdout。")
+                self._write_sampling_checkpoint(
                     context=checkpoint_context,
-                    sampling_grid_table_mm=sample_points,
+                    sample_points=sample_points,
+                    training_cursor=training_cursor,
+                    holdout_observations=[],
+                    pending_training_resample_indices=pending_training_resample_indices,
+                    failed_holdout_targets_table_mm=[],
+                    holdout_generation=holdout_generation,
                 )
-                checkpoint_action = self._prompt_checkpoint_action(saved_checkpoint, compatibility_errors)
-                if checkpoint_action == "cancel":
-                    raise _SamplingAborted()
-                if checkpoint_action == "discard":
+                audit.event(
+                    "high_residual_training_resample_started",
+                    metrics={
+                        "threshold_mm": plan.threshold_mm,
+                        "selected_count": len(plan.training_sample_indices),
+                    },
+                    details={
+                        "source_path": str(source.source_path),
+                        "sample_indices": [index + 1 for index in plan.training_sample_indices],
+                        "residuals_mm": [residual_by_index[index] for index in plan.training_sample_indices],
+                    },
+                )
+            else:
+                try:
+                    saved_checkpoint = load_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH)
+                except Exception as exc:
+                    choice = QtWidgets.QMessageBox.question(
+                        self,
+                        "球心补偿暂存损坏",
+                        f"暂存文件无法读取：{exc}\n\n是否删除损坏暂存并重新开始？",
+                        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+                        QtWidgets.QMessageBox.Yes,
+                    )
+                    if choice != QtWidgets.QMessageBox.Yes:
+                        raise _SamplingAborted()
                     delete_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH)
-                    audit.event("checkpoint_discarded", details={"path": str(BALL_COMPENSATION_CHECKPOINT_PATH)})
-                else:
-                    if checkpoint_action == "restart_holdout":
-                        saved_checkpoint = restart_ball_compensation_checkpoint_from_holdout(saved_checkpoint)
-                        save_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH, saved_checkpoint)
+                    saved_checkpoint = None
+                if saved_checkpoint is not None:
+                    compatibility_errors = ball_compensation_checkpoint_compatibility_errors(
+                        saved_checkpoint,
+                        context=checkpoint_context,
+                        sampling_grid_table_mm=sample_points,
+                    )
+                    checkpoint_action = self._prompt_checkpoint_action(saved_checkpoint, compatibility_errors)
+                    if checkpoint_action == "cancel":
+                        raise _SamplingAborted()
+                    if checkpoint_action == "discard":
+                        delete_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH)
+                        audit.event("checkpoint_discarded", details={"path": str(BALL_COMPENSATION_CHECKPOINT_PATH)})
+                    else:
+                        if checkpoint_action == "restart_holdout":
+                            saved_checkpoint = restart_ball_compensation_checkpoint_from_holdout(saved_checkpoint)
+                            save_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH, saved_checkpoint)
+                            audit.event(
+                                "checkpoint_holdout_restarted",
+                                metrics={
+                                    "training_cursor": saved_checkpoint.training_cursor,
+                                    "training_sample_count": len(saved_checkpoint.training_samples),
+                                },
+                                details={"path": str(BALL_COMPENSATION_CHECKPOINT_PATH)},
+                            )
+                            self._append_log("已保留第一遍 56 点训练记录，并清空旧 Holdout；本轮将重新采集 30 点。")
+                        self._samples = list(saved_checkpoint.training_samples)
+                        training_cursor = int(saved_checkpoint.training_cursor)
+                        checkpoint_holdout_observations = list(saved_checkpoint.holdout_observations)
+                        pending_training_resample_indices = list(saved_checkpoint.pending_training_resample_indices)
+                        failed_holdout_targets_table_mm = list(saved_checkpoint.failed_holdout_targets_table_mm)
+                        holdout_generation = int(saved_checkpoint.holdout_generation)
+                        self._hydrate_resumed_training_samples(self._samples, calibration)
+                        self.progress.setValue(
+                            int(round(training_cursor / max(1, len(sample_points)) * 70.0))
+                        )
                         audit.event(
-                            "checkpoint_holdout_restarted",
+                            "checkpoint_resumed",
                             metrics={
-                                "training_cursor": saved_checkpoint.training_cursor,
-                                "training_sample_count": len(saved_checkpoint.training_samples),
+                                "training_cursor": training_cursor,
+                                "training_sample_count": len(self._samples),
+                                "holdout_completed_count": len(checkpoint_holdout_observations),
                             },
                             details={"path": str(BALL_COMPENSATION_CHECKPOINT_PATH)},
                         )
-                        self._append_log("已保留第一遍 56 点训练记录，并清空旧 Holdout；本轮将重新采集 30 点。")
-                    self._samples = list(saved_checkpoint.training_samples)
-                    training_cursor = int(saved_checkpoint.training_cursor)
-                    checkpoint_holdout_observations = list(saved_checkpoint.holdout_observations)
-                    pending_training_resample_indices = list(saved_checkpoint.pending_training_resample_indices)
-                    failed_holdout_targets_table_mm = list(saved_checkpoint.failed_holdout_targets_table_mm)
-                    holdout_generation = int(saved_checkpoint.holdout_generation)
-                    self._hydrate_resumed_training_samples(self._samples, calibration)
-                    self.progress.setValue(
-                        int(round(training_cursor / max(1, len(sample_points)) * 70.0))
-                    )
-                    audit.event(
-                        "checkpoint_resumed",
-                        metrics={
-                            "training_cursor": training_cursor,
-                            "training_sample_count": len(self._samples),
-                            "holdout_completed_count": len(checkpoint_holdout_observations),
-                        },
-                        details={"path": str(BALL_COMPENSATION_CHECKPOINT_PATH)},
-                    )
-                    self._append_log(
-                        f"已继承球心补偿暂存：训练 {training_cursor}/{len(sample_points)}，"
-                        f"Holdout {len(checkpoint_holdout_observations)}/"
-                        f"{ENGINEERED_HOLDOUT_LOCATION_COUNT * ENGINEERED_HOLDOUT_REPEATS}。"
-                    )
+                        self._append_log(
+                            f"已继承球心补偿暂存：训练 {training_cursor}/{len(sample_points)}，"
+                            f"Holdout {len(checkpoint_holdout_observations)}/"
+                            f"{ENGINEERED_HOLDOUT_LOCATION_COUNT * ENGINEERED_HOLDOUT_REPEATS}。"
+                        )
             self._append_log(f"已生成 {len(sample_points)} 个工程采样点，请按投影目标圈移动单颗球。")
 
             total = max(1, len(sample_points))
@@ -970,7 +1047,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             )
             self._show_target(target_ellipse, ordinal, total, alert=True)
             self.summary.setText(
-                f"正在重采失败区域训练点 {ordinal}/{total}（原第 {sample_index + 1}/56 点）。"
+                f"正在重采高残差/失败区域训练点 {ordinal}/{total}（原第 {sample_index + 1}/56 点）。"
             )
             outcome = self._collect_training_repeats(
                 capture,
@@ -984,7 +1061,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 expected_cam.astype(np.float32),
             )
             if outcome is None:
-                raise RuntimeError("失败区域训练点重采不可跳过；请重试当前点或结束向导。")
+                raise RuntimeError("高残差/失败区域训练点重采不可跳过；请重试当前点或结束向导。")
             replaced = False
             for position, existing in enumerate(self._samples):
                 if int(existing.sample_index) == int(sample_index):

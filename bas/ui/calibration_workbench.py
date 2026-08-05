@@ -125,6 +125,11 @@ class CalibrationWorkbenchDialog(QtWidgets.QDialog):
         self.settings_btn = QtWidgets.QPushButton("打开采集与几何设置")
         self.joint_btn = QtWidgets.QPushButton("开始联合校准")
         self.ball_btn = QtWidgets.QPushButton("开始球心补偿")
+        self.resample_ball_btn = QtWidgets.QPushButton("重采 ≥5 mm 训练点")
+        self.resample_ball_btn.setToolTip(
+            "从当前启用的 56 点球心补偿中自动筛选训练残差不低于 5 mm 的点；"
+            "新样本替换原点，其余训练样本保持不变，随后重新采集全新 Holdout。"
+        )
         self.complete_btn = QtWidgets.QPushButton("开始完整校准向导（推荐）")
         self.show_result_btn = QtWidgets.QPushButton("投影显示校准结果")
         self.refresh_btn = QtWidgets.QPushButton("刷新校准状态")
@@ -135,7 +140,8 @@ class CalibrationWorkbenchDialog(QtWidgets.QDialog):
         workflow.addWidget(self.joint_btn, 2, 0)
         workflow.addWidget(self.ball_btn, 2, 1)
         workflow.addWidget(self.show_result_btn, 2, 2)
-        workflow.addWidget(self.refresh_btn, 3, 0, 1, 3)
+        workflow.addWidget(self.resample_ball_btn, 3, 0, 1, 2)
+        workflow.addWidget(self.refresh_btn, 3, 2)
         root.addWidget(workflow_box)
 
         verify_box = QtWidgets.QGroupBox("独立 Holdout 验收")
@@ -164,6 +170,7 @@ class CalibrationWorkbenchDialog(QtWidgets.QDialog):
         self.settings_btn.clicked.connect(self._open_settings)
         self.joint_btn.clicked.connect(self._run_joint_calibration)
         self.ball_btn.clicked.connect(self._run_ball_compensation)
+        self.resample_ball_btn.clicked.connect(self._run_high_residual_ball_resampling)
         self.complete_btn.clicked.connect(self._run_complete_calibration)
         self.show_result_btn.clicked.connect(self._show_result)
         self.refresh_btn.clicked.connect(self.refresh)
@@ -231,6 +238,9 @@ class CalibrationWorkbenchDialog(QtWidgets.QDialog):
         self.stop_camera_btn.setEnabled(self.status.camera_running)
         self.joint_btn.setEnabled(True)
         self.ball_btn.setEnabled(self.status.ball_calibration_enabled)
+        self.resample_ball_btn.setEnabled(
+            self.status.ball_calibration_enabled and self.status.ball_compensation_valid
+        )
         self.show_result_btn.setEnabled(self.status.projection_valid)
         self.verify_btn.setEnabled(self.status.verification_enabled)
 
@@ -281,6 +291,14 @@ class CalibrationWorkbenchDialog(QtWidgets.QDialog):
         if self.status is None or not self.status.ball_calibration_enabled:
             return
         self.operator.run_engineered_ball_compensation_wizard()
+        self.refresh()
+
+    def _run_high_residual_ball_resampling(self) -> None:
+        if self.status is None or not self.status.ball_compensation_valid:
+            return
+        self.operator.run_engineered_ball_compensation_wizard(
+            resample_residual_threshold_mm=5.0,
+        )
         self.refresh()
 
     def _show_result(self) -> None:

@@ -4022,12 +4022,18 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         return dialog._saved_path is not None and dialog._result is not None
 
     @QtCore.pyqtSlot()
-    def run_engineered_ball_compensation_wizard(self, *, auto_start: bool = False) -> bool:
+    def run_engineered_ball_compensation_wizard(
+        self,
+        *,
+        auto_start: bool = False,
+        resample_residual_threshold_mm: float | None = None,
+    ) -> bool:
         dialog = EngineeredBallCompensationWizardDialog(
             self,
             self,
             auto_start=auto_start,
             auto_close_on_success=auto_start,
+            resample_residual_threshold_mm=resample_residual_threshold_mm,
         )
         dialog.exec_()
         return dialog._saved_path is not None

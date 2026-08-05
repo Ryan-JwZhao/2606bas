@@ -362,6 +362,29 @@ def ball_center_map_quality(
     }
 
 
+def ball_center_map_training_residuals(
+    source: np.ndarray,
+    target: np.ndarray,
+    *,
+    sample_weights: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Return per-control-point residuals from the exact runtime ball map."""
+
+    source_points = ensure_numpy_points(source).astype(np.float64)
+    target_points = ensure_numpy_points(target).astype(np.float64)
+    if source_points.shape != target_points.shape:
+        raise ValueError("ball-center source and target points must have the same shape")
+    model = _BallPlaneMap.fit(
+        source_points,
+        target_points,
+        sample_weights=sample_weights,
+    )
+    if model is None:
+        raise ValueError("ball-center map is unavailable for training residual evaluation")
+    predicted = model.map(source_points).astype(np.float64)
+    return np.linalg.norm(predicted - target_points, axis=1)
+
+
 def _support_fade_distance(source: np.ndarray) -> float:
     pts = ensure_numpy_points(source).astype(np.float64)
     if pts.shape[0] < 2:
