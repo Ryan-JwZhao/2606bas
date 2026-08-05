@@ -148,12 +148,20 @@ def prepare_high_residual_training_resampling(
         )
     saved_grid = np.asarray(source.sampling_grid_table_mm, dtype=np.float64).reshape((-1, 2))
     current_grid = np.asarray(current_sampling_grid_table_mm, dtype=np.float64).reshape((-1, 2))
-    if saved_grid.shape != current_grid.shape or not np.allclose(saved_grid, current_grid, atol=0.5):
-        raise ValueError("当前球心补偿文件的 56 点采样网格与当前台面网格不一致，不能安全替换样本。")
-    expected_indices = list(range(len(current_grid)))
+    if saved_grid.shape != current_grid.shape:
+        raise ValueError("当前球心补偿文件的训练点数量与当前采样流程不一致，不能安全替换样本。")
+    if not np.all(np.isfinite(saved_grid)):
+        raise ValueError("当前球心补偿文件的训练网格包含无效坐标，不能安全替换样本。")
+    expected_indices = list(range(len(saved_grid)))
     actual_indices = sorted(int(sample.sample_index) for sample in source.samples)
     if actual_indices != expected_indices:
         raise ValueError("当前球心补偿文件必须完整包含编号 1–56 的训练样本，才能执行定点重采。")
+    targets_by_index = np.empty_like(saved_grid)
+    for sample in source.samples:
+        targets_by_index[int(sample.sample_index)] = np.asarray(sample.target_table_mm, dtype=np.float64)
+    target_grid_error = np.linalg.norm(targets_by_index - saved_grid, axis=1)
+    if float(np.max(target_grid_error, initial=0.0)) > 0.5:
+        raise ValueError("当前球心补偿文件的训练样本与其存档网格不一致，不能安全替换样本。")
     plan = plan_high_residual_training_resampling(source.samples, threshold_mm=threshold_mm)
     if not plan.training_sample_indices:
         raise ValueError(f"当前 56 点中没有训练残差 ≥ {plan.threshold_mm:.1f} mm 的点，无需重采。")

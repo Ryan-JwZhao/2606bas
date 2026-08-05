@@ -645,6 +645,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 )
                 source = task.source
                 plan = task.plan
+                sample_points = np.asarray(source.sampling_grid_table_mm, dtype=np.float32).reshape((-1, 2))
                 self._samples = list(source.samples)
                 training_cursor = len(sample_points)
                 pending_training_resample_indices = list(plan.training_sample_indices)
@@ -660,6 +661,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     f"已从当前校准筛出 {len(plan.training_sample_indices)} 个训练残差 ≥ "
                     f"{plan.threshold_mm:.1f} mm 的点：{selected_text}。"
                 )
+                self._append_log("定点重采使用原校准文件保存的 56 点目标坐标，不依赖当前网格生成顺序。")
                 self._append_log("其余训练样本保持不变；旧 Holdout 已清空，重采后将生成全新 30 次 Holdout。")
                 self._write_sampling_checkpoint(
                     context=checkpoint_context,

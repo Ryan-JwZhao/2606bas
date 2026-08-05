@@ -229,3 +229,74 @@ def test_prepare_high_residual_resampling_rejects_changed_calibration_context(tm
             expected_calibration_context={"frame_width": 1280},
             threshold_mm=5.0,
         )
+
+
+def test_prepare_high_residual_resampling_uses_persisted_grid_when_generator_drifted(tmp_path) -> None:
+    import json
+
+    samples = []
+    for row in range(4):
+        for col in range(5):
+            index = row * 5 + col
+            target = (float(col * 100), float(row * 100))
+            detected = target if index != 7 else (target[0] + 30.0, target[1] - 20.0)
+            samples.append(_sample(index, target, detected))
+    stored_grid = [sample.target_table_mm for sample in samples]
+    regenerated_grid = [*stored_grid]
+    regenerated_grid[15:] = reversed(regenerated_grid[15:])
+    regenerated_grid[19] = (regenerated_grid[19][0] + 25.0, regenerated_grid[19][1])
+    path = tmp_path / "ball.json"
+    path.write_text(
+        json.dumps(
+            {
+                "samples": [sample.to_dict() for sample in samples],
+                "sampling_grid_table_mm": stored_grid,
+                "calibration_context": {"frame_width": 1920},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    task = prepare_high_residual_training_resampling(
+        path,
+        current_sampling_grid_table_mm=regenerated_grid,
+        expected_calibration_context={"frame_width": 1920},
+        threshold_mm=5.0,
+    )
+
+    assert task.plan.training_sample_indices == (7,)
+    assert task.source.sampling_grid_table_mm == tuple(stored_grid)
+
+
+def test_prepare_high_residual_resampling_rejects_sample_target_mismatch_with_persisted_grid(tmp_path) -> None:
+    import json
+    import pytest
+
+    samples = []
+    for row in range(4):
+        for col in range(5):
+            index = row * 5 + col
+            target = (float(col * 100), float(row * 100))
+            detected = target if index != 7 else (target[0] + 30.0, target[1] - 20.0)
+            samples.append(_sample(index, target, detected))
+    stored_grid = [sample.target_table_mm for sample in samples]
+    stored_grid[7] = (stored_grid[7][0] + 10.0, stored_grid[7][1])
+    path = tmp_path / "ball.json"
+    path.write_text(
+        json.dumps(
+            {
+                "samples": [sample.to_dict() for sample in samples],
+                "sampling_grid_table_mm": stored_grid,
+                "calibration_context": {"frame_width": 1920},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="训练样本与其存档网格不一致"):
+        prepare_high_residual_training_resampling(
+            path,
+            current_sampling_grid_table_mm=stored_grid,
+            expected_calibration_context={"frame_width": 1920},
+            threshold_mm=5.0,
+        )
