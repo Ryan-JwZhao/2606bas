@@ -6,6 +6,7 @@ from typing import List, Sequence, Tuple
 import cv2
 import numpy as np
 
+from .geometry import pocket_arc_center
 from .utils import ensure_numpy_points
 
 
@@ -64,12 +65,19 @@ def derive_table_boundaries(
     )
     center_margin = 0.5 * max(0.0, float(ball_diameter_mm)) + max(0.0, float(center_reachable_extra_margin_mm))
     center_playable = inset_polygon_uniform(physical_rail, center_margin, width, height)
-    visible_pockets = _pocket_centers_mm(pocket_curves_mm, width, height, projection_visible_insets)
+    visible_pockets = _pocket_centers_mm(
+        pocket_curves_mm,
+        width,
+        height,
+        projection_visible_insets,
+        ball_diameter_mm=ball_diameter_mm,
+    )
     physical_pockets = _pocket_centers_mm(
         pocket_curves_mm,
         width,
         height,
         physical_rail_insets,
+        ball_diameter_mm=ball_diameter_mm,
         middle_relief_top_mm=float(physical_middle_pocket_relief_top_mm),
         middle_relief_bottom_mm=float(physical_middle_pocket_relief_bottom_mm),
     )
@@ -123,6 +131,7 @@ def _pocket_centers_mm(
     height_mm: float,
     insets: EdgeInsets,
     *,
+    ball_diameter_mm: float,
     middle_relief_top_mm: float = 0.0,
     middle_relief_bottom_mm: float = 0.0,
 ) -> List[Tuple[float, float]]:
@@ -133,7 +142,7 @@ def _pocket_centers_mm(
         if pts.shape[0] < 2:
             continue
         adjusted = apply_edge_insets(pts, width_mm, height_mm, insets)
-        center = np.mean(adjusted, axis=0)
+        center = pocket_arc_center(adjusted, ball_diameter_mm)
         centers.append((float(center[0]), float(center[1])))
     out = list(centers)
     if top_middle_idx is not None and 0 <= top_middle_idx < len(out):

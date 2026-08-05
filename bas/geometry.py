@@ -494,6 +494,49 @@ class TableGeometryLoader:
         )
 
 
+def pocket_arc_center(points: np.ndarray, expected_diameter: float) -> np.ndarray:
+    """Return the circle center represented by an annotated pocket-jaw arc.
+
+    Pocket annotations trace the cloth-facing jaw.  Their point mean is
+    therefore biased toward the table and is not the physical pocket center.
+    Legacy straight or irregular annotations retain the old point-mean
+    behavior through conservative fit-quality gates.
+    """
+
+    curve = np.asarray(points, dtype=np.float64).reshape((-1, 2))
+    if curve.shape[0] == 0:
+        return np.zeros((2,), dtype=np.float32)
+    fallback = np.mean(curve, axis=0)
+    if curve.shape[0] < 3:
+        return fallback.astype(np.float32)
+
+    x = curve[:, 0]
+    y = curve[:, 1]
+    design = np.column_stack((2.0 * x, 2.0 * y, np.ones(curve.shape[0], dtype=np.float64)))
+    target = x * x + y * y
+    try:
+        solution, _, rank, _ = np.linalg.lstsq(design, target, rcond=None)
+    except np.linalg.LinAlgError:
+        return fallback.astype(np.float32)
+    if int(rank) < 3 or not np.all(np.isfinite(solution)):
+        return fallback.astype(np.float32)
+
+    center = solution[:2]
+    radius_sq = float(solution[2] + np.dot(center, center))
+    if not np.isfinite(radius_sq) or radius_sq <= 0.0:
+        return fallback.astype(np.float32)
+    radius = float(np.sqrt(radius_sq))
+    radial_error = np.linalg.norm(curve - center, axis=1) - radius
+    rmse = float(np.sqrt(np.mean(radial_error * radial_error)))
+    diameter = max(1.0, float(expected_diameter))
+    plausible_radius = diameter * 0.45 <= radius <= diameter * 2.0
+    plausible_offset = float(np.linalg.norm(center - fallback)) <= diameter * 1.5
+    accurate_arc = rmse <= max(1.5, radius * 0.08)
+    if not (plausible_radius and plausible_offset and accurate_arc):
+        return fallback.astype(np.float32)
+    return center.astype(np.float32)
+
+
 def canonical_pocket_indices(pockets: List[np.ndarray]) -> List[int]:
     """Return stable TL, TM, TR, BR, BM, BL indices for a six-pocket table."""
 

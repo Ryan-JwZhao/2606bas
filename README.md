@@ -338,7 +338,17 @@ Modern 进球识别由四个独立模块协作：
 - `bas/state/pocket_trajectory.py`：判断可见轨迹、预击球历史和跨 ID 轨迹是否会穿过袋口。
 - `bas/state/pocket.py`：把轨迹、袋口视觉和跨 ID 证据合并为一个逻辑球决定，负责确认、撤销、去重和诊断原因。
 
-袋口局部坐标以真实 pocket curve 的质心为原点。`tangent_unit` 沿袋口曲线两端点方向，`outward_normal` 明确定义为“从桌内指向袋外”，`inward_normal = -outward_normal`。原始 inline 拼接出的 table edge polygon 只用于确定法向方向；physical rail inset 后的 `inner_polygon_mm` 不参与这一步；ball-center reachable polygon 只用于判断球心是否已回到正常台面。
+袋口局部坐标以真实 pocket curve 拟合出的圆心为原点。pocket 标注画的是朝向台面的袋唇圆弧，不能直接把采样点质心当作洞心，否则六袋都会向台内偏移约半个袋口半径。运行时由 `bas/geometry.py` 统一执行最小二乘圆拟合，袋口观察器和状态机共享同一中心；点数不足、近似直线或拟合质量不合格的旧标注会保守退回采样点质心。`tangent_unit` 沿袋口曲线两端点方向，`outward_normal` 明确定义为“从桌内指向袋外”，`inward_normal = -outward_normal`。原始 inline 拼接出的 table edge polygon 只用于确定法向方向；physical rail inset 后的 `inner_polygon_mm` 不参与这一步；ball-center reachable polygon 只用于判断球心是否已回到正常台面。
+
+### 袋口圆弧中心修复（2026-08）
+
+当前 `0804_pocket.json` 的六条曲线应继续贴着球桌布面侧的真实袋唇绘制，不需要为了“洞心”额外内移或重画。程序会从曲线恢复物理圆心，并把它同时用于袋口 ROI 入口门控、物理袋位和进袋轨迹走廊。修改代码后需要正常重启 BAS 才会载入新逻辑；已经运行的进程不会热替换 Python 源码。
+
+定向验证命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_detection_regions.py tests\test_table_boundaries.py tests\test_pocket_geometry.py tests\test_pocket_observer.py tests\test_geometry_pocket_integration.py tests\test_pocket_evaluator.py -q
+```
 
 对球心 `ball_center`，统一计算：
 

@@ -6,7 +6,7 @@ from typing import Optional, Sequence
 import cv2
 import numpy as np
 
-from ..geometry import TableGeometry, canonical_pocket_indices
+from ..geometry import TableGeometry, canonical_pocket_indices, pocket_arc_center
 from ..schemas import Detection
 from ..utils import ensure_numpy_points, group_from_class
 
@@ -148,15 +148,17 @@ def _build_pocket_guards(
             )
             samples.append(circle.astype(np.float32))
         hull = cv2.convexHull(np.vstack([points, *samples]).astype(np.float32)).reshape((-1, 2))
+        center = pocket_arc_center(points, diameter)
         guards.append(
             PocketGuardRegion(
                 pocket_index=int(pocket_index),
                 polygon=hull.astype(np.float32),
-                center_px=(float(np.mean(points[:, 0])), float(np.mean(points[:, 1]))),
+                center_px=(float(center[0]), float(center[1])),
                 ball_diameter_px=float(diameter),
             )
         )
     return tuple(guards)
+
 
 __all__ = [
     "DetectionRegionPolicy",

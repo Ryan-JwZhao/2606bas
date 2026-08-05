@@ -69,6 +69,42 @@ def test_apply_edge_insets_keeps_straight_rail_segments_straight() -> None:
     np.testing.assert_allclose(adjusted[:, 1], np.full((top_rail.shape[0],), 14.0, dtype=np.float32), atol=1e-5)
 
 
+def test_right_top_pocket_center_uses_annotated_jaw_arc_center() -> None:
+    # 0804 right-top pocket annotation: the point mean is on the table side,
+    # while the fitted circle center is the physical pocket center.
+    pocket_curve = np.array(
+        [
+            [1847.7, 57.6],
+            [1849.6, 63.7],
+            [1853.2, 70.2],
+            [1856.3, 75.2],
+            [1860.4, 79.6],
+            [1865.5, 85.1],
+            [1871.6418, 90.4592],
+            [1878.5304, 94.4776],
+            [1886.3375, 97.5775],
+            [1894.8335, 98.8404],
+            [1900.9185, 98.7256],
+        ],
+        dtype=np.float32,
+    )
+
+    boundaries = derive_table_boundaries(
+        np.array([[0, 0], [1920, 0], [1920, 1080], [0, 1080]], dtype=np.float32),
+        [pocket_curve],
+        table_width_mm=1920.0,
+        table_height_mm=1080.0,
+        ball_diameter_mm=48.2,
+        projection_visible_insets=EdgeInsets(),
+        physical_rail_insets=EdgeInsets(),
+        physical_middle_pocket_relief_top_mm=0.0,
+        physical_middle_pocket_relief_bottom_mm=0.0,
+        center_reachable_extra_margin_mm=0.0,
+    )
+
+    np.testing.assert_allclose(boundaries.physical_pocket_points_mm[0], (1902.2, 43.1), atol=1.0)
+
+
 def test_middle_pocket_relief_brings_physical_boundary_closer_to_visible() -> None:
     visible_polygon = np.array(
         [[0, 0], [430, 0], [470, 20], [500, 28], [530, 20], [570, 0], [1000, 0], [1000, 500], [0, 500]],
