@@ -11,6 +11,13 @@ from .ball_compensation_checkpoint import (
     restart_ball_compensation_checkpoint_from_holdout,
     save_ball_compensation_checkpoint,
 )
+from .ball_compensation_diagnostics import (
+    ReusableHoldoutSource,
+    ReusedHoldoutDiagnostic,
+    evaluate_ball_compensation_training_residuals,
+    fit_with_reused_holdout_diagnostic,
+    load_reusable_holdout_source,
+)
 from .audit import CalibrationAudit, load_calibration_audit_summaries, start_calibration_audit
 from .ball_compensation_sampling import (
     BallCompensationSample,
@@ -79,6 +86,11 @@ __all__ = [
     "make_ball_compensation_checkpoint",
     "restart_ball_compensation_checkpoint_from_holdout",
     "save_ball_compensation_checkpoint",
+    "ReusableHoldoutSource",
+    "ReusedHoldoutDiagnostic",
+    "evaluate_ball_compensation_training_residuals",
+    "fit_with_reused_holdout_diagnostic",
+    "load_reusable_holdout_source",
     "CalibrationAudit",
     "load_calibration_audit_summaries",
     "start_calibration_audit",

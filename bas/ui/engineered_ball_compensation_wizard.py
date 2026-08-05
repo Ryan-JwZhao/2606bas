@@ -25,8 +25,11 @@ from ..calibration import (
     build_engineered_ball_sampling_grid,
     create_setting_aware_calibration_service,
     delete_ball_compensation_checkpoint,
+    evaluate_ball_compensation_training_residuals,
     fit_and_validate_ball_compensation,
+    fit_with_reused_holdout_diagnostic,
     load_ball_compensation_checkpoint,
+    load_reusable_holdout_source,
     make_ball_compensation_checkpoint,
     restart_ball_compensation_checkpoint_from_holdout,
     save_ball_compensation_checkpoint,
@@ -55,6 +58,11 @@ from ..perception import build_detection_region_policy, create_detector, filter_
 from ..schemas import Detection
 from ..table_boundaries import EdgeInsets
 from ..utils import group_from_class
+from .ball_compensation_residual_view import (
+    render_projector_ball_residual_view,
+    render_training_residual_bubble_chart,
+    save_residual_view,
+)
 
 TIMESTAMPED_BALL_COMPENSATION_FILE_RE = re.compile(r"^(?P<base>.*?)(?:_\d{8}_\d{6})?$")
 DEFAULT_BALL_COMPENSATION_OUTPUT_DIR = PROJECT_ROOT / "local_settings" / "calibrations"
@@ -162,7 +170,7 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
             intro_text = (
                 f"当前为高残差定点重采模式：系统会从当前启用的 56 点结果中自动筛选训练残差不低于 "
                 f"{self._resample_residual_threshold_mm:.1f} mm 的点。每个新样本替换原编号样本，其余训练数据保持不变；"
-                "旧 Holdout 不会复用，定点重采后将重新采集一套全新的 30 次 Holdout。"
+                "定点重采后可选择重新采集一套全新的 30 次正式 Holdout，或沿用现有 30 次数据进行临时诊断。"
             )
         else:
             intro_text = (
@@ -183,8 +191,8 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 "2. 清空台面，仅保留一颗标准球。",
                 "3. 点击“开始重采高残差点”；日志会列出自动筛出的原始点号与残差。",
                 f"4. 每个待重采位置自动完成 {ENGINEERED_TRAINING_REPEATS} 个稳定批次并取中位数，不允许跳过。",
-                f"5. 完成定点重采后，继续采集 {ENGINEERED_HOLDOUT_LOCATION_COUNT} 个位置 × "
-                f"{ENGINEERED_HOLDOUT_REPEATS} 轮全新独立 Holdout。",
+                f"5. 完成后选择：采集 {ENGINEERED_HOLDOUT_LOCATION_COUNT} 个位置 × "
+                f"{ENGINEERED_HOLDOUT_REPEATS} 轮全新独立 Holdout（正式验收），或沿用现有 30 次数据（仅诊断）。",
             ]
         else:
             step_lines = [
@@ -662,7 +670,10 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     f"{plan.threshold_mm:.1f} mm 的点：{selected_text}。"
                 )
                 self._append_log("定点重采使用原校准文件保存的 56 点目标坐标，不依赖当前网格生成顺序。")
-                self._append_log("其余训练样本保持不变；旧 Holdout 已清空，重采后将生成全新 30 次 Holdout。")
+                self._append_log(
+                    "其余训练样本保持不变；重采完成后可选择全新 30 次正式 Holdout，"
+                    "或沿用现有 30 次数据作临时诊断。"
+                )
                 self._write_sampling_checkpoint(
                     context=checkpoint_context,
                     sample_points=sample_points,
@@ -700,6 +711,20 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     delete_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH)
                     saved_checkpoint = None
                 if saved_checkpoint is not None:
+                    checkpoint_context_errors = ball_compensation_checkpoint_compatibility_errors(
+                        saved_checkpoint,
+                        context=checkpoint_context,
+                        sampling_grid_table_mm=saved_checkpoint.sampling_grid_table_mm,
+                    )
+                    if not checkpoint_context_errors:
+                        sample_points = np.asarray(
+                            saved_checkpoint.sampling_grid_table_mm,
+                            dtype=np.float32,
+                        ).reshape((-1, 2))
+                        self._append_log(
+                            "断点继续使用暂存文件保存的 56 点目标坐标，"
+                            "避免网格生成算法变化导致已采样点错位。"
+                        )
                     compatibility_errors = ball_compensation_checkpoint_compatibility_errors(
                         saved_checkpoint,
                         context=checkpoint_context,
@@ -847,8 +872,19 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     f"有效采样点只有 {len(self._samples)} 个，至少需要 "
                     f"{MIN_BALL_COMPENSATION_ACCEPTED_SAMPLES} 个第一遍训练样本。"
                 )
+            reusable_holdout_source = None
+            try:
+                reusable_holdout_source = load_reusable_holdout_source(
+                    self.operator.config.calibration.engineered_ball_compensation_file,
+                    expected_sampling_grid_table_mm=sample_points,
+                    expected_calibration_context=model_context,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                self._append_log(f"现有 Holdout 无法安全读取，将只提供全新 30 次采集：{exc}")
+            reused_diagnostic = None
+            holdout_strategy_prompted = False
             validated = None
-            while validated is None:
+            while validated is None and reused_diagnostic is None:
                 if pending_training_resample_indices:
                     checkpoint_holdout_observations.clear()
                     holdout_generation += 1
@@ -875,6 +911,40 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                     table_width_mm=float(calibration.table.width_mm),
                     table_height_mm=float(calibration.table.height_mm),
                 )
+                if (
+                    not checkpoint_holdout_observations
+                    and reusable_holdout_source is not None
+                    and not holdout_strategy_prompted
+                ):
+                    holdout_strategy_prompted = True
+                    strategy = self._prompt_holdout_strategy(reusable_holdout_source)
+                    if strategy == "cancel":
+                        raise _SamplingAborted()
+                    if strategy == "reuse":
+                        reused_diagnostic = fit_with_reused_holdout_diagnostic(
+                            self._samples,
+                            calibration,
+                            reusable_holdout_source,
+                            calibration_context=model_context,
+                        )
+                        audit.event(
+                            "existing_holdout_reused_for_diagnostic",
+                            status="warning",
+                            metrics={
+                                "training_count": len(self._samples),
+                                "holdout_location_count": len(reusable_holdout_source.samples),
+                                "holdout_observation_count": reusable_holdout_source.observation_count,
+                            },
+                            details={
+                                "source_path": str(reusable_holdout_source.source_path),
+                                "holdout_quality": reused_diagnostic.holdout_report,
+                            },
+                        )
+                        self._append_log(
+                            "已沿用现有 30 次 Holdout 数据重新评估新 56 点模型；"
+                            "该结果只作诊断，不计为正式独立验收。"
+                        )
+                        break
                 try:
                     validated = self._run_holdout_cycle(
                         capture=capture,
@@ -930,12 +1000,36 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                         holdout_generation=holdout_generation,
                     )
                     raise
-            model = validated.model
-            training_samples = list(validated.training_samples)
-            holdout_samples = list(validated.holdout_samples)
-            holdout_report = validated.holdout_report
+            diagnostic_only = reused_diagnostic is not None
+            if diagnostic_only:
+                model = reused_diagnostic.model
+                training_samples = list(self._samples)
+                holdout_samples = list(reusable_holdout_source.samples)
+                holdout_report = reused_diagnostic.holdout_report
+                training_residual_report = reused_diagnostic.training_report
+                model.quality_report = {
+                    **model.quality_report,
+                    "temporary_activation": True,
+                    "formal_holdout_gate_waived": True,
+                    "formal_holdout_quality_gate_passed": False,
+                }
+                calibration.ball_compensation_model = model
+                calibration._rebuild_geometry()
+            else:
+                model = validated.model
+                training_samples = list(validated.training_samples)
+                holdout_samples = list(validated.holdout_samples)
+                holdout_report = validated.holdout_report
+                training_residual_report = evaluate_ball_compensation_training_residuals(
+                    training_samples,
+                    calibration,
+                )
             audit.event(
-                "training_and_independent_holdout_prepared",
+                (
+                    "training_and_reused_holdout_diagnostic_prepared"
+                    if diagnostic_only
+                    else "training_and_independent_holdout_prepared"
+                ),
                 metrics={
                     "accepted_count": len(self._samples),
                     "training_count": len(training_samples),
@@ -943,58 +1037,113 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
                 },
             )
             audit.event(
-                "holdout_evaluated",
-                status="ok" if bool(holdout_report.get("quality_gate_passed", False)) else "failed",
+                "reused_holdout_evaluated" if diagnostic_only else "holdout_evaluated",
+                status=(
+                    "warning"
+                    if diagnostic_only
+                    else "ok" if bool(holdout_report.get("quality_gate_passed", False)) else "failed"
+                ),
                 details={
                     "training_quality": model.quality_report,
                     "holdout_quality": holdout_report,
                 },
             )
             save_template = self._safe_ball_compensation_output_path(calibration)
-            save_path = timestamped_ball_compensation_output_path(str(save_template))
+            save_path = (
+                DEFAULT_BALL_COMPENSATION_OUTPUT_DIR
+                / f"engineered_ball_compensation_{time.strftime('%Y%m%d_%H%M%S')}_temp_reused_holdout.json"
+                if diagnostic_only
+                else timestamped_ball_compensation_output_path(str(save_template))
+            )
+            residual_view_path = save_path.with_name(f"{save_path.stem}_residuals.png")
+            residual_view = render_training_residual_bubble_chart(
+                float(calibration.table.width_mm),
+                float(calibration.table.height_mm),
+                training_residual_report,
+            )
+            save_residual_view(residual_view_path, residual_view)
+            extra_data = {
+                "ball_diameter_mm": float(calibration.table.ball_diameter_mm),
+                "projection_file": calibration.projection.source_path,
+                "settle_delay_seconds": float(ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS),
+                "samples": [sample.to_dict() for sample in training_samples],
+                "holdout_samples": [sample.to_dict() for sample in holdout_samples],
+                "sampling_grid_table_mm": np.asarray(sample_points, dtype=np.float64).reshape((-1, 2)).tolist(),
+                "training_residual_report": training_residual_report,
+                "residual_view_file": str(residual_view_path),
+            }
+            if diagnostic_only:
+                extra_data.update(
+                    {
+                        "temporary_activation": True,
+                        "formal_holdout_status": "not_run_after_training_resample",
+                        "formal_holdout_gate_waived": True,
+                        "diagnostic_reused_holdout_source_file": str(reusable_holdout_source.source_path),
+                        "diagnostic_reused_holdout_samples": [sample.to_dict() for sample in holdout_samples],
+                        "diagnostic_reused_holdout_repeatability": dict(reusable_holdout_source.repeatability),
+                        "diagnostic_reused_holdout_quality_report": holdout_report,
+                    }
+                )
+            else:
+                extra_data["holdout_quality_report"] = holdout_report
             model.save_json(
                 save_path,
-                extra_data={
-                    "ball_diameter_mm": float(calibration.table.ball_diameter_mm),
-                    "projection_file": calibration.projection.source_path,
-                    "settle_delay_seconds": float(ENGINEERED_SAMPLE_SETTLE_DELAY_SECONDS),
-                    "samples": [sample.to_dict() for sample in training_samples],
-                    "holdout_samples": [sample.to_dict() for sample in holdout_samples],
-                    "holdout_quality_report": holdout_report,
-                    "sampling_grid_table_mm": np.asarray(sample_points, dtype=np.float64).reshape((-1, 2)).tolist(),
-                },
+                extra_data=extra_data,
             )
             self._saved_path = save_path
             self.operator.config.calibration.engineered_ball_compensation_file = str(save_path)
             self.operator._sync_controls_from_config()
             self.operator._save_user_settings()
             self.operator._update_module_status()
-            delete_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH)
-            audit.event(
-                "checkpoint_consumed",
-                details={"path": str(BALL_COMPENSATION_CHECKPOINT_PATH)},
-            )
-            self.progress.setValue(100)
-            self.summary.setText(
-                _ball_compensation_completion_summary(
-                    accepted_count=len(self._samples),
-                    total_count=len(sample_points),
-                    training_count=len(training_samples),
-                    holdout_count=len(holdout_samples),
-                    training_report=model.quality_report,
-                    holdout_report=holdout_report,
-                    save_path=save_path,
+            if diagnostic_only:
+                audit.event(
+                    "checkpoint_retained_for_formal_holdout",
+                    details={"path": str(BALL_COMPENSATION_CHECKPOINT_PATH)},
                 )
-            )
+            else:
+                delete_ball_compensation_checkpoint(BALL_COMPENSATION_CHECKPOINT_PATH)
+                audit.event(
+                    "checkpoint_consumed",
+                    details={"path": str(BALL_COMPENSATION_CHECKPOINT_PATH)},
+                )
+            self.progress.setValue(100)
+            if diagnostic_only:
+                self.summary.setText(
+                    _ball_compensation_diagnostic_summary(
+                        training_report=training_residual_report,
+                        holdout_report=holdout_report,
+                        save_path=save_path,
+                        residual_view_path=residual_view_path,
+                    )
+                )
+            else:
+                self.summary.setText(
+                    _ball_compensation_completion_summary(
+                        accepted_count=len(self._samples),
+                        total_count=len(sample_points),
+                        training_count=len(training_samples),
+                        holdout_count=len(holdout_samples),
+                        training_report=model.quality_report,
+                        holdout_report=holdout_report,
+                        save_path=save_path,
+                    )
+                )
             self.output_path_edit.setText(str(save_path))
             self._append_log(f"工程球体补偿文件已生成并写回当前设置: {save_path}")
+            self._append_log(f"全桌残差视图已保存: {residual_view_path}")
+            self._show_residual_view(
+                calibration,
+                training_residual_report,
+                holdout_report=holdout_report,
+            )
             audit_path = audit.finish(
                 "success",
                 quality={
                     "training": model.quality_report,
-                    "holdout": holdout_report,
+                    "training_residuals": training_residual_report,
+                    "holdout_diagnostic" if diagnostic_only else "holdout": holdout_report,
                 },
-                artifacts=[save_path],
+                artifacts=[save_path, residual_view_path],
             )
             self._append_log(f"校准审计报告: {audit_path}")
             if self._auto_close_on_success:
@@ -1383,6 +1532,44 @@ class EngineeredBallCompensationWizardDialog(QtWidgets.QDialog):
         del finish_btn
         box.exec_()
         return box.clickedButton() is resample_btn
+
+    def _prompt_holdout_strategy(self, source) -> str:
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("选择 30 次 Holdout 的处理方式")
+        box.setIcon(QtWidgets.QMessageBox.Question)
+        box.setText(
+            "56 点训练数据已经准备完成。请选择下一步：\n\n"
+            f"• 重新采集全新 30 次：可作为正式独立 Holdout 验收（推荐）。\n"
+            f"• 沿用现有 {source.observation_count} 次：立即评估并临时启用，但因这些观测早于本次训练点重采，"
+            "只属于诊断结果，不能证明正式验收通过。\n\n"
+            "选择沿用时会保留当前 56 点检查点，之后仍可回来重新采集正式 30 次。"
+        )
+        fresh_btn = box.addButton("重新采集全新 30 次（正式验收）", QtWidgets.QMessageBox.AcceptRole)
+        reuse_btn = box.addButton("沿用现有 30 次（仅诊断）", QtWidgets.QMessageBox.ActionRole)
+        cancel_btn = box.addButton("暂不处理", QtWidgets.QMessageBox.RejectRole)
+        del cancel_btn
+        box.setDefaultButton(fresh_btn)
+        box.exec_()
+        if box.clickedButton() is fresh_btn:
+            return "fresh"
+        if box.clickedButton() is reuse_btn:
+            return "reuse"
+        return "cancel"
+
+    def _show_residual_view(self, calibration, training_report, *, holdout_report=None) -> None:
+        if self.operator.projection_window is None:
+            return
+        image = render_projector_ball_residual_view(
+            calibration,
+            training_report,
+            projector_size=(
+                int(self.operator.config.projection.projector_width),
+                int(self.operator.config.projection.projector_height),
+            ),
+            holdout_report=holdout_report,
+        )
+        self.operator.projection_window.set_image(image)
+        self._pump_ui()
 
     def _show_failed_regions(self, calibration, targets: tuple[tuple[float, float], ...]) -> None:
         if self.operator.projection_window is None or not targets:
@@ -1830,6 +2017,34 @@ def _ball_compensation_completion_summary(
         f"{repeatability_line}"
         f"原始补偿量 delta P95={float(delta.get('p95', 0.0)):.2f} mm\n"
         f"保存路径: {save_path}"
+    )
+
+
+def _ball_compensation_diagnostic_summary(
+    *,
+    training_report: dict,
+    holdout_report: dict,
+    save_path: str | Path,
+    residual_view_path: str | Path,
+) -> str:
+    training_error = dict(training_report.get("error_mm", {}))
+    holdout_error = dict(holdout_report.get("error_mm", {}))
+    observation_count = int(holdout_report.get("observation_count", holdout_report.get("sample_count", 0)))
+    return (
+        "新 7 点已并入 56 点模型，现有 30 次 Holdout 已用于诊断。\n"
+        "注意：旧 Holdout 早于本次训练点重采，因此不能作为正式独立验收；当前 56 点检查点已保留。\n"
+        f"训练残差 mean={float(training_error.get('mean', 0.0)):.2f} mm | "
+        f"median={float(training_error.get('median', 0.0)):.2f} mm | "
+        f"P95={float(training_error.get('p95', 0.0)):.2f} mm | "
+        f"max={float(training_error.get('max', 0.0)):.2f} mm\n"
+        f"训练点 ≥1/≥2/≥5 mm：{int(training_report.get('count_ge_1mm', 0))}/"
+        f"{int(training_report.get('count_ge_2mm', 0))}/{int(training_report.get('count_ge_5mm', 0))}\n"
+        f"沿用 Holdout={observation_count} 次/{int(holdout_report.get('sample_count', 0))} 个位置 | "
+        f"median={float(holdout_error.get('median', 0.0)):.2f} mm | "
+        f"P95={float(holdout_error.get('p95', 0.0)):.2f} mm | "
+        f"max={float(holdout_error.get('max', 0.0)):.2f} mm\n"
+        f"临时补偿文件: {save_path}\n"
+        f"全桌残差视图: {residual_view_path}"
     )
 
 

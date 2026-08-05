@@ -128,7 +128,7 @@ class CalibrationWorkbenchDialog(QtWidgets.QDialog):
         self.resample_ball_btn = QtWidgets.QPushButton("重采 ≥5 mm 训练点")
         self.resample_ball_btn.setToolTip(
             "从当前启用的 56 点球心补偿中自动筛选训练残差不低于 5 mm 的点；"
-            "新样本替换原点，其余训练样本保持不变，随后重新采集全新 Holdout。"
+            "新样本替换原点，其余训练样本保持不变；完成后可选择全新正式 Holdout 或沿用旧数据诊断。"
         )
         self.complete_btn = QtWidgets.QPushButton("开始完整校准向导（推荐）")
         self.show_result_btn = QtWidgets.QPushButton("投影显示校准结果")
