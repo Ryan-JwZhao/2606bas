@@ -57,7 +57,9 @@ training:
 tracker:
   high_conf: 0.45
   low_conf: 0.12
-  max_lost_frames: 12
+  # Keep a stable identity through short pocket-lip misses; pocket judgment
+  # uses its own time/evidence windows and is not driven by track deletion.
+  max_lost_frames: 18
   vote_window: 20
   match_distance_px: 90.0
   match_iou: 0.15

@@ -4,7 +4,12 @@ import numpy as np
 
 from bas.geometry import TableGeometry
 from bas.perception.pocket_observer import _point_in_entry_gate
-from bas.perception.regions import DetectionRegionPolicy, build_detection_region_policy, filter_detections_by_region
+from bas.perception.regions import (
+    DetectionRegionPolicy,
+    PocketGuardRegion,
+    build_detection_region_policy,
+    filter_detections_by_region,
+)
 from bas.schemas import Detection
 
 
@@ -55,7 +60,7 @@ def test_filter_detections_by_region_keeps_balls_inside_inner_and_cue_sticks_ins
     assert [det.cls_name for det in filtered] == ["solid", "cue_stick"]
 
 
-def test_pocket_guard_band_is_observation_only_and_does_not_admit_balls_outside_inner() -> None:
+def test_pocket_guard_does_not_admit_balls_beyond_narrow_lip_tolerance() -> None:
     geometry = TableGeometry(
         outer_norm=_square(0.0, 0.0, 1.0, 1.0),
         inner_norm=_square(0.2, 0.2, 0.8, 0.8),
@@ -76,6 +81,77 @@ def test_pocket_guard_band_is_observation_only_and_does_not_admit_balls_outside_
 
     assert len(policy.ball_guard_regions) == 1
     assert filtered == []
+
+
+def test_pocket_lip_tolerance_keeps_small_center_jitter_on_all_six_table_side_edges() -> None:
+    inner = _square(20.0, 20.0, 80.0, 80.0)
+    diameter = 12.0
+    lip_centers = [
+        (10.0, 10.0),
+        (50.0, 10.0),
+        (90.0, 10.0),
+        (90.0, 90.0),
+        (50.0, 90.0),
+        (10.0, 90.0),
+    ]
+    jittered_centers = [
+        (19.5, 19.5),
+        (50.0, 19.5),
+        (80.5, 19.5),
+        (80.5, 80.5),
+        (50.0, 80.5),
+        (19.5, 80.5),
+    ]
+    guards = tuple(
+        PocketGuardRegion(
+            pocket_index=index,
+            polygon=_square(cx - 14.0, cy - 14.0, cx + 14.0, cy + 14.0),
+            center_px=(cx, cy),
+            ball_diameter_px=diameter,
+        )
+        for index, (cx, cy) in enumerate(lip_centers)
+    )
+    policy = DetectionRegionPolicy(
+        global_polygon=inner,
+        ball_polygon=inner,
+        ball_guard_regions=guards,
+    )
+
+    filtered = filter_detections_by_region(
+        [_detection("solid", x, y) for x, y in jittered_centers],
+        policy,
+    )
+
+    assert [detection.center for detection in filtered] == jittered_centers
+
+
+def test_pocket_lip_tolerance_rejects_deeper_entry_and_non_pocket_edges() -> None:
+    inner = _square(20.0, 20.0, 80.0, 80.0)
+    guard = PocketGuardRegion(
+        pocket_index=0,
+        polygon=_square(35.0, 0.0, 65.0, 30.0),
+        center_px=(50.0, 8.0),
+        ball_diameter_px=12.0,
+    )
+    policy = DetectionRegionPolicy(
+        global_polygon=inner,
+        ball_polygon=inner,
+        ball_guard_regions=(guard,),
+    )
+
+    filtered = filter_detections_by_region(
+        [
+            _detection("solid", 50.0, 19.5),
+            _detection("solid", 50.0, 17.0),
+            _detection("solid", 19.5, 50.0),
+            _detection("cue_stick", 50.0, 19.5),
+        ],
+        policy,
+    )
+
+    assert [(detection.cls_name, detection.center) for detection in filtered] == [
+        ("solid", (50.0, 19.5)),
+    ]
 
 
 def test_corner_pocket_guard_uses_arc_center_and_rejects_recorded_table_side_false_point() -> None:

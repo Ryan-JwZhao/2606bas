@@ -18,7 +18,7 @@ def render_training_residual_bubble_chart(
     *,
     output_size: tuple[int, int] = (1640, 790),
 ) -> np.ndarray:
-    """Render the 56 training residuals as a table-coordinate bubble chart.
+    """Render training residuals as a table-coordinate bubble chart.
 
     Position is the training target, bubble area grows with residual magnitude,
     and the three colors match the operator thresholds used in the reference
@@ -43,7 +43,8 @@ def render_training_residual_bubble_chart(
     ink = (31, 35, 38)
     muted = (132, 136, 139)
     grid = (226, 228, 230)
-    draw.text((50, 54), "56个训练点的空间残差", font=title_font, fill=ink)
+    samples = list(training_report.get("samples", []))
+    draw.text((50, 54), f"{len(samples)}个训练点的空间残差", font=title_font, fill=ink)
     for value in y_ticks:
         y = _chart_y(value, y_max, top, bottom)
         draw.line((left, y, right, y), fill=grid, width=2)
@@ -61,7 +62,7 @@ def render_training_residual_bubble_chart(
     draw.text(((width - (x_bbox[2] - x_bbox[0])) / 2, bottom + 48), x_label, font=axis_font, fill=ink)
     _draw_rotated_axis_label(canvas, "台面 Y (mm)", axis_font, x=50, center_y=(top + bottom) // 2)
 
-    for item in training_report.get("samples", []):
+    for item in samples:
         target = np.asarray(item.get("target_table_mm", [0.0, 0.0]), dtype=np.float64).reshape((2,))
         error = max(0.0, float(item.get("error_mm", 0.0)))
         x = _chart_x(target[0], x_max, left, right)

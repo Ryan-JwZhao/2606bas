@@ -11,6 +11,9 @@ from ..schemas import Detection
 from ..utils import ensure_numpy_points, group_from_class
 
 BALL_GROUPS = {"cue", "solid", "stripe", "black"}
+POCKET_LIP_RETENTION_DIAMETER_RATIO = 0.10
+POCKET_LIP_MIN_DEPTH_DIAMETERS = -2.40
+POCKET_LIP_MAX_DEPTH_DIAMETERS = -0.08
 
 
 @dataclass(frozen=True)
@@ -73,8 +76,15 @@ def filter_detections_by_region(
         return []
     out: list[Detection] = []
     for detection in detections:
+        group = group_from_class(detection.cls_name)
         polygon = _polygon_for_detection(detection, policy)
         allowed = polygon is None or _contains_point(polygon, detection.center)
+        if not allowed and group in BALL_GROUPS and polygon is not None:
+            allowed = _inside_pocket_lip_retention_band(
+                detection.center,
+                polygon,
+                policy.ball_guard_regions,
+            )
         if not allowed:
             continue
         out.append(detection)
@@ -113,6 +123,64 @@ def _contains_point(polygon: np.ndarray, point: tuple[float, float]) -> bool:
         False,
     )
     return inside >= 0.0
+
+
+def _inside_pocket_lip_retention_band(
+    point: tuple[float, float],
+    ball_polygon: np.ndarray,
+    guards: Sequence[PocketGuardRegion],
+) -> bool:
+    """Keep sub-radius centre jitter at a calibrated pocket lip.
+
+    The normal playable polygon remains the admission boundary everywhere else.
+    This narrow exception is restricted to the table side of a pocket guard, so
+    it cannot keep a ball once its centre moves into the pocket entry gate.  It
+    only stabilises detections whose refined centre oscillates by a few pixels
+    around the stitched inline/pocket curve.
+    """
+
+    if not guards:
+        return False
+    signed_distance = cv2.pointPolygonTest(
+        ball_polygon.reshape((-1, 1, 2)).astype(np.float32),
+        (float(point[0]), float(point[1])),
+        True,
+    )
+    if signed_distance >= 0.0:
+        return True
+    table_center = _polygon_centroid(ball_polygon)
+    for guard in guards:
+        diameter = max(1.0, float(guard.ball_diameter_px))
+        tolerance = max(1.0, diameter * POCKET_LIP_RETENTION_DIAMETER_RATIO)
+        if signed_distance < -tolerance:
+            continue
+        if not _contains_point(guard.polygon, point):
+            continue
+        axis = np.asarray(guard.center_px, dtype=np.float32) - table_center
+        axis_norm = float(np.linalg.norm(axis))
+        if axis_norm <= 1e-6:
+            continue
+        axis /= axis_norm
+        depth = float(
+            np.dot(
+                np.asarray(point, dtype=np.float32) - np.asarray(guard.center_px, dtype=np.float32),
+                axis,
+            )
+        )
+        if POCKET_LIP_MIN_DEPTH_DIAMETERS * diameter <= depth <= POCKET_LIP_MAX_DEPTH_DIAMETERS * diameter:
+            return True
+    return False
+
+
+def _polygon_centroid(polygon: np.ndarray) -> np.ndarray:
+    points = polygon.reshape((-1, 2)).astype(np.float32)
+    moments = cv2.moments(points.reshape((-1, 1, 2)))
+    if abs(float(moments.get("m00", 0.0))) > 1e-6:
+        return np.asarray(
+            [float(moments["m10"] / moments["m00"]), float(moments["m01"] / moments["m00"])],
+            dtype=np.float32,
+        )
+    return np.mean(points, axis=0).astype(np.float32)
 
 
 def _build_pocket_guards(
