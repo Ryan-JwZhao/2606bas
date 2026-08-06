@@ -475,6 +475,7 @@ class RuntimePipeline:
         table.center_playable_polygon_mm = []
         table.projection_visible_pockets_mm = []
         table.pockets_mm = []
+        table.planning_pockets_mm = []
 
     def _camera_detection_regions(
         self,
@@ -594,6 +595,8 @@ class RuntimePipeline:
             self.calibration.table.projection_visible_pockets_mm = list(boundaries.projection_visible_pocket_points_mm)
         if boundaries.physical_pocket_points_mm:
             self.calibration.table.pockets_mm = list(boundaries.physical_pocket_points_mm)
+        if boundaries.planning_pocket_points_mm:
+            self.calibration.table.planning_pockets_mm = list(boundaries.planning_pocket_points_mm)
 
     def _enrich_tracks_with_table_units(self, tracks: TracksFrame) -> TracksFrame:
         enriched = []

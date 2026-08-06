@@ -342,16 +342,22 @@ Modern 进球识别由四个独立模块协作：
 - `bas/state/pocket_trajectory.py`：判断可见轨迹、预击球历史和跨 ID 轨迹是否会穿过袋口。
 - `bas/state/pocket.py`：把轨迹、袋口视觉和跨 ID 证据合并为一个逻辑球决定，负责确认、撤销、去重和诊断原因。
 
-袋口局部坐标以真实 pocket curve 拟合出的圆心为原点。pocket 标注画的是朝向台面的袋唇圆弧，不能直接把采样点质心当作洞心，否则六袋都会向台内偏移约半个袋口半径。运行时由 `bas/geometry.py` 统一执行最小二乘圆拟合，袋口观察器和状态机共享同一中心；点数不足、近似直线或拟合质量不合格的旧标注会保守退回采样点质心。`tangent_unit` 沿袋口曲线两端点方向，`outward_normal` 明确定义为“从桌内指向袋外”，`inward_normal = -outward_normal`。原始 inline 拼接出的 table edge polygon 只用于确定法向方向；physical rail inset 后的 `inner_polygon_mm` 不参与这一步；ball-center reachable polygon 只用于判断球心是否已回到正常台面。
+Pocket 标注画的是朝向台面的袋唇圆弧，不能直接把采样点质心当作洞心，否则袋心会向台内偏移。运行时由 `bas/geometry.py` 执行带质量门禁的最小二乘圆拟合；点数不足、近似直线或拟合质量不合格的旧标注会保守退回采样点质心。规划袋心与 rail inset、桌面矩形裁剪必须彼此独立，因为真实角袋圆弧和拟合中心允许位于名义桌面范围以外。
 
-### 袋口圆弧中心修复（2026-08）
+### 规划袋心隔离修复（2026-08-06）
 
-当前 `0804_pocket.json` 的六条曲线应继续贴着球桌布面侧的真实袋唇绘制，不需要为了“洞心”额外内移或重画。程序会从曲线恢复物理圆心，并把它同时用于袋口 ROI 入口门控、物理袋位和进袋轨迹走廊。修改代码后需要正常重启 BAS 才会载入新逻辑；已经运行的进程不会热替换 Python 源码。
+当前六条 pocket 曲线应继续贴着球桌布面侧的真实袋唇绘制，不需要为了“洞心”额外内移或重画。程序会先从未经 rail inset、未经桌面矩形裁剪的原始曲线恢复规划圆心，保存到 `TableModel.planning_pockets_mm`；规则规划和目标球规划只读取这套圆心。原有 `pockets_mm` 继续作为进洞判定兼容输入，本次修复没有改变进洞事件、确认时间或证据门禁。
+
+右上、左下角曾出现的大偏移来自袋口曲线先被 10 mm rail inset 和矩形裁剪非刚性压扁，再对压扁后的短圆弧重新拟合；这会把 10 mm 边界调整放大成超过 100 mm 的伪圆心偏移。修复后六袋规划统一使用原始拟合中心，不按像素阈值只特判两个角。路线终点表示洞心，本身不要求压在 pocket/inline 上，但从目标球到洞心的路线应穿过袋口并终止在袋洞区域。
+
+进洞判定审计另发现：现代状态机的 pocket curve 二维 zone 仍以曲线采样点均值为局部原点，少数模糊消失兼容分支仍会使用 `pockets_mm`。现场六袋审计中，改用真实拟合中心会让局部测试网格约 23%–37% 的 mouth/throat/interior 分类发生变化。因此它不是纯显示问题，但为遵守“本轮不改变进洞判定行为”的要求，本次只隔离并修复规划链；状态机中心统一必须单独使用真实进球、袋边停球和过唇未进回放进行验收。
+
+修改代码后需要正常重启 BAS 才会载入新逻辑；已经运行的进程不会热替换 Python 源码。
 
 定向验证命令：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_detection_regions.py tests\test_table_boundaries.py tests\test_pocket_geometry.py tests\test_pocket_observer.py tests\test_geometry_pocket_integration.py tests\test_pocket_evaluator.py -q
+.\.venv\Scripts\python.exe -m pytest tests\test_table_boundaries.py tests\test_planner.py tests\test_app_runtime.py tests\test_geometry_pocket_integration.py tests\test_pocket_geometry.py -q --basetemp .pytest_tmp\pocket_target_validation
 ```
 
 对球心 `ball_center`，统一计算：

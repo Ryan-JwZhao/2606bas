@@ -156,6 +156,7 @@ def test_clearing_runtime_geometry_clears_all_derived_table_context() -> None:
             center_playable_polygon_mm=[(0.0, 0.0)],
             projection_visible_pockets_mm=[(0.0, 0.0)],
             pockets_mm=[(0.0, 0.0)],
+            planning_pockets_mm=[(0.0, 0.0)],
         )
     )
     pipeline._last_table_edge_polygon_mm = [(0.0, 0.0)]
@@ -172,6 +173,7 @@ def test_clearing_runtime_geometry_clears_all_derived_table_context() -> None:
     assert pipeline.calibration.table.center_playable_polygon_mm == []
     assert pipeline.calibration.table.projection_visible_pockets_mm == []
     assert pipeline.calibration.table.pockets_mm == []
+    assert pipeline.calibration.table.planning_pockets_mm == []
     assert reset_calls == [True]
 
 

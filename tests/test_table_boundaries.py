@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from bas.geometry import pocket_arc_center
 from bas.table_boundaries import EdgeInsets, derive_table_boundaries
 from bas.table_boundaries import apply_edge_insets
 
@@ -103,6 +104,32 @@ def test_right_top_pocket_center_uses_annotated_jaw_arc_center() -> None:
     )
 
     np.testing.assert_allclose(boundaries.physical_pocket_points_mm[0], (1902.2, 43.1), atol=1.0)
+
+
+def test_planning_pocket_center_is_fitted_before_rail_inset_or_table_clipping() -> None:
+    # A corner-pocket jaw arc legitimately extends outside the nominal playing
+    # rectangle.  Rail insets may move rail polygons, but must never deform the
+    # arc that supplies the shot target.
+    angles = np.deg2rad(np.linspace(120.0, 210.0, 13))
+    expected_center = np.asarray([1070.0, -20.0], dtype=np.float32)
+    pocket_curve = expected_center + 80.0 * np.column_stack([np.cos(angles), np.sin(angles)]).astype(np.float32)
+    raw_fitted_center = pocket_arc_center(pocket_curve, expected_diameter=57.15)
+
+    boundaries = derive_table_boundaries(
+        np.array([[0, 0], [1000, 0], [1000, 500], [0, 500]], dtype=np.float32),
+        [pocket_curve],
+        table_width_mm=1000.0,
+        table_height_mm=500.0,
+        ball_diameter_mm=57.15,
+        projection_visible_insets=EdgeInsets(),
+        physical_rail_insets=EdgeInsets.uniform(10.0),
+        physical_middle_pocket_relief_top_mm=0.0,
+        physical_middle_pocket_relief_bottom_mm=0.0,
+        center_reachable_extra_margin_mm=0.0,
+    )
+
+    np.testing.assert_allclose(raw_fitted_center, expected_center, atol=0.1)
+    np.testing.assert_allclose(boundaries.planning_pocket_points_mm[0], raw_fitted_center, atol=0.1)
 
 
 def test_middle_pocket_relief_brings_physical_boundary_closer_to_visible() -> None:

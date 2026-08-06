@@ -15,6 +15,7 @@ from ..utils import angle_deg, clamp, point_segment_distance, unit
 from .aim_context import PlannerAimFrameContext
 from .corridor_targeting import rank_object_balls_in_corridor
 from .cue_aim import CueStickAimDetector
+from .pocket_targets import planning_pocket_points
 
 
 OBJECT_GROUPS = {"solid", "stripe", "black"}
@@ -365,7 +366,10 @@ class TargetShotPlanner:
 
     def _routes(self, *, cue_ball: object, target: object, balls: Sequence[object]) -> list[_Route]:
         max_rebounds = max(0, int(getattr(self.config, "target_shot_max_rebounds", 2)))
-        pockets = [np.asarray(p, dtype=np.float32).reshape((2,)) for p in self.calibration.table.pockets_mm]
+        pockets = [
+            np.asarray(p, dtype=np.float32).reshape((2,))
+            for p in planning_pocket_points(self.calibration.table)
+        ]
         routes: list[_Route] = []
         for rebound_count in range(max_rebounds + 1):
             for rails in _rail_sequences(rebound_count):

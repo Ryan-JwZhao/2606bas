@@ -16,6 +16,7 @@ from .cue_aim import CueStickAimDetector
 from .cue_sector import CueSectorCorrection
 from .hook_shot import HookShotPlanner
 from .learning import create_learning_ranker
+from .pocket_targets import planning_pocket_points
 from .target_shot import TargetShotDecision, TargetShotModeController, TargetShotPlanner
 from .target_lock import TargetLockController, TargetLockDecision
 
@@ -160,7 +161,7 @@ class GeometryPhysicsPlanner:
                 target_lock=target_lock,
             )
         candidates: List[ShotCandidate] = []
-        pockets = [np.asarray(p, dtype=np.float32) for p in self.calibration.table.pockets_mm]
+        pockets = [np.asarray(p, dtype=np.float32) for p in planning_pocket_points(self.calibration.table)]
         center_polygon = self.calibration.table.center_playable_polygon_mm or self.calibration.table.inner_polygon_mm
         inner = np.asarray(center_polygon, dtype=np.float32)
         for target in targets:
@@ -393,7 +394,7 @@ class GeometryPhysicsPlanner:
                 target_shot_status="manual_target_missing",
             )
 
-        pockets = [np.asarray(p, dtype=np.float32) for p in self.calibration.table.pockets_mm]
+        pockets = [np.asarray(p, dtype=np.float32) for p in planning_pocket_points(self.calibration.table)]
         center_polygon = self.calibration.table.center_playable_polygon_mm or self.calibration.table.inner_polygon_mm
         inner = np.asarray(center_polygon, dtype=np.float32)
         candidates = [

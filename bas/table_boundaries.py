@@ -33,6 +33,7 @@ class TableBoundarySet:
     center_playable_polygon_mm: PointArray
     projection_visible_pocket_points_mm: List[Tuple[float, float]]
     physical_pocket_points_mm: List[Tuple[float, float]]
+    planning_pocket_points_mm: List[Tuple[float, float]]
 
 
 def derive_table_boundaries(
@@ -81,12 +82,17 @@ def derive_table_boundaries(
         middle_relief_top_mm=float(physical_middle_pocket_relief_top_mm),
         middle_relief_bottom_mm=float(physical_middle_pocket_relief_bottom_mm),
     )
+    planning_pockets = fit_pocket_centers_mm(
+        pocket_curves_mm,
+        ball_diameter_mm=ball_diameter_mm,
+    )
     return TableBoundarySet(
         projection_visible_polygon_mm=projection_visible,
         physical_rail_polygon_mm=physical_rail,
         center_playable_polygon_mm=center_playable,
         projection_visible_pocket_points_mm=visible_pockets,
         physical_pocket_points_mm=physical_pockets,
+        planning_pocket_points_mm=planning_pockets,
     )
 
 
@@ -152,6 +158,28 @@ def _pocket_centers_mm(
         x, y = out[bottom_middle_idx]
         out[bottom_middle_idx] = (x, y + min(max(0.0, float(middle_relief_bottom_mm)), max(0.0, float(insets.bottom_mm))))
     return out
+
+
+def fit_pocket_centers_mm(
+    pocket_curves_mm: Sequence[np.ndarray],
+    *,
+    ball_diameter_mm: float,
+) -> List[Tuple[float, float]]:
+    """Fit shot targets from untouched jaw arcs.
+
+    Pocket arcs may legitimately extend outside the nominal playing rectangle.
+    Rail insets and rectangle clipping therefore must not participate in this
+    fit; they describe playable boundaries, not the physical hole centre.
+    """
+
+    centers: List[Tuple[float, float]] = []
+    for curve in pocket_curves_mm:
+        points = ensure_numpy_points(curve)
+        if points.shape[0] < 2:
+            continue
+        center = pocket_arc_center(points, ball_diameter_mm)
+        centers.append((float(center[0]), float(center[1])))
+    return centers
 
 
 def _fallback_polygon(points_mm: np.ndarray, width_mm: float, height_mm: float) -> PointArray:

@@ -85,6 +85,24 @@ def test_planner_generates_candidate() -> None:
     assert plan.best.score > -5
 
 
+def test_planner_uses_isolated_planning_pocket_centers() -> None:
+    service = _service()
+    service.table.pockets_mm = [(0.0, 0.0)]
+    service.table.planning_pockets_mm = [(1000.0, 250.0)]
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=3), service)
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="STABLE_IDLE",
+        layout=[_obs(1, "cue", 120, 250), _obs(2, "solid", 620, 250)],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    np.testing.assert_allclose(plan.best.pocket_point, (1000.0, 250.0), atol=1e-5)
+
+
 def test_planner_rejects_low_confidence_bbox_ball_centers() -> None:
     planner = GeometryPhysicsPlanner(PlannerConfig(top_k=3), _service())
     cue = _obs(1, "cue", 120, 250)

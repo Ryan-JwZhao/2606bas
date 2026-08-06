@@ -142,6 +142,9 @@ class TableModel:
     projection_visible_polygon_mm: List[Point] = field(default_factory=list)
     center_playable_polygon_mm: List[Point] = field(default_factory=list)
     projection_visible_pockets_mm: List[Point] = field(default_factory=list)
+    # Shot planning uses raw fitted pocket-arc centres.  Keep this separate from
+    # pockets_mm because that legacy field is also consumed by pocket judging.
+    planning_pockets_mm: List[Point] = field(default_factory=list)
 
 
 @dataclass

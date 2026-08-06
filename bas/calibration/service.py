@@ -238,6 +238,7 @@ def create_calibration_service(
         projection_visible_polygon_mm=default_inner_polygon(float(config.table_width_mm), float(config.table_height_mm)),
         center_playable_polygon_mm=default_inner_polygon(float(config.table_width_mm), float(config.table_height_mm)),
         projection_visible_pockets_mm=default_pockets(float(config.table_width_mm), float(config.table_height_mm)),
+        planning_pockets_mm=default_pockets(float(config.table_width_mm), float(config.table_height_mm)),
     )
     _audit_legacy_ball_compensation_model(ball_compensation_model, table)
     return CalibrationService(

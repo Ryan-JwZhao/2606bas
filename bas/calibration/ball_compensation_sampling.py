@@ -249,6 +249,8 @@ def update_calibration_table_boundaries_from_geometry_frame(
         calibration.table.projection_visible_pockets_mm = list(boundaries.projection_visible_pocket_points_mm)
     if boundaries.physical_pocket_points_mm:
         calibration.table.pockets_mm = list(boundaries.physical_pocket_points_mm)
+    if boundaries.planning_pocket_points_mm:
+        calibration.table.planning_pockets_mm = list(boundaries.planning_pocket_points_mm)
     return True
 
 
