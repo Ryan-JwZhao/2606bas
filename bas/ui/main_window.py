@@ -68,7 +68,7 @@ from ..projection.overlay import projection_route_stroke_style
 from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
 from ..recording_fps import RecordingFpsEstimator
-from ..remote_control import RemoteCommand, RemoteCommandQueue
+from ..remote_control import RemoteCommand, RemoteCommandQueue, is_stale_transient_command
 from ..route_freeze import MotionRouteFreezeController
 from ..route_geometry import cue_alignment_start, rule_cue_separation_end
 from ..schemas import MatchPhase, OverlayCircle, OverlayLine, ProjectionOverlay, to_jsonable
@@ -2798,6 +2798,9 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
 
     def _execute_remote_command(self, command: RemoteCommand) -> None:
         action = command.action
+        if is_stale_transient_command(command):
+            self._append_log(f"已忽略过期的一次性远程命令: {action}")
+            return
         try:
             if action == "start_capture":
                 if self.pipeline is None:
@@ -4177,6 +4180,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if self._pipeline_start_pending:
             self._append_log("采集正在启动中")
             return
+        self.control_state.clear_turn_overrides()
+        self._manual_web_target_id = None
         self._sync_config_from_controls()
         self._save_user_settings()
         self._append_log("启动采集中")
@@ -4197,8 +4202,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.pipeline = pipeline
         capture_info = pipeline.capture.info()
         self.remember_calibration_frame_size((int(capture_info.width), int(capture_info.height)))
-        if self._manual_web_target_id is not None:
-            self.pipeline.planner.set_manual_target(self._manual_web_target_id)
         self._recording_fps_estimator.reset()
         self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
         self._instant_replay_start_failed = False

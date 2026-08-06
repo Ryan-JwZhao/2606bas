@@ -15,6 +15,7 @@ from bas.config import AppConfig
 from bas.capture import VideoTimelineState
 from bas import runtime_env
 from bas.operator_controls import RuntimeControlState
+from bas.remote_control import RemoteCommand
 from bas.schemas import DetectionsFrame, Event, FramePacket, MatchStateFrame, ProjectionOverlay, ShotCandidate, ShotPlan, TrackObservation, TracksFrame
 
 runtime_env.preload_torch_for_backend = lambda backend: None
@@ -449,11 +450,13 @@ def test_start_pipeline_and_tick_use_same_thread(monkeypatch) -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())
     created: list[object] = []
+    rebound_manual_targets: list[int] = []
 
     class _FakePipeline:
         def __init__(self, config, star_formula=None, control_state=None):
             self.creator_thread_id = threading.get_ident()
             self.step_thread_id: int | None = None
+            self.hook_override_at_creation = bool(control_state.hook_shot_active)
             self.state_machine = SimpleNamespace(turn_target_group=None, operator_hold=False)
             self.capture = SimpleNamespace(info=lambda: SimpleNamespace(backend="fake", width=1920, height=1080, fps=30.0))
             self.calibration = SimpleNamespace(
@@ -462,7 +465,11 @@ def test_start_pipeline_and_tick_use_same_thread(monkeypatch) -> None:
             )
             self.detector = SimpleNamespace(detector=SimpleNamespace(version="fake_detector"))
             self.tracker = SimpleNamespace(version="fake_tracker")
-            self.planner = SimpleNamespace(version="fake_planner", learning_ranker=SimpleNamespace(version="fake_ranker"))
+            self.planner = SimpleNamespace(
+                version="fake_planner",
+                learning_ranker=SimpleNamespace(version="fake_ranker"),
+                set_manual_target=lambda track_id: rebound_manual_targets.append(int(track_id)),
+            )
             self.recorder = None
             self.last_timings_ms = {}
             created.append(self)
@@ -476,6 +483,8 @@ def test_start_pipeline_and_tick_use_same_thread(monkeypatch) -> None:
 
     monkeypatch.setattr(main_window, "RuntimePipeline", _FakePipeline)
     monkeypatch.setattr(window, "_save_user_settings", lambda: None)
+    window.control_state.arm_hook_shot()
+    window._manual_web_target_id = 13
 
     window.start_pipeline()
 
@@ -492,7 +501,25 @@ def test_start_pipeline_and_tick_use_same_thread(monkeypatch) -> None:
 
     fake = created[0]
     assert fake.creator_thread_id == fake.step_thread_id
+    assert fake.hook_override_at_creation is False
+    assert window._manual_web_target_id is None
+    assert rebound_manual_targets == []
     window.close()
+
+
+def test_stale_hook_remote_command_does_not_arm_override() -> None:
+    window = main_window.OperatorWindow.__new__(main_window.OperatorWindow)
+    window.control_state = RuntimeControlState()
+    armed: list[str] = []
+    logs: list[str] = []
+    window._arm_hook_shot_once = lambda *, source: armed.append(source)
+    window._append_log = logs.append
+    command = RemoteCommand("old-hook", "hook_shot_once", created_at_ms=1, source="test")
+
+    main_window.OperatorWindow._execute_remote_command(window, command)
+
+    assert armed == []
+    assert any("过期" in message for message in logs)
 
 
 def test_operator_window_buttons_remain_wired_after_layout_refactor(monkeypatch) -> None:

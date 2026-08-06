@@ -13,6 +13,7 @@ from bas.planning.cue_aim import CueStickAimPx
 from bas.projection.star_formula import StarFormulaConfig
 from bas.planning import GeometryPhysicsPlanner
 from bas.projection.overlay import OverlayBuilder, projection_route_stroke_style
+from bas.route_geometry import segment_inside_polygon_to_pocket
 from bas.config import ProjectionConfig
 from bas.schemas import Event, MatchStateFrame, ShotCandidate, ShotPlan, TableModel, TrackObservation
 
@@ -101,6 +102,28 @@ def test_planner_uses_isolated_planning_pocket_centers() -> None:
 
     assert plan.best is not None
     np.testing.assert_allclose(plan.best.pocket_point, (1000.0, 250.0), atol=1e-5)
+
+
+def test_corner_pocket_path_allows_terminal_exit_to_external_fitted_center() -> None:
+    playable = np.asarray(
+        [[31.0, 31.0], [2509.0, 31.0], [2509.0, 1239.0], [31.0, 1239.0]],
+        dtype=np.float32,
+    )
+
+    assert segment_inside_polygon_to_pocket(
+        playable,
+        np.asarray([37.0, 1148.0], dtype=np.float32),
+        np.asarray([-64.0, 1278.0], dtype=np.float32),
+        margin_mm=5.0,
+        pocket_relief_mm=114.3,
+    )
+    assert not segment_inside_polygon_to_pocket(
+        playable,
+        np.asarray([37.0, 600.0], dtype=np.float32),
+        np.asarray([-64.0, 1278.0], dtype=np.float32),
+        margin_mm=5.0,
+        pocket_relief_mm=114.3,
+    )
 
 
 def test_planner_rejects_low_confidence_bbox_ball_centers() -> None:

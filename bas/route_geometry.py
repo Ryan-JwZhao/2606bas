@@ -68,7 +68,15 @@ def segment_inside_polygon_to_pocket(
         return polygon_contains_with_margin(poly, a, margin_mm=margin_mm)
     samples = max(8, int(length / max(1.0, float(sample_step_mm))))
     relief = max(0.0, float(pocket_relief_mm))
-    relief_distance = max(0.0, float(pocket_relief_distance_mm))
+    # A fitted corner-pocket centre may lie outside both adjacent table edges.
+    # The terminal segment can therefore be up to sqrt(2) times the permitted
+    # perpendicular relief before reaching the centre.  Retain a sample-step
+    # allowance so coarse sampling cannot reject the first valid funnel point.
+    relief_distance = max(
+        0.0,
+        float(pocket_relief_distance_mm),
+        math.sqrt(2.0) * relief + max(1.0, float(sample_step_mm)),
+    )
     for idx in range(samples + 1):
         t = idx / max(1, samples)
         point = a * (1.0 - t) + b * t

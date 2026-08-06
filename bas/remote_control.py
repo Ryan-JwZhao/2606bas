@@ -43,6 +43,9 @@ REMOTE_ACTION_ALIASES = {
     "export-retro-clip": "save_retro_clip",
 }
 
+TRANSIENT_REMOTE_ACTIONS = frozenset({"hook_shot_once", "black_shot_once"})
+DEFAULT_TRANSIENT_COMMAND_MAX_AGE_MS = 60_000
+
 
 def normalize_remote_action(action: str) -> str:
     normalized = REMOTE_ACTION_ALIASES.get(str(action or "").strip().lower())
@@ -89,6 +92,23 @@ class RemoteCommand:
             args=dict(args),
             path=path,
         )
+
+
+def is_stale_transient_command(
+    command: RemoteCommand,
+    *,
+    now_ms: int | None = None,
+    max_age_ms: int = DEFAULT_TRANSIENT_COMMAND_MAX_AGE_MS,
+) -> bool:
+    """Reject one-shot actions left in the queue from an earlier app session."""
+
+    if command.action not in TRANSIENT_REMOTE_ACTIONS:
+        return False
+    current_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    created_ms = int(command.created_at_ms)
+    if created_ms <= 0:
+        return True
+    return current_ms - created_ms > max(0, int(max_age_ms))
 
 
 class RemoteCommandQueue:
