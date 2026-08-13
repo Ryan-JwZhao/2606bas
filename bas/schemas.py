@@ -89,6 +89,7 @@ class TrackObservation:
     radius_mm: Optional[float] = None
     quality: float = 1.0
     age: int = 1
+    confirmed: bool = True
     lost_frames: int = 0
     visibility: str = "visible"
     geometry_quality: float = 1.0

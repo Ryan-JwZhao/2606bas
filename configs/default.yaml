@@ -64,6 +64,8 @@ tracker:
   match_distance_px: 90.0
   match_iou: 0.15
   velocity_smoothing: 0.35
+  # 新轨迹至少由两次真实检测命中后，才进入规划和普通标注；缓存帧不累计。
+  min_confirmed_hits: 2
 
 calibration:
   camera_file: C:/CodeProject/2606BAS/calib/calibration_opencv.yaml

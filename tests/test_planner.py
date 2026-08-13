@@ -8,14 +8,15 @@ import numpy as np
 from bas.calibration.camera import CameraCalibration
 from bas.calibration.projector import ProjectionCalibration
 from bas.calibration.service import CalibrationService
-from bas.config import PlannerConfig
+from bas.config import PlannerConfig, TrackerConfig
 from bas.planning.cue_aim import CueStickAimPx
 from bas.projection.star_formula import StarFormulaConfig
 from bas.planning import GeometryPhysicsPlanner
 from bas.projection.overlay import OverlayBuilder, projection_route_stroke_style
 from bas.route_geometry import segment_inside_polygon_to_pocket
 from bas.config import ProjectionConfig
-from bas.schemas import Event, MatchStateFrame, ShotCandidate, ShotPlan, TableModel, TrackObservation
+from bas.schemas import Detection, DetectionsFrame, Event, MatchStateFrame, ShotCandidate, ShotPlan, TableModel, TrackObservation
+from bas.tracking import TemporalTracker
 
 
 def _service() -> CalibrationService:
@@ -142,12 +143,64 @@ def test_planner_rejects_low_confidence_bbox_ball_centers() -> None:
     assert plan.best is None
 
 
+def test_planner_rejects_unconfirmed_single_frame_bbox_track() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=3), _service())
+    cue = _obs(1, "cue", 120, 250)
+    target = _obs(2, "solid", 620, 250)
+    target.confidence = 0.729
+    target.quality = 0.589
+    target.geometry_quality = 0.45
+    target.geometry_method = "bbox"
+    target.confirmed = False
+    state = MatchStateFrame(frame_id=1, ts_cam_ns=1, phase="STABLE_IDLE", layout=[cue, target])
+
+    plan = planner.plan(state)
+
+    assert plan.best is None
+
+
+def test_single_frame_false_ball_does_not_create_route_in_tracker_planner_chain() -> None:
+    tracker = TemporalTracker(TrackerConfig(min_confirmed_hits=2))
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=3), _service())
+
+    def detection(x: float, group: str, *, confidence: float = 0.9) -> Detection:
+        return Detection(
+            bbox=(x - 15, 235, x + 15, 265),
+            conf=confidence,
+            cls_id=0 if group == "cue" else 1,
+            cls_name=group,
+            geometry_quality=0.45 if group == "solid" else 0.9,
+            geometry_method="bbox" if group == "solid" else "appearance_ellipse",
+        )
+
+    tracker.update(DetectionsFrame(frame_id=1, ts_cam_ns=1, detections=[detection(120, "cue")]))
+    cue_confirmed = tracker.update(
+        DetectionsFrame(frame_id=2, ts_cam_ns=2, detections=[detection(120, "cue")])
+    )
+    false_target = tracker.update(
+        DetectionsFrame(
+            frame_id=3,
+            ts_cam_ns=3,
+            detections=[detection(120, "cue"), detection(620, "solid", confidence=0.729)],
+        )
+    )
+
+    no_false_route = planner.plan(
+        MatchStateFrame(frame_id=3, ts_cam_ns=3, phase="STABLE_IDLE", layout=false_target.tracks)
+    )
+
+    assert cue_confirmed.tracks[0].confirmed is True
+    assert next(track for track in false_target.tracks if track.group == "solid").confirmed is False
+    assert no_false_route.best is None
+
+
 def test_planner_keeps_high_confidence_target_when_center_refinement_falls_back_to_bbox() -> None:
     planner = GeometryPhysicsPlanner(PlannerConfig(top_k=3), _service())
     cue = _obs(1, "cue", 120, 250)
     cue.geometry_quality = 0.95
     cue.geometry_method = "appearance_ellipse"
     target = _obs(2, "solid", 620, 250)
+    target.confirmed = True
     target.geometry_quality = 0.90
     target.geometry_method = "appearance_ellipse"
 

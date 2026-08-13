@@ -7,6 +7,7 @@ import numpy as np
 from ..projection.overlay import ROUTE_COLOR
 from ..calibration.service import CalibrationService
 from ..schemas import Detection, OverlayCircle, OverlayLine, ProjectionOverlay, TrackObservation
+from ..tracking.confirmation import is_track_confirmed
 from ..utils import group_from_class
 
 
@@ -49,8 +50,9 @@ def append_projected_ball_overlays(
     detections: Iterable[Detection] = (),
 ) -> int:
     appended = 0
-    visible_tracks = [track for track in tracks if _track_is_projectable_ball(track)]
-    if visible_tracks:
+    track_list = list(tracks)
+    visible_tracks = [track for track in track_list if _track_is_projectable_ball(track)]
+    if track_list:
         for track in visible_tracks:
             if _append_projected_ball_marker(
                 overlay,
@@ -135,6 +137,8 @@ def _append_projected_boundary_line(
 
 
 def _track_is_projectable_ball(track: TrackObservation) -> bool:
+    if not is_track_confirmed(track):
+        return False
     if int(getattr(track, "lost_frames", 0)) > 0:
         return False
     if str(getattr(track, "visibility", "visible")) != "visible":

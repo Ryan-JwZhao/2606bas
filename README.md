@@ -354,10 +354,28 @@ Pocket 标注画的是朝向台面的袋唇圆弧，不能直接把采样点质�
 
 修改代码后需要正常重启 BAS 才会载入新逻辑；已经运行的进程不会热替换 Python 源码。
 
+### 静止画面偶发球框与路线闪烁修复（2026-08-13）
+
+规则模式的新球轨迹现在必须经过至少两次真实检测命中，才会进入路线规划并显示普通球框、球圈。检测限频产生的缓存帧不会累计确认次数，因此单帧 `bbox` 弱误检不会被缓存放大成一条短暂路线。已经确认的成熟轨迹即使某一帧的球心提取从椭圆降级为 `bbox`，仍保留原有的几何可靠度兼容逻辑，不会因此清空路线。
+
+该修复不启用“运动时冻结路线”，不改变检测频率、相机帧率或运动期间的实时规划。升级后只需完全退出并重新启动 BAS；无需修改现场设置，也无需重新标定。
+
 定向验证命令：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests\test_table_boundaries.py tests\test_planner.py tests\test_app_runtime.py tests\test_geometry_pocket_integration.py tests\test_pocket_geometry.py -q --basetemp .pytest_tmp\pocket_target_validation
+.\.venv\Scripts\python.exe -m pytest -q tests\test_tracking.py tests\test_planner.py tests\test_projection_debug.py tests\test_route_freeze.py
+```
+
+### 规则模式启动后不画线修复（2026-08-06）
+
+一次性勾球、一次性黑球和 Web 手动目标都属于当前采集会话的瞬时状态，不允许跨采集会话恢复。停止后重新启动采集时，系统会先清除这些覆盖；旧 Web 目标不会再按上一会话的 track ID 绑定到新 planner。Stream Deck 队列中的一次性击球命令超过 60 秒后会被视为过期并忽略，常规启动/停止采集命令不受影响。
+
+真实角袋拟合中心可能同时位于两条台面边界之外。目标球路径检查会按照角袋对角方向扩大末端袋口漏斗长度，同时继续限制允许的边界外垂直距离；这样可以接受进入角袋洞心的短末段，但仍拒绝沿库外长距离运行的假路线。若基础模式显示“规则模式”但没有路线，可在 Web 状态中检查 `shot_mode.code`、`shot_overrides.hook_shot_once.active`、`manual_target_id` 和 `rule_route`；正常状态应分别为 `rule`、`false`、`null` 和非空路线（现场确有可行球路时）。
+
+定向验证命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_table_boundaries.py tests\test_planner.py tests\test_app_runtime.py tests\test_geometry_pocket_integration.py tests\test_pocket_geometry.py tests\test_ui_runtime.py tests\test_remote_control.py -q --basetemp .pytest_tmp\pocket_target_validation
 ```
 
 对球心 `ball_center`，统一计算：

@@ -26,6 +26,8 @@ class _Track:
     velocity: np.ndarray = field(default_factory=lambda: np.zeros((2,), dtype=np.float32))
     age: int = 1
     lost_frames: int = 0
+    consecutive_hits: int = 1
+    confirmed: bool = False
 
     @property
     def stable_class(self) -> str:
@@ -59,6 +61,7 @@ class TemporalTracker:
             if tr is None:
                 continue
             tr.lost_frames += 1
+            tr.consecutive_hits = 0
             dt = max(1e-6, (detections_frame.ts_cam_ns - tr.last_ts_ns) / 1e9)
             tr.center = tr.center + tr.velocity * min(dt, 0.1)
             x1, y1, x2, y2 = tr.bbox
@@ -90,6 +93,7 @@ class TemporalTracker:
                 geometry_method=str(det.geometry_method or "unknown"),
                 votes=deque([det.cls_name], maxlen=int(self.config.vote_window)),
                 last_ts_ns=detections_frame.ts_cam_ns,
+                confirmed=max(1, int(self.config.min_confirmed_hits)) <= 1,
             )
 
         self._prune_duplicate_tracks()
@@ -165,6 +169,9 @@ class TemporalTracker:
         track.votes.append(det.cls_name)
         track.last_ts_ns = int(ts_ns)
         track.age += 1
+        track.consecutive_hits += 1
+        if track.consecutive_hits >= max(1, int(self.config.min_confirmed_hits)):
+            track.confirmed = True
         track.lost_frames = 0
 
     def _to_observation(self, track: _Track) -> TrackObservation:
@@ -183,6 +190,7 @@ class TemporalTracker:
             velocity_px_s=(float(track.velocity[0]), float(track.velocity[1])),
             quality=quality,
             age=int(track.age),
+            confirmed=bool(track.confirmed),
             lost_frames=int(track.lost_frames),
             visibility=visibility,
             geometry_quality=float(track.geometry_quality),

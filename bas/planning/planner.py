@@ -10,6 +10,7 @@ from ..calibration.service import CalibrationService
 from ..config import LearningConfig, PlannerConfig
 from ..route_geometry import polygon_contains_with_margin, segment_inside_polygon, segment_inside_polygon_to_pocket
 from ..schemas import MatchStateFrame, Point, ShotCandidate, ShotPlan, TrackObservation
+from ..tracking.confirmation import is_track_confirmed
 from ..utils import angle_deg, clamp, point_segment_distance, unit, wall_time_id
 from .aim_context import PlannerAimFrameContext
 from .cue_aim import CueStickAimDetector
@@ -298,6 +299,8 @@ class GeometryPhysicsPlanner:
         balls: List[_Ball] = []
         for tr in tracks:
             if tr.group not in {"cue", "solid", "stripe", "black"}:
+                continue
+            if not is_track_confirmed(tr):
                 continue
             if str(getattr(tr, "visibility", "visible")).strip().lower() != "visible":
                 continue

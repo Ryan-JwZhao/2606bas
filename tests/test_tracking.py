@@ -144,3 +144,38 @@ def test_tracker_dampens_small_stationary_center_jitter() -> None:
     )
 
     assert 20.0 < out.tracks[0].center_px[0] < 22.0
+
+
+def test_tracker_confirms_a_new_track_only_after_two_real_hits() -> None:
+    tracker = TemporalTracker(TrackerConfig(min_confirmed_hits=2))
+
+    first = tracker.update(
+        DetectionsFrame(
+            frame_id=1,
+            ts_cam_ns=1_000_000_000,
+            detections=[Detection(bbox=(10, 10, 30, 30), conf=0.73, cls_id=1, cls_name="solid")],
+        )
+    )
+    second = tracker.update(
+        DetectionsFrame(
+            frame_id=2,
+            ts_cam_ns=1_066_000_000,
+            detections=[Detection(bbox=(10, 10, 30, 30), conf=0.73, cls_id=1, cls_name="solid")],
+        )
+    )
+
+    assert first.tracks[0].confirmed is False
+    assert second.tracks[0].confirmed is True
+
+
+def test_tracker_does_not_confirm_two_hits_separated_by_a_real_miss() -> None:
+    tracker = TemporalTracker(TrackerConfig(min_confirmed_hits=2, max_lost_frames=3))
+    detection = Detection(bbox=(10, 10, 30, 30), conf=0.73, cls_id=1, cls_name="solid")
+
+    tracker.update(DetectionsFrame(frame_id=1, ts_cam_ns=1_000_000_000, detections=[detection]))
+    tracker.update(DetectionsFrame(frame_id=2, ts_cam_ns=1_066_000_000, detections=[]))
+    reacquired = tracker.update(
+        DetectionsFrame(frame_id=3, ts_cam_ns=1_132_000_000, detections=[detection])
+    )
+
+    assert reacquired.tracks[0].confirmed is False

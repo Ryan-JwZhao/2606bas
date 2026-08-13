@@ -130,6 +130,27 @@ def test_projection_debug_falls_back_to_detections_when_tracks_absent() -> None:
     assert not overlay.labels
 
 
+def test_projection_debug_does_not_render_detection_for_unconfirmed_track() -> None:
+    overlay = ProjectionOverlay(overlay_id="debug", frame_id=1, projector_size=(1000, 500))
+    track = TrackObservation(
+        track_id=7,
+        bbox=(185.0, 235.0, 215.0, 265.0),
+        center_px=(200.0, 250.0),
+        radius_px=15.0,
+        cls_name="solid",
+        group="solid",
+        confidence=0.729,
+        quality=0.589,
+    )
+    track.confirmed = False
+    detection = Detection(bbox=track.bbox, conf=0.729, cls_id=1, cls_name="solid")
+
+    count = append_projected_ball_overlays(overlay, _service(), tracks=[track], detections=[detection])
+
+    assert count == 0
+    assert not overlay.circles
+
+
 def test_projection_debug_without_ball_model_uses_shared_perspective_ellipse() -> None:
     service = _perspective_service_without_ball_model()
     overlay = ProjectionOverlay(overlay_id="debug", frame_id=1, projector_size=(1000, 500))

@@ -72,6 +72,7 @@ from ..remote_control import RemoteCommand, RemoteCommandQueue, is_stale_transie
 from ..route_freeze import MotionRouteFreezeController
 from ..route_geometry import cue_alignment_start, rule_cue_separation_end
 from ..schemas import MatchPhase, OverlayCircle, OverlayLine, ProjectionOverlay, to_jsonable
+from ..tracking.confirmation import confirmed_tracks
 from ..state import normalize_state_machine_engine
 from ..state_debug import StateDebugSession, StateDebugSessionResult
 from ..training import (
@@ -4533,11 +4534,13 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if frame is None:
             return
         img = frame.copy()
-        for det in out.detections.detections:
-            x1, y1, x2, y2 = [int(round(v)) for v in det.bbox]
+        display_tracks = confirmed_tracks(out.tracks.tracks)
+        visible_display_tracks = [tr for tr in display_tracks if tr.visibility == "visible"]
+        for tr in visible_display_tracks:
+            x1, y1, x2, y2 = [int(round(v)) for v in tr.bbox]
             cv2.rectangle(img, (x1, y1), (x2, y2), (235, 235, 235), 2, cv2.LINE_AA)
-            cv2.putText(img, f"{det.cls_name} {det.conf:.2f}", (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.55 * self._ui_scale, (245, 245, 245), 1, cv2.LINE_AA)
-        for tr in out.tracks.tracks:
+            cv2.putText(img, f"{tr.cls_name} {tr.confidence:.2f}", (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.55 * self._ui_scale, (245, 245, 245), 1, cv2.LINE_AA)
+        for tr in display_tracks:
             cx, cy = [int(round(v)) for v in tr.center_px]
             cv2.circle(img, (cx, cy), max(4, int(round(tr.radius_px))), (250, 250, 250), 2, cv2.LINE_AA)
             cv2.putText(img, f"#{tr.track_id} {tr.group}", (cx + 8, cy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55 * self._ui_scale, (230, 230, 230), 1, cv2.LINE_AA)

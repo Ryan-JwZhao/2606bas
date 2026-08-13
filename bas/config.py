@@ -110,6 +110,7 @@ class TrackerConfig:
     match_distance_px: float = 90.0
     match_iou: float = 0.08
     velocity_smoothing: float = 0.35
+    min_confirmed_hits: int = 2
 
 
 @dataclass
