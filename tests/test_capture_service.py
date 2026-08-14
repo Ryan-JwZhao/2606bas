@@ -312,6 +312,44 @@ def test_create_capture_service_skips_runtime_undistortion_for_video_when_switch
     assert service.info().backend == "video"
 
 
+def test_video_backend_uses_video_rotation_instead_of_camera_mount_rotation(monkeypatch) -> None:
+    raw = np.arange(18, dtype=np.uint8).reshape(2, 3, 3)
+    source = _SingleFrameCapture(raw)
+    monkeypatch.setattr(capture_service, "VideoFileCapture", lambda *args, **kwargs: source)
+
+    service = capture_service.create_capture_service(
+        CameraConfig(
+            backend="video",
+            video_path="upside_down.mp4",
+            frame_rotation_degrees=0,
+            video_rotation_degrees=180,
+            distortion_correction_enabled=False,
+        )
+    )
+    packet = service.read()
+
+    assert packet is not None
+    np.testing.assert_array_equal(packet.image, raw[::-1, ::-1])
+    assert packet.exposure_meta["frame_rotation_degrees"] == 180
+
+
+def test_video_backend_does_not_inherit_camera_mount_rotation(monkeypatch) -> None:
+    source = _StubVideoCapture()
+    monkeypatch.setattr(capture_service, "VideoFileCapture", lambda *args, **kwargs: source)
+
+    service = capture_service.create_capture_service(
+        CameraConfig(
+            backend="video",
+            video_path="already_canonical.mp4",
+            frame_rotation_degrees=180,
+            video_rotation_degrees=0,
+            distortion_correction_enabled=False,
+        )
+    )
+
+    assert service.source is source
+
+
 def test_video_backend_applies_enabled_distortion_correction(monkeypatch) -> None:
     source = _StubVideoCapture()
     calibration = CameraCalibration(

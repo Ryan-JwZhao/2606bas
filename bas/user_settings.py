@@ -25,6 +25,7 @@ class UserSettings:
     fps: Optional[int] = None
     frame_rotation_degrees: Optional[int] = None
     video_path: Optional[str] = None
+    video_rotation_degrees: Optional[int] = None
     nori_sdk_root: Optional[str] = None
     exposure_auto: Optional[bool] = None
     exposure_level: Optional[int] = None
@@ -180,6 +181,10 @@ class UserSettings:
             config.projection.legacy_output_rotation_degrees = 0
         if self._has("video_path"):
             config.camera.video_path = _clean_optional_text(self.video_path)
+        if self.video_rotation_degrees is not None:
+            config.camera.video_rotation_degrees = normalize_frame_rotation_degrees(
+                self.video_rotation_degrees
+            )
         if self._has("nori_sdk_root"):
             config.camera.nori_sdk_root = _clean_optional_text(self.nori_sdk_root)
         if self.exposure_auto is not None:
@@ -387,6 +392,7 @@ class UserSettings:
             fps=config.camera.fps,
             frame_rotation_degrees=normalize_frame_rotation_degrees(config.camera.frame_rotation_degrees),
             video_path=config.camera.video_path,
+            video_rotation_degrees=normalize_frame_rotation_degrees(config.camera.video_rotation_degrees),
             nori_sdk_root=config.camera.nori_sdk_root,
             exposure_auto=config.camera.exposure_auto,
             exposure_level=config.camera.exposure_level,

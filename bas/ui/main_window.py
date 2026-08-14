@@ -223,6 +223,21 @@ class SettingsDialog(QtWidgets.QDialog):
         learning_collect_layout.addWidget(self.learning_collect_enabled)
         learning_collect_layout.addWidget(self.learning_samples_directory, 1)
         self.video_path = self._path_row(config.camera.video_path, "视频文件 (*.mp4 *.avi *.mov *.mkv);;所有文件 (*.*)")
+        self.video_rotation_degrees = QtWidgets.QComboBox()
+        for degrees in (0, 90, 180, 270):
+            label = "不旋转" if degrees == 0 else f"顺时针 {degrees}°"
+            self.video_rotation_degrees.addItem(label, degrees)
+        video_rotation_index = self.video_rotation_degrees.findData(
+            normalize_frame_rotation_degrees(config.camera.video_rotation_degrees)
+        )
+        self.video_rotation_degrees.setCurrentIndex(max(0, video_rotation_index))
+        self.video_rotation_degrees.setToolTip("仅旋转 video 文件输入，不与工业相机安装方向叠加。")
+        video_input_box = QtWidgets.QWidget()
+        video_input_layout = QtWidgets.QHBoxLayout(video_input_box)
+        video_input_layout.setContentsMargins(0, 0, 0, 0)
+        video_input_layout.addWidget(self.video_path, 1)
+        video_input_layout.addWidget(QtWidgets.QLabel("旋转"))
+        video_input_layout.addWidget(self.video_rotation_degrees)
         self.nori_sdk_root = self._dir_row(config.camera.nori_sdk_root)
         self.frame_rotation_degrees = QtWidgets.QComboBox()
         for degrees in (0, 90, 180, 270):
@@ -556,7 +571,7 @@ class SettingsDialog(QtWidgets.QDialog):
             tabs,
             "相机采集",
             [
-                ("视频文件路径", self.video_path),
+                ("视频文件路径", video_input_box),
                 ("Nori SDK 目录", self.nori_sdk_root),
                 ("工业相机安装方向", self.frame_rotation_degrees),
                 ("工业相机畸变矫正", distortion_box),
@@ -792,6 +807,9 @@ class SettingsDialog(QtWidgets.QDialog):
         config.learning.collect_enabled = self.learning_collect_enabled.isChecked()
         config.learning.samples_directory = self.learning_samples_directory.line_edit.text().strip() or "rl/data/samples"  # type: ignore[attr-defined]
         config.camera.video_path = self.video_path.line_edit.text().strip() or None  # type: ignore[attr-defined]
+        config.camera.video_rotation_degrees = normalize_frame_rotation_degrees(
+            self.video_rotation_degrees.currentData()
+        )
         config.camera.nori_sdk_root = self.nori_sdk_root.line_edit.text().strip() or None  # type: ignore[attr-defined]
         config.camera.frame_rotation_degrees = normalize_frame_rotation_degrees(
             self.frame_rotation_degrees.currentData()

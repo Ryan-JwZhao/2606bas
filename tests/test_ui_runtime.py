@@ -709,6 +709,23 @@ def test_settings_dialog_controls_camera_direction_and_keeps_projector_fine_angl
     app.processEvents()
 
 
+def test_settings_dialog_controls_video_rotation_independently() -> None:
+    app = _app()
+    config = AppConfig()
+    config.camera.frame_rotation_degrees = 0
+    config.camera.video_rotation_degrees = 180
+    dialog = main_window.SettingsDialog(config, main_window.StarFormulaConfig())
+
+    assert dialog.video_rotation_degrees.currentData() == 180
+    dialog.video_rotation_degrees.setCurrentIndex(dialog.video_rotation_degrees.findData(270))
+    dialog.apply_to_config(config)
+
+    assert config.camera.video_rotation_degrees == 270
+    assert config.camera.frame_rotation_degrees == 0
+    dialog.close()
+    app.processEvents()
+
+
 def test_settings_dialog_applies_exposure_control_mode() -> None:
     app = _app()
     config = AppConfig()

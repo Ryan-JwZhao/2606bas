@@ -152,11 +152,13 @@ def create_capture_service(config: CameraConfig) -> CaptureService:
             effective_backend = "opencv"
     source: CaptureSource
 
-    def finish(src: CaptureSource) -> CaptureService:
-        rotation_degrees = normalize_frame_rotation_degrees(config.frame_rotation_degrees)
+    def finish(src: CaptureSource, *, rotation_degrees: int | None = None) -> CaptureService:
+        if rotation_degrees is None:
+            rotation_degrees = config.frame_rotation_degrees
+        rotation_degrees = normalize_frame_rotation_degrees(rotation_degrees)
         if rotation_degrees:
-            # Mount orientation is normalized before undistortion so that camera
-            # intrinsics remain expressed in the canonical image coordinates.
+            # Source orientation is normalized before undistortion so camera
+            # intrinsics remain expressed in canonical image coordinates.
             src = FrameOrientedCapture(src, rotation_degrees)
         state = _distortion_correction_state(config)
         if state.should_wrap_source and state.calibration is not None:
@@ -175,7 +177,7 @@ def create_capture_service(config: CameraConfig) -> CaptureService:
         if not config.video_path:
             raise ValueError("camera.video_path is required when camera.backend=video")
         source = VideoFileCapture(config.video_path, camera_id=config.camera_id)
-        return finish(source)
+        return finish(source, rotation_degrees=config.video_rotation_degrees)
     if effective_backend in {"auto", "nori"}:
         nori = open_nori_capture(
             device_index=config.device_index,
