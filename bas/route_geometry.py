@@ -77,7 +77,12 @@ def segment_inside_polygon_to_pocket(
         float(pocket_relief_distance_mm),
         math.sqrt(2.0) * relief + max(1.0, float(sample_step_mm)),
     )
-    for idx in range(samples + 1):
+    # The fitted pocket centre is the destination rather than playable cloth.
+    # It may legitimately sit just beyond the relief envelope because pocket
+    # curves describe the lips, not an in-table ball-centre position.  Validate
+    # every approach sample but do not reject an otherwise valid route solely
+    # because its final mathematical endpoint is outside the table polygon.
+    for idx in range(samples):
         t = idx / max(1, samples)
         point = a * (1.0 - t) + b * t
         remaining = (1.0 - t) * length

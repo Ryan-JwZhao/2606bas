@@ -470,6 +470,12 @@ state:
 .\.venv\Scripts\python.exe -m pytest tests\test_planner.py tests\test_route_geometry.py tests\test_cue_sector_preview.py tests\test_user_settings.py -q --basetemp=pytest_tmp_codex -o cache_dir=pytest_cache_local\pytest_cache
 ```
 
+### 外置袋心路线修复（2026-08-14）
+
+规划袋心由袋唇曲线拟合得到，角袋和中袋的数学圆心可能位于可打台面之外。目标球入袋路线仍会逐点检查到袋口的完整接近段，但不再用台面多边形约束最后一个“袋心终点”；袋心不是球桌布面上的合法球心位置，拿它做边界检查会误删本来可行的进洞路线。
+
+回归测试覆盖六个袋口的近袋直线入口，同时保留“从库边提前穿出”的拒绝测试。修改代码后需要重启 BAS，正在运行的旧进程不会自动加载本次修复。
+
 如果只想快速检查核心规划链路，也可以运行：
 
 ```powershell

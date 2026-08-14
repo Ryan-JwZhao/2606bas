@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import numpy as np
 
-from bas.route_geometry import cue_alignment_start, estimate_route_end, rule_cue_separation_end
+from bas.route_geometry import (
+    cue_alignment_start,
+    estimate_route_end,
+    rule_cue_separation_end,
+    segment_inside_polygon_to_pocket,
+)
 
 
 TABLE_POLYGON = np.array([[0.0, 0.0], [1000.0, 0.0], [1000.0, 500.0], [0.0, 500.0]], dtype=np.float32)
@@ -43,3 +48,34 @@ def test_rule_cue_separation_end_returns_projected_exit() -> None:
     assert end is not None
     assert 0.0 <= float(end[0]) <= 1000.0
     assert 0.0 <= float(end[1]) <= 500.0
+
+
+def test_all_six_pocket_routes_allow_external_fitted_centres() -> None:
+    playable = np.asarray(
+        [[31.0, 31.0], [2509.0, 31.0], [2509.0, 1239.0], [31.0, 1239.0]],
+        dtype=np.float32,
+    )
+    table_center = np.asarray([1270.0, 635.0], dtype=np.float32)
+    outside = 115.6
+    corner_offset = outside / np.sqrt(2.0)
+    pocket_centres = [
+        np.asarray([31.0 - corner_offset, 31.0 - corner_offset], dtype=np.float32),
+        np.asarray([1270.0, 31.0 - outside], dtype=np.float32),
+        np.asarray([2509.0 + corner_offset, 31.0 - corner_offset], dtype=np.float32),
+        np.asarray([2509.0 + corner_offset, 1239.0 + corner_offset], dtype=np.float32),
+        np.asarray([1270.0, 1239.0 + outside], dtype=np.float32),
+        np.asarray([31.0 - corner_offset, 1239.0 + corner_offset], dtype=np.float32),
+    ]
+
+    for pocket in pocket_centres:
+        toward_table = table_center - pocket
+        toward_table /= np.linalg.norm(toward_table)
+        object_ball = pocket + toward_table * 288.0
+
+        assert segment_inside_polygon_to_pocket(
+            playable,
+            object_ball,
+            pocket,
+            margin_mm=5.0,
+            pocket_relief_mm=114.3,
+        )
