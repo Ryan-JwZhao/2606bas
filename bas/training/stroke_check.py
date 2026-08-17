@@ -24,19 +24,24 @@ class TableProjection(Protocol):
 
 @dataclass(frozen=True)
 class StrokeCheckDimensions:
-    """Physical measurements recovered from the printable Stroke Check Tool."""
+    """Field-sized stroke guide derived from the printable reference."""
 
     ball_diameter_mm: float = 2.25 * INCH_MM
     ball_outline_mm: float = 1.68
-    ball_center_from_rear_mm: float = 250.0
+    # The printable body is 250 mm long. On the calibrated 1280x800 field
+    # projector it occupied only about 122 px, so the working body is 1.5x.
+    # The cue-ball circle intentionally remains regulation size.
+    ball_center_from_rear_mm: float = 375.0
     cue_band_width_mm: float = 12.17
-    cue_band_end_mm: float = 250.0 - (2.25 * INCH_MM * 0.5)
-    checkpoint_first_mm: float = 2.0 * INCH_MM
-    checkpoint_spacing_mm: float = 3.0 * INCH_MM
-    checkpoint_length_mm: float = 92.76
+    cue_band_end_mm: float = 375.0 - (2.25 * INCH_MM * 0.5)
+    checkpoint_first_mm: float = 3.0 * INCH_MM
+    checkpoint_spacing_mm: float = 4.5 * INCH_MM
+    checkpoint_length_mm: float = 139.14
     checkpoint_width_mm: float = 1.32
-    rear_guide_half_width_mm: float = 15.0
+    guide_half_angle_deg: float = 3.5
+    rear_guide_half_width_mm: float | None = None
     guide_width_mm: float = 0.53
+    minimum_mark_width_px: int = 2
 
     @property
     def checkpoint_centers_mm(self) -> tuple[float, float, float]:
@@ -44,6 +49,14 @@ class StrokeCheckDimensions:
             self.checkpoint_first_mm + index * self.checkpoint_spacing_mm
             for index in range(3)
         )
+
+    @property
+    def resolved_rear_guide_half_width_mm(self) -> float:
+        if self.rear_guide_half_width_mm is not None:
+            return float(self.rear_guide_half_width_mm)
+        band_half = 0.5 * float(self.cue_band_width_mm)
+        guide_run = max(0.0, float(self.cue_band_end_mm))
+        return band_half + math.tan(math.radians(float(self.guide_half_angle_deg))) * guide_run
 
 
 class StrokeCheckOverlayBuilder:
@@ -98,6 +111,7 @@ class StrokeCheckOverlayBuilder:
                 [center - transverse * half, center + transverse * half],
                 physical_width_mm=self.dimensions.checkpoint_width_mm,
                 width_axis=shot_direction,
+                minimum_width_px=self.dimensions.minimum_mark_width_px,
                 label=f"stroke_check_checkpoint_{index + 1}",
             )
 
@@ -111,11 +125,17 @@ class StrokeCheckOverlayBuilder:
                 [
                     rear
                     + transverse
-                    * (sign * float(self.dimensions.rear_guide_half_width_mm)),
+                    * (
+                        sign
+                        * float(
+                            self.dimensions.resolved_rear_guide_half_width_mm
+                        )
+                    ),
                     guide_end + transverse * (sign * band_half),
                 ],
                 physical_width_mm=self.dimensions.guide_width_mm,
                 width_axis=transverse,
+                minimum_width_px=self.dimensions.minimum_mark_width_px,
                 label=(
                     "stroke_check_guide_left"
                     if sign < 0.0
@@ -144,6 +164,7 @@ class StrokeCheckOverlayBuilder:
             circle_points,
             physical_width_mm=self.dimensions.ball_outline_mm,
             width_axis=transverse,
+            minimum_width_px=self.dimensions.minimum_mark_width_px,
             label="stroke_check_shot_direction_circle",
         )
         return overlay
@@ -155,6 +176,7 @@ class StrokeCheckOverlayBuilder:
         *,
         physical_width_mm: float,
         width_axis: np.ndarray,
+        minimum_width_px: int = 1,
         label: str,
     ) -> None:
         points = np.asarray(points_mm, dtype=np.float32).reshape((-1, 2))
@@ -171,7 +193,7 @@ class StrokeCheckOverlayBuilder:
             )
         )
         width_px = max(
-            1,
+            max(1, int(minimum_width_px)),
             int(round(float(np.linalg.norm(width_samples[1] - width_samples[0])))),
         )
         overlay.lines.append(
