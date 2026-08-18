@@ -9,6 +9,7 @@ import numpy as np
 
 from ..config import TrackerConfig
 from ..schemas import Detection, DetectionsFrame, TrackObservation, TracksFrame
+from ..tracking.geometry_continuity import BallGeometryContinuity, blend_tracked_center
 
 
 _BALL_NUMBER_RE = re.compile(r"(?:ball[_\- ]*)?(\d{1,2})$", re.IGNORECASE)
@@ -49,6 +50,7 @@ class _NumberTrack:
     confidence: float
     geometry_quality: float
     geometry_method: str
+    geometry_continuity: BallGeometryContinuity
     last_ts_ns: int
     velocity: np.ndarray
     age: int = 1
@@ -58,7 +60,7 @@ class _NumberTrack:
 class NumberedBallTracker:
     """Identity-first tracker for a model where each ball number is a unique class."""
 
-    version = "numbered_ball_identity_v1"
+    version = "numbered_ball_identity_v2"
 
     def __init__(self, config: TrackerConfig):
         self.config = config
@@ -92,15 +94,18 @@ class NumberedBallTracker:
         for number, detection in selected.items():
             if float(detection.conf) < float(self.config.high_conf):
                 continue
-            center = np.asarray(detection.center, dtype=np.float32)
+            geometry_continuity = BallGeometryContinuity()
+            geometry = geometry_continuity.measure(detection)
+            center = geometry.center_px
             self._tracks[number] = _NumberTrack(
                 number=number,
                 bbox=tuple(float(value) for value in detection.bbox),
                 center=center,
-                radius_px=float(detection.radius_px),
+                radius_px=float(geometry.radius_px),
                 confidence=float(detection.conf),
                 geometry_quality=float(np.clip(detection.geometry_quality, 0.0, 1.0)),
                 geometry_method=str(detection.geometry_method or "unknown"),
+                geometry_continuity=geometry_continuity,
                 last_ts_ns=int(detections_frame.ts_cam_ns),
                 velocity=np.zeros((2,), dtype=np.float32),
             )
@@ -115,14 +120,20 @@ class NumberedBallTracker:
         )
 
     def _update(self, track: _NumberTrack, detection: Detection, ts_ns: int) -> None:
-        center = np.asarray(detection.center, dtype=np.float32)
+        geometry = track.geometry_continuity.measure(detection)
+        center = blend_tracked_center(
+            track.center,
+            geometry,
+            previous_radius_px=track.radius_px,
+            geometry_quality=detection.geometry_quality,
+        )
         dt = max(1e-6, (int(ts_ns) - int(track.last_ts_ns)) / 1e9)
         instant_velocity = (center - track.center) / dt
         alpha = max(0.0, min(1.0, float(self.config.velocity_smoothing)))
         track.velocity = (1.0 - alpha) * track.velocity + alpha * instant_velocity
         track.center = center
         track.bbox = tuple(float(value) for value in detection.bbox)
-        track.radius_px = float(detection.radius_px)
+        track.radius_px = float(geometry.radius_px)
         track.confidence = float(detection.conf)
         track.geometry_quality = float(np.clip(detection.geometry_quality, 0.0, 1.0))
         track.geometry_method = str(detection.geometry_method or "unknown")

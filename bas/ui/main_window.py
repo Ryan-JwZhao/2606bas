@@ -55,6 +55,13 @@ from ..capture import (
     probe_cameras,
 )
 from ..capture.nori_sdk import NoriProtocolController
+from ..display_geometry import (
+    DISPLAY_SHAPE_DEADBAND_PX,
+    DisplayGeometryStabilizer,
+    draw_subpixel_circle,
+    draw_subpixel_line,
+    draw_subpixel_rectangle,
+)
 from ..geometry_runtime import load_validated_table_geometry
 from ..geometry_contract import projection_calibration_context
 from ..logging_config import configure_logging
@@ -1501,6 +1508,12 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             auto_pocket_animation_enabled=bool(self.config.projection.auto_pocket_animation_enabled),
             auto_victory_animation_enabled=bool(self.config.projection.auto_victory_animation_enabled),
         )
+        self._preview_route_geometry = DisplayGeometryStabilizer()
+        self._preview_ball_center_geometry = DisplayGeometryStabilizer()
+        self._preview_ball_shape_geometry = DisplayGeometryStabilizer(
+            deadband_px=DISPLAY_SHAPE_DEADBAND_PX
+        )
+        self._preview_text_values = DisplayGeometryStabilizer(deadband_px=0.05)
         self.control_state = RuntimeControlState()
         self._route_freeze = MotionRouteFreezeController(self.config.planner)
         self._recording_fps_estimator = RecordingFpsEstimator()
@@ -3651,7 +3664,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         target = np.asarray(candidate.object_ball, dtype=np.float32)
         pocket = np.asarray(candidate.pocket_point, dtype=np.float32)
         style = self._route_preview_stroke_style()
-        radius_px = max(6, int(round(self._camera_radius_px(ghost, radius_mm))))
+        radius_px = max(6.0, self._camera_radius_px(ghost, radius_mm))
         table = self.pipeline.calibration.table if self.pipeline is not None else None
         inner = self._inner_polygon_table()
 
@@ -3662,8 +3675,26 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             table_width_mm=float(table.width_mm) if table is not None else 0.0,
             table_height_mm=float(table.height_mm) if table is not None else 0.0,
         )
-        self._draw_segment_trimmed(image, guide_start, cue, route_color, style.solid_line_width, 0.0, radius_mm)
-        self._draw_segment_trimmed(image, cue, ghost, route_color, style.solid_line_width, radius_mm, radius_mm)
+        self._draw_segment_trimmed(
+            image,
+            guide_start,
+            cue,
+            route_color,
+            style.solid_line_width,
+            0.0,
+            radius_mm,
+            stability_key="route.cue_guide",
+        )
+        self._draw_segment_trimmed(
+            image,
+            cue,
+            ghost,
+            route_color,
+            style.solid_line_width,
+            radius_mm,
+            radius_mm,
+            stability_key="route.aim",
+        )
         object_nodes = [np.asarray(point, dtype=np.float32) for point in (getattr(candidate, "object_line", None) or [])]
         if len(object_nodes) < 2:
             object_nodes = [target, pocket]
@@ -3676,6 +3707,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
                 style.dashed_line_width,
                 radius_mm if idx == 0 else 0.0,
                 0.0,
+                stability_key=f"route.object.{idx}",
             )
         cue_sep_end = rule_cue_separation_end(
             cue,
@@ -3693,16 +3725,43 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
                 style.dashed_line_width,
                 radius_mm,
                 0.0,
+                stability_key="route.cue_separation",
             )
 
-        for point in (cue, ghost, target, *object_nodes[1:-1]):
+        route_circle_points = (cue, ghost, target, *object_nodes[1:-1])
+        for circle_index, point in enumerate(route_circle_points):
             cam = self._table_mm_to_camera_px([point])
             if cam.shape[0] >= 1:
-                point_radius_px = max(6, int(round(self._camera_radius_px(point, radius_mm))))
-                cv2.circle(image, _point_int(cam[0]), point_radius_px, route_color, style.circle_width, cv2.LINE_AA)
+                shown_center = self._stabilize_preview_route_geometry(
+                    f"route.circle.{circle_index}.center",
+                    cam[0],
+                )
+                point_radius_px = max(6.0, self._camera_radius_px(point, radius_mm))
+                shown_radius = self._stabilize_preview_route_geometry(
+                    f"route.circle.{circle_index}.radius",
+                    np.asarray([point_radius_px], dtype=np.float32),
+                )
+                draw_subpixel_circle(
+                    image,
+                    shown_center,
+                    float(shown_radius[0]),
+                    route_color,
+                    style.circle_width,
+                )
         pocket_px = self._table_mm_to_camera_px([pocket])
         if pocket_px.shape[0] >= 1:
-            cv2.circle(image, _point_int(pocket_px[0]), max(6, radius_px // 2), route_color, style.circle_width, cv2.LINE_AA)
+            shown_center = self._stabilize_preview_route_geometry("route.pocket.center", pocket_px[0])
+            shown_radius = self._stabilize_preview_route_geometry(
+                "route.pocket.radius",
+                np.asarray([max(6.0, radius_px * 0.5)], dtype=np.float32),
+            )
+            draw_subpixel_circle(
+                image,
+                shown_center,
+                float(shown_radius[0]),
+                route_color,
+                style.circle_width,
+            )
 
     def _camera_radius_px(self, point_mm, radius_mm: float) -> float:
         point = np.asarray(point_mm, dtype=np.float32).reshape((2,))
@@ -3720,11 +3779,15 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         thickness: int,
         start_radius_mm: float = 0.0,
         end_radius_mm: float = 0.0,
+        *,
+        stability_key: str | None = None,
     ) -> None:
         points = self._trimmed_camera_segment(start_mm, end_mm, start_radius_mm, end_radius_mm)
         if points is None:
             return
-        cv2.line(image, _point_int(points[0]), _point_int(points[1]), color, max(1, int(thickness)), cv2.LINE_AA)
+        if stability_key:
+            points = self._stabilize_preview_route_geometry(stability_key, points)
+        draw_subpixel_line(image, points[0], points[1], color, max(1, int(thickness)))
 
     def _draw_dashed_segment_trimmed(
         self,
@@ -3737,10 +3800,14 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         end_radius_mm: float = 0.0,
         dash_px: float = 12.0,
         gap_px: float = 16.0,
+        *,
+        stability_key: str | None = None,
     ) -> None:
         points = self._trimmed_camera_segment(start_mm, end_mm, start_radius_mm, end_radius_mm)
         if points is None:
             return
+        if stability_key:
+            points = self._stabilize_preview_route_geometry(stability_key, points)
         start = points[0]
         end = points[1]
         v = end - start
@@ -3754,9 +3821,16 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             seg_e = min(dist, drawn + float(max(2.0, dash_px)))
             p1 = start + d * drawn
             p2 = start + d * seg_e
-            if int(round(float(p1[0]))) != int(round(float(p2[0]))) or int(round(float(p1[1]))) != int(round(float(p2[1]))):
-                cv2.line(image, _point_int(p1), _point_int(p2), color, max(1, int(thickness)), cv2.LINE_AA)
+            if float(np.linalg.norm(p2 - p1)) >= 1.0 / 256.0:
+                draw_subpixel_line(image, p1, p2, color, max(1, int(thickness)))
             drawn += step
+
+    def _stabilize_preview_route_geometry(self, key: str, values) -> np.ndarray:
+        stabilizer = self.__dict__.get("_preview_route_geometry")
+        source = np.asarray(values, dtype=np.float32)
+        if stabilizer is None:
+            return source.copy()
+        return stabilizer.stabilize(key, source)
 
     def _trimmed_camera_segment(
         self,
@@ -4173,6 +4247,11 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.last_output = None
         self._last_preview_update_ts = 0.0
         self._route_freeze.reset()
+        self._projection_interaction.reset_display_geometry()
+        self._preview_route_geometry.reset()
+        self._preview_ball_center_geometry.reset()
+        self._preview_ball_shape_geometry.reset()
+        self._preview_text_values.reset()
         self._clear_pocket_notices()
         self._set_video_timeline_state(state)
         self._append_log(f"视频已定位到 {format_video_time(state.current_seconds)}")
@@ -4225,6 +4304,11 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
         self._instant_replay_start_failed = False
         self._route_freeze.reset()
+        self._projection_interaction.reset_display_geometry()
+        self._preview_route_geometry.reset()
+        self._preview_ball_center_geometry.reset()
+        self._preview_ball_shape_geometry.reset()
+        self._preview_text_values.reset()
         self._clear_pocket_notices()
         self._apply_pending_turn_target_group()
         self.last_output = None
@@ -4262,6 +4346,11 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._instant_replay_start_failed = False
         self._stop_all_media_recordings()
         self._route_freeze.reset()
+        self._projection_interaction.reset_display_geometry()
+        self._preview_route_geometry.reset()
+        self._preview_ball_center_geometry.reset()
+        self._preview_ball_shape_geometry.reset()
+        self._preview_text_values.reset()
         if self.pipeline is not None:
             self._pending_turn_target_group = self.pipeline.state_machine.turn_target_group
             try:
@@ -4555,12 +4644,26 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         display_tracks = confirmed_tracks(out.tracks.tracks)
         visible_display_tracks = [tr for tr in display_tracks if tr.visibility == "visible"]
         for tr in visible_display_tracks:
-            x1, y1, x2, y2 = [int(round(v)) for v in tr.bbox]
-            cv2.rectangle(img, (x1, y1), (x2, y2), (235, 235, 235), 2, cv2.LINE_AA)
-            cv2.putText(img, f"{tr.cls_name} {tr.confidence:.2f}", (x1, max(18, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.55 * self._ui_scale, (245, 245, 245), 1, cv2.LINE_AA)
+            bbox = np.asarray(tr.bbox, dtype=np.float32).reshape((2, 2))
+            shown_bbox = self._preview_ball_shape_geometry.stabilize(("bbox", int(tr.track_id)), bbox)
+            draw_subpixel_rectangle(img, shown_bbox[0], shown_bbox[1], (235, 235, 235), 2)
+            text_x, text_y = [int(round(float(v))) for v in shown_bbox[0]]
+            shown_confidence = self._preview_text_values.stabilize(
+                ("confidence", int(tr.track_id)),
+                np.asarray([float(tr.confidence)], dtype=np.float32),
+            )
+            cv2.putText(img, f"{tr.cls_name} {float(shown_confidence[0]):.2f}", (text_x, max(18, text_y - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.55 * self._ui_scale, (245, 245, 245), 1, cv2.LINE_AA)
         for tr in display_tracks:
-            cx, cy = [int(round(v)) for v in tr.center_px]
-            cv2.circle(img, (cx, cy), max(4, int(round(tr.radius_px))), (250, 250, 250), 2, cv2.LINE_AA)
+            shown_center = self._preview_ball_center_geometry.stabilize(
+                ("center", int(tr.track_id)),
+                np.asarray(tr.center_px, dtype=np.float32),
+            )
+            shown_radius = self._preview_ball_shape_geometry.stabilize(
+                ("radius", int(tr.track_id)),
+                np.asarray([float(tr.radius_px)], dtype=np.float32),
+            )
+            draw_subpixel_circle(img, shown_center, max(4.0, float(shown_radius[0])), (250, 250, 250), 2)
+            cx, cy = [int(round(float(v))) for v in shown_center]
             cv2.putText(img, f"#{tr.track_id} {tr.group}", (cx + 8, cy - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.55 * self._ui_scale, (230, 230, 230), 1, cv2.LINE_AA)
         if out.training is not None:
             expected = set(out.training.expected_numbers)
@@ -4571,8 +4674,15 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
                     continue
                 if tr.visibility != "visible" or number not in expected:
                     continue
-                center = tuple(int(round(value)) for value in tr.center_px)
-                cv2.circle(img, center, max(8, int(round(tr.radius_px * 1.45))), (0, 220, 255), 3, cv2.LINE_AA)
+                shown_center = self._preview_ball_center_geometry.stabilize(
+                    ("center", int(tr.track_id)),
+                    np.asarray(tr.center_px, dtype=np.float32),
+                )
+                shown_radius = self._preview_ball_shape_geometry.stabilize(
+                    ("training_radius", int(tr.track_id)),
+                    np.asarray([float(tr.radius_px) * 1.45], dtype=np.float32),
+                )
+                draw_subpixel_circle(img, shown_center, max(8.0, float(shown_radius[0])), (0, 220, 255), 3)
             cv2.putText(
                 img,
                 f"TRAINING {out.training.phase.upper()} {out.training.progress_current}/{out.training.progress_total} "

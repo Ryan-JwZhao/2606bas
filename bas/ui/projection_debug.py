@@ -61,13 +61,28 @@ def append_projected_ball_overlays(
                 radius_px=track.radius_px,
                 geometry_quality=float(getattr(track, "geometry_quality", track.quality)),
                 geometry_method=str(getattr(track, "geometry_method", "unknown")),
+                stability_key=f"debug_track_{int(track.track_id)}",
             ):
                 appended += 1
         return appended
 
-    for det in detections:
-        if group_from_class(getattr(det, "cls_name", "")) not in BALL_GROUPS:
-            continue
+    eligible_detections = [
+        det
+        for det in detections
+        if group_from_class(getattr(det, "cls_name", "")) in BALL_GROUPS
+    ]
+    eligible_detections.sort(
+        key=lambda det: (
+            group_from_class(getattr(det, "cls_name", "")),
+            float(det.center[0]),
+            float(det.center[1]),
+        )
+    )
+    group_occurrences: dict[str, int] = {}
+    for det in eligible_detections:
+        group = group_from_class(getattr(det, "cls_name", ""))
+        occurrence = group_occurrences.get(group, 0)
+        group_occurrences[group] = occurrence + 1
         if _append_projected_ball_marker(
             overlay,
             calibration,
@@ -75,6 +90,7 @@ def append_projected_ball_overlays(
             radius_px=det.radius_px,
             geometry_quality=float(det.geometry_quality),
             geometry_method=str(det.geometry_method),
+            stability_key=f"debug_detection_{group}_{occurrence}",
         ):
             appended += 1
     return appended
@@ -88,6 +104,7 @@ def _append_projected_ball_marker(
     radius_px: float,
     geometry_quality: float,
     geometry_method: str,
+    stability_key: str | None = None,
 ) -> bool:
     cx, cy = [float(v) for v in center_px]
     try:
@@ -106,6 +123,7 @@ def _append_projected_ball_marker(
             radius_y=max(4.0, float(ellipse.radius_y_px)),
             rotation_deg=float(ellipse.rotation_deg),
             color=ROUTE_COLOR,
+            stability_key=stability_key,
         )
     )
     return True

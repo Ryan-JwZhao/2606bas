@@ -10,6 +10,7 @@ import numpy as np
 from ..config import TrackerConfig
 from ..schemas import Detection, DetectionsFrame, TrackObservation, TracksFrame
 from ..utils import clamp, group_from_class, iou_xyxy
+from .geometry_continuity import BallGeometryContinuity, blend_tracked_center
 
 
 @dataclass
@@ -21,6 +22,7 @@ class _Track:
     confidence: float
     geometry_quality: float
     geometry_method: str
+    geometry_continuity: BallGeometryContinuity
     votes: Deque[str]
     last_ts_ns: int
     velocity: np.ndarray = field(default_factory=lambda: np.zeros((2,), dtype=np.float32))
@@ -37,7 +39,7 @@ class _Track:
 
 
 class TemporalTracker:
-    version = "temporal_centroid_v1"
+    version = "temporal_centroid_v2"
 
     def __init__(self, config: TrackerConfig):
         self.config = config
@@ -80,17 +82,20 @@ class TemporalTracker:
             det = detections[did]
             if det.conf < self.config.high_conf:
                 continue
-            center = np.asarray(det.center, dtype=np.float32)
+            geometry_continuity = BallGeometryContinuity()
+            geometry = geometry_continuity.measure(det)
+            center = geometry.center_px
             tid = self._next_id
             self._next_id += 1
             self._tracks[tid] = _Track(
                 track_id=tid,
                 bbox=tuple(float(v) for v in det.bbox),
                 center=center,
-                radius_px=float(det.radius_px),
+                radius_px=float(geometry.radius_px),
                 confidence=float(det.conf),
                 geometry_quality=float(np.clip(det.geometry_quality, 0.0, 1.0)),
                 geometry_method=str(det.geometry_method or "unknown"),
+                geometry_continuity=geometry_continuity,
                 votes=deque([det.cls_name], maxlen=int(self.config.vote_window)),
                 last_ts_ns=detections_frame.ts_cam_ns,
                 confirmed=max(1, int(self.config.min_confirmed_hits)) <= 1,
@@ -148,21 +153,20 @@ class TemporalTracker:
         return matches, unmatched_tracks, unmatched_dets
 
     def _update_track(self, track: _Track, det: Detection, ts_ns: int) -> None:
-        measured_center = np.asarray(det.center, dtype=np.float32)
-        displacement = float(np.linalg.norm(measured_center - track.center))
-        radius = max(2.0, float(track.radius_px), float(det.radius_px))
-        if displacement <= 0.35 * radius:
-            measurement_alpha = 0.35 + 0.40 * float(np.clip(det.geometry_quality, 0.0, 1.0))
-        else:
-            measurement_alpha = 1.0
-        new_center = track.center + float(measurement_alpha) * (measured_center - track.center)
+        geometry = track.geometry_continuity.measure(det)
+        new_center = blend_tracked_center(
+            track.center,
+            geometry,
+            previous_radius_px=track.radius_px,
+            geometry_quality=det.geometry_quality,
+        )
         dt = max(1e-6, (ts_ns - track.last_ts_ns) / 1e9)
         instant_v = (new_center - track.center) / dt
         alpha = float(clamp(self.config.velocity_smoothing, 0.0, 1.0))
         track.velocity = (1.0 - alpha) * track.velocity + alpha * instant_v
         track.center = new_center
         track.bbox = tuple(float(v) for v in det.bbox)
-        track.radius_px = float(det.radius_px)
+        track.radius_px = float(geometry.radius_px)
         track.confidence = float(det.conf)
         track.geometry_quality = float(np.clip(det.geometry_quality, 0.0, 1.0))
         track.geometry_method = str(det.geometry_method or "unknown")

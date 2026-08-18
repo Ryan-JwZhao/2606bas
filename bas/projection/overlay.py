@@ -9,6 +9,7 @@ import numpy as np
 
 from ..calibration.service import CalibrationService
 from ..config import ProjectionConfig
+from ..display_geometry import draw_subpixel_ellipse, draw_subpixel_line, draw_subpixel_polyline
 from ..route_geometry import cue_alignment_start, rule_cue_separation_end
 from ..schemas import OverlayCircle, OverlayLine, ProjectionOverlay, ShotCandidate, ShotPlan
 from ..utils import wall_time_id
@@ -111,15 +112,53 @@ class OverlayBuilder:
             circle_points.extend((float(point[0]), float(point[1])) for point in object_nodes[1:-1])
         circles = self.calibration.table_mm_to_projector_px(np.asarray(circle_points, dtype=np.float32))
         radius_px = self._projector_radius_px(candidate.ghost_ball, ball_radius)
-        overlay.circles.append(self._projector_ellipse_circle(candidate.cue_ball, ball_radius, ROUTE_COLOR, style.circle_width))
-        overlay.circles.append(self._projector_ellipse_circle(candidate.ghost_ball, ball_radius, ROUTE_COLOR, style.circle_width))
-        overlay.circles.append(self._projector_ellipse_circle(candidate.object_ball, ball_radius, ROUTE_COLOR, style.circle_width))
         overlay.circles.append(
-            self._projector_ellipse_circle(candidate.pocket_point, ball_radius, ROUTE_COLOR, style.circle_width, scale=0.45, minimum=8.0)
+            self._projector_ellipse_circle(
+                candidate.cue_ball,
+                ball_radius,
+                ROUTE_COLOR,
+                style.circle_width,
+                stability_key="route_cue",
+            )
         )
-        for rail_circle in circles[3:]:
+        overlay.circles.append(
+            self._projector_ellipse_circle(
+                candidate.ghost_ball,
+                ball_radius,
+                ROUTE_COLOR,
+                style.circle_width,
+                stability_key="route_ghost",
+            )
+        )
+        overlay.circles.append(
+            self._projector_ellipse_circle(
+                candidate.object_ball,
+                ball_radius,
+                ROUTE_COLOR,
+                style.circle_width,
+                stability_key="route_object",
+            )
+        )
+        overlay.circles.append(
+            self._projector_ellipse_circle(
+                candidate.pocket_point,
+                ball_radius,
+                ROUTE_COLOR,
+                style.circle_width,
+                scale=0.45,
+                minimum=8.0,
+                stability_key="route_pocket",
+            )
+        )
+        for rail_index, rail_circle in enumerate(circles[3:]):
             overlay.circles.append(
-                OverlayCircle(center=(float(rail_circle[0]), float(rail_circle[1])), radius=max(6.0, radius_px * 0.35), color=ROUTE_COLOR, width=style.circle_width)
+                OverlayCircle(
+                    center=(float(rail_circle[0]), float(rail_circle[1])),
+                    radius=max(6.0, radius_px * 0.35),
+                    color=ROUTE_COLOR,
+                    width=style.circle_width,
+                    stability_key=f"route_rail_{rail_index}",
+                )
             )
         label_pos = (float(circles[0, 0] + 14), float(circles[0, 1] - 14))
         overlay.labels.append((label_pos, f"{candidate.score:.2f}", ROUTE_COLOR))
@@ -171,6 +210,7 @@ class OverlayBuilder:
         *,
         scale: float = 1.0,
         minimum: float = 1.0,
+        stability_key: str | None = None,
     ) -> OverlayCircle:
         ellipse = self.calibration.table_circle_to_projector_ellipse(point_mm, radius_mm)
         return OverlayCircle(
@@ -180,6 +220,7 @@ class OverlayBuilder:
             rotation_deg=float(ellipse.rotation_deg),
             color=color,
             width=width,
+            stability_key=stability_key,
         )
 
     @staticmethod
@@ -215,29 +256,20 @@ def render_overlay_image(overlay: ProjectionOverlay, background: Optional[np.nda
             if str(line.style).lower() == "dashed":
                 _draw_dashed_polyline(img, pts, color, width)
             else:
-                cv2.polylines(
-                    img,
-                    [np.round(pts).astype(np.int32).reshape((-1, 1, 2))],
-                    isClosed=False,
-                    color=color,
-                    thickness=width,
-                    lineType=cv2.LINE_AA,
-                )
+                draw_subpixel_polyline(img, pts, color, width)
             if line.arrow:
                 _draw_arrow_head(img, pts[-2], pts[-1], color, width)
     for circle in overlay.circles:
-        radius_x = max(1, int(round(circle.radius)))
-        radius_y = max(1, int(round(circle.radius if circle.radius_y is None else circle.radius_y)))
-        cv2.ellipse(
+        draw_subpixel_ellipse(
             img,
-            (int(round(circle.center[0])), int(round(circle.center[1]))),
-            (radius_x, radius_y),
+            circle.center,
+            (
+                float(circle.radius),
+                float(circle.radius if circle.radius_y is None else circle.radius_y),
+            ),
             float(circle.rotation_deg),
-            0.0,
-            360.0,
             tuple(int(c) for c in circle.color),
             max(1, int(circle.width)),
-            cv2.LINE_AA,
         )
     for pos, text, color in overlay.labels:
         cv2.putText(
@@ -308,8 +340,6 @@ def _draw_dashed_segment(
         seg_end = min(dist, drawn + float(max(2.0, dash_px)))
         p1 = np.asarray(start, dtype=np.float32) + d * drawn
         p2 = np.asarray(start, dtype=np.float32) + d * seg_end
-        i1 = (int(round(float(p1[0]))), int(round(float(p1[1]))))
-        i2 = (int(round(float(p2[0]))), int(round(float(p2[1]))))
-        if i1 != i2:
-            cv2.line(img, i1, i2, color, max(1, width), cv2.LINE_AA)
+        if float(np.linalg.norm(p2 - p1)) >= 1.0 / 256.0:
+            draw_subpixel_line(img, p1, p2, color, max(1, width))
         drawn += step

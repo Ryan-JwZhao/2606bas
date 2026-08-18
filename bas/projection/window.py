@@ -8,6 +8,7 @@ import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 
 from ..config import ProjectionConfig
+from ..display_geometry import DisplayGeometryStabilizer, stabilize_projection_overlay
 from ..schemas import ProjectionOverlay
 from .frame_transform import ProjectionFrameTransform
 from .overlay import render_overlay_with_star
@@ -51,6 +52,7 @@ class ProjectionWindow(QtWidgets.QWidget):
         self._bound_screen: Optional[QtGui.QScreen] = None
         self._screen_sync_pending = False
         self._screen_topology_connected = False
+        self._overlay_geometry = DisplayGeometryStabilizer()
 
     def show_on_configured_screen(self) -> None:
         app = QtWidgets.QApplication.instance()
@@ -135,7 +137,8 @@ class ProjectionWindow(QtWidgets.QWidget):
         self._update_scaled_pixmap()
 
     def set_overlay(self, overlay: ProjectionOverlay) -> None:
-        img = render_overlay_with_star(overlay, self.star_formula)
+        shown_overlay = stabilize_projection_overlay(overlay, self._overlay_geometry)
+        img = render_overlay_with_star(shown_overlay, self.star_formula)
         self.set_image(img)
 
     def set_star_formula(self, config: StarFormulaConfig) -> None:
