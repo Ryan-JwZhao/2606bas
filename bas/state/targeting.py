@@ -10,14 +10,12 @@ from .models import GROUPS, ObjectGroup, TargetGroup, normalize_object_group
 class TargetGroupResolution:
     target_group: Optional[TargetGroup]
     effective_remaining: dict[str, int]
-    review_required: bool = False
     reasons: list[str] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, object]:
         return {
             "target_group": self.target_group,
             "effective_remaining": dict(self.effective_remaining),
-            "review_required": bool(self.review_required),
             "reasons": list(self.reasons),
         }
 
@@ -31,11 +29,9 @@ def resolve_turn_target_group(
     visible_counts: Mapping[str, int] | None = None,
     stable_frames: Mapping[str, int] | None = None,
     stable_frames_required: int = 1,
-    observation_review_required: bool = False,
 ) -> TargetGroupResolution:
     remaining = _remaining_view(ledger_remaining, observation_effective_remaining)
     reasons: list[str] = []
-    review_required = bool(observation_review_required)
     active_object_group = _active_object_group(raw_hint, actor_group)
 
     if active_object_group is not None and _stable_zero_visible(
@@ -46,13 +42,11 @@ def resolve_turn_target_group(
     ):
         if remaining.get(active_object_group, 0) > 0:
             reasons.append(f"stable_visible_{active_object_group}_cleared")
-            review_required = True
 
     target = _target_from_remaining(raw_hint, active_object_group, remaining)
     return TargetGroupResolution(
         target_group=target,
         effective_remaining=remaining,
-        review_required=review_required,
         reasons=reasons,
     )
 

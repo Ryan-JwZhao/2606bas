@@ -121,11 +121,6 @@ class MatchStateMachine:
             payload={"tracks": len(self._snapshot_layout)},
         )
 
-    def clear_review_flags(self, *, frame_id: int = 0, ts_cam_ns: int = 0) -> None:
-        self._potted_ids.clear()
-        self._anomaly_count = 0
-        self._queue_operator_event("OPERATOR_CLEAR_REVIEW_FLAGS", frame_id=frame_id, ts_cam_ns=ts_cam_ns)
-
     @property
     def operator_hold(self) -> bool:
         return self._operator_hold

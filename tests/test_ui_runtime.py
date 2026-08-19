@@ -395,51 +395,15 @@ def test_runtime_and_calibration_workflow_follow_current_correction_setting(monk
     assert calls[1]["distortion_correction_enabled"] is False
 
 
-def test_operator_window_exposes_explicit_review_controls() -> None:
+def test_operator_window_has_no_manual_review_controls() -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())
 
-    assert window.confirm_review_btn.text() == "确认复核"
-    assert window.reject_review_btn.text() == "驳回复核"
-    assert window.resolve_open_table_group_btn.text() == "确认开台花色"
-    assert window.review_group_combo.itemData(0) == "solid"
-    assert window.review_group_combo.itemData(1) == "stripe"
-
-    window.close()
-    app.processEvents()
-
-
-def test_review_controls_follow_pending_review_payload() -> None:
-    app = _app()
-    window = main_window.OperatorWindow(AppConfig())
-    window.pipeline = SimpleNamespace(
-        state_machine=SimpleNamespace(
-            debug_snapshot=lambda: {
-                "pending_review": {
-                    "decision_ids": ["pocket:review"],
-                    "review_reasons": ["visible_exceeds_ledger"],
-                    "group_choice_required": True,
-                    "review_pockets": [
-                        {
-                            "decision_id": "pocket:review",
-                            "group": "solid",
-                            "pocket_index": 0,
-                        }
-                    ],
-                    "committed_pockets": [],
-                }
-            }
-        )
-    )
-
-    window._refresh_review_controls()
-
-    assert window.review_status_label.text().startswith("待复核")
-    assert window.review_pending_list.count() == 1
-    assert window.confirm_review_btn.isEnabled() is True
-    assert window.reject_review_btn.isEnabled() is True
-    assert window.resolve_open_table_group_btn.isEnabled() is True
-    assert window.review_section.isExpanded() is True
+    assert not hasattr(window, "review_section")
+    assert not hasattr(window, "confirm_review_btn")
+    assert not hasattr(window, "reject_review_btn")
+    assert not hasattr(window, "resolve_open_table_group_btn")
+    assert not hasattr(window, "_refresh_review_controls")
 
     window.pipeline = None
     window.close()
@@ -553,9 +517,6 @@ def test_operator_window_buttons_remain_wired_after_layout_refactor(monkeypatch)
         ("toggle_deep_debug_mode", "deep_debug"),
         ("snapshot_stable_layout", "snapshot_state"),
         ("reset_state_machine", "reset_state"),
-        ("confirm_state_review", "confirm_review"),
-        ("reject_state_review", "reject_review"),
-        ("resolve_state_open_table_group", "resolve_group"),
     ]
     for attr, name in patched_methods:
         monkeypatch.setattr(main_window.OperatorWindow, attr, _record(name))
@@ -586,9 +547,6 @@ def test_operator_window_buttons_remain_wired_after_layout_refactor(monkeypatch)
         (window.deep_debug_btn, "deep_debug"),
         (window.snapshot_state_btn, "snapshot_state"),
         (window.reset_state_btn, "reset_state"),
-        (window.confirm_review_btn, "confirm_review"),
-        (window.reject_review_btn, "reject_review"),
-        (window.resolve_open_table_group_btn, "resolve_group"),
     ]
     for button, _expected in button_expectations:
         button.setEnabled(True)

@@ -11,14 +11,13 @@ PocketState = Literal[
     "pocket_candidate",
     "pocket_tentative",
     "pocket_confirmed",
-    "pocket_review_required",
     "pocket_rejected",
     "off_table_candidate",
     "lost",
 ]
 TableState = Literal["open", "closed"]
 BallInHandScope = Literal["none", "table_anywhere", "behind_head_string"]
-GameStatus = Literal["in_progress", "ended_pending_review"]
+GameStatus = Literal["in_progress", "ended"]
 
 GROUPS: tuple[Group, ...] = ("cue", "solid", "stripe", "black")
 OBJECT_GROUPS: tuple[ObjectGroup, ...] = ("solid", "stripe")
@@ -59,12 +58,10 @@ class ShotContext:
     off_table_confirmed: dict[Group, int] = field(default_factory=empty_group_counts)
     committed_pockets: list[dict[str, object]] = field(default_factory=list)
     tentative_pockets: list[dict[str, object]] = field(default_factory=list)
-    review_pockets: list[dict[str, object]] = field(default_factory=list)
     rejected_pockets: list[dict[str, object]] = field(default_factory=list)
     rail_contact_seen: bool = False
     cue_scratch_candidate: bool = False
     wrong_first_contact_candidate: bool = False
-    review_required: bool = False
     reasons: list[str] = field(default_factory=list)
 
 
@@ -128,8 +125,6 @@ class RefereeIntent:
     opponent_group_after: Optional[ObjectGroup]
     ball_in_hand_scope: BallInHandScope
     foul_flags: dict[str, bool]
-    review_required: bool
-    group_choice_required: bool = False
     game_status: GameStatus = "in_progress"
     reasons: list[str] = field(default_factory=list)
 
@@ -142,8 +137,6 @@ class RefereeIntent:
             "opponent_group_after": self.opponent_group_after,
             "ball_in_hand_scope": self.ball_in_hand_scope,
             "foul_flags": dict(self.foul_flags),
-            "review_required": self.review_required,
-            "group_choice_required": self.group_choice_required,
             "game_status": self.game_status,
             "reasons": list(self.reasons),
         }

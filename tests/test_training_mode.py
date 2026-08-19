@@ -610,7 +610,7 @@ def test_training_session_waits_for_late_visual_crossing_and_confirms_occluded_b
     assert potted.payload["judgment"] == "rules_pocket_fsm"
 
 
-def test_training_session_accepts_rule_judged_projected_entry() -> None:
+def test_training_session_does_not_accept_projected_only_entry() -> None:
     session = TrainingSession(
         TrainingConfig(
             scenario_id="solids_then_black",
@@ -661,10 +661,8 @@ def test_training_session_accepts_rule_judged_projected_entry() -> None:
 
     assert resolved.phase == "running"
     assert resolved.failure_reason is None
-    assert resolved.potted_numbers == [1]
-    potted = next(event for event in resolved.events if event.name == "TRAINING_BALL_POTTED")
-    assert potted.payload["judgment"] == "rules_pocket_fsm"
-    assert potted.payload["decision_id"] == "pocket:1"
+    assert resolved.potted_numbers == []
+    assert not any(event.name == "TRAINING_BALL_POTTED" for event in resolved.events)
 
 
 def test_numbered_tracker_keeps_identity_by_ball_number() -> None:

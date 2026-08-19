@@ -14,15 +14,14 @@ class ObservationReconcileResult:
     stable_frames: dict[Group, int] = field(default_factory=empty_group_counts)
     effective_remaining: dict[Group, int] = field(default_factory=dict)
     mismatches: list[dict[str, object]] = field(default_factory=list)
-    review_required: bool = False
 
 
 class ObservationReconciler:
     """Compares the event ledger with long-running YOLO observations.
 
-    The observation layer never changes the ledger by itself. It only builds an
-    effective remaining-count view for the current referee decision after the
-    detector count has been stable long enough.
+    Stable observations provide a planning view and can restore balls that a
+    previous false-positive pocket decision removed.  Missing observations do
+    not decrement the ledger without a confirmed pocket event.
     """
 
     def __init__(self, config: StateConfig):
@@ -46,12 +45,16 @@ class ObservationReconciler:
             if ledger is not None
             else {group: int(self._last_result.effective_remaining.get(group, 0)) for group in GROUPS}
         )
+        if ledger is not None:
+            corrected_groups = {str(item.get("group") or "") for item in self._last_result.mismatches}
+            for group in corrected_groups:
+                if group in effective and group in self._last_result.effective_remaining:
+                    effective[group] = int(self._last_result.effective_remaining[group])
         return ObservationReconcileResult(
             visible_counts={group: int(self._counts.get(group, 0)) for group in GROUPS},
             stable_frames={group: int(self._stable_frames.get(group, 0)) for group in GROUPS},
             effective_remaining=effective,
             mismatches=list(self._last_result.mismatches),
-            review_required=bool(self._last_result.review_required),
         )
 
     def update_observation(self, frame: TracksFrame) -> None:
@@ -97,7 +100,6 @@ class ObservationReconciler:
                 continue
             if observed > ledger_count:
                 effective[group] = observed
-                result.review_required = True
                 result.mismatches.append(
                     {
                         "group": group,
@@ -109,7 +111,6 @@ class ObservationReconciler:
                 )
             elif infer_missing and observed < ledger_count and group in event_groups:
                 effective[group] = observed
-                result.review_required = True
                 result.mismatches.append(
                     {
                         "group": group,
@@ -123,13 +124,45 @@ class ObservationReconciler:
         self._last_result = result
         return result
 
+    @staticmethod
+    def apply_automatic_restorations(
+        ledger: InventoryLedger,
+        result: ObservationReconcileResult,
+    ) -> list[dict[str, object]]:
+        """Restore only provable false removals; never infer a pot from absence."""
+
+        corrections: list[dict[str, object]] = []
+        maximum = {"solid": 7, "stripe": 7, "black": 1}
+        for mismatch in result.mismatches:
+            if str(mismatch.get("mode") or "") != "visible_exceeds_ledger":
+                continue
+            group = normalize_group(mismatch.get("group"))
+            if group not in {"solid", "stripe", "black"}:
+                continue
+            before = int(ledger.remaining.get(group, 0))
+            observed = min(maximum[group], max(0, int(mismatch.get("visible_count", before))))
+            if observed <= before:
+                continue
+            restored = observed - before
+            ledger.remaining[group] = observed
+            ledger.removed_confirmed[group] = max(0, int(ledger.removed_confirmed.get(group, 0)) - restored)
+            corrections.append(
+                {
+                    "group": group,
+                    "before": before,
+                    "after": observed,
+                    "restored": restored,
+                    "reason": "stable_visible_exceeds_ledger",
+                }
+            )
+        return corrections
+
     def event_payload(self, result: ObservationReconcileResult) -> dict[str, object]:
         return {
             "visible_counts": {group: int(result.visible_counts.get(group, 0)) for group in GROUPS},
             "stable_frames": {group: int(result.stable_frames.get(group, 0)) for group in GROUPS},
             "effective_remaining": {group: int(result.effective_remaining.get(group, 0)) for group in GROUPS},
             "mismatches": list(result.mismatches),
-            "review_required": bool(result.review_required),
         }
 
     @staticmethod
@@ -150,7 +183,6 @@ class ObservationReconciler:
             "POCKET_COMMIT_READY",
             "POCKET_DETECTED",
             "POCKET_CONFIRMED",
-            "POCKET_REVIEW_REQUIRED",
             "POCKET_REJECTED",
             "BALL_LOST_UNCONFIRMED",
             "BALL_OFF_TABLE_CONFIRMED",

@@ -17,8 +17,7 @@
   },
   "event_filter": [
     "POCKET_TENTATIVE",
-    "POCKET_REAPPEARED",
-    "POCKET_REVIEW_REQUIRED",
+    "POCKET_REJECTED",
     "SHOT_CONTEXT_FINALIZED",
     "REFEREE_INTENT"
   ],
@@ -28,31 +27,36 @@
       "ts_cam_ns": 1000000000,
       "phase": "SHOT_ACTIVE",
       "tracks": [
-        {"track_id": 2, "group": "solid", "center_mm": [-50, -25], "velocity_mm_s": [-20, -10]}
+        {"track_id": 2, "group": "solid", "center_mm": [-20, -10], "velocity_mm_s": [-20, -10]}
       ]
     },
     {
       "frame_id": 2,
       "ts_cam_ns": 1100000000,
       "phase": "SHOT_ACTIVE",
-      "tracks": []
+      "tracks": [
+        {"track_id": 2, "group": "solid", "center_mm": [-20, -10]}
+      ]
     },
     {
       "frame_id": 3,
-      "ts_cam_ns": 1400000000,
+      "ts_cam_ns": 1200000000,
       "phase": "SHOT_ACTIVE",
-      "tracks": [
-        {"track_id": 99, "group": "black", "center_mm": [-45, -22]}
-      ]
+      "tracks": []
     },
     {
       "frame_id": 4,
       "ts_cam_ns": 1500000000,
       "phase": "SHOT_ACTIVE",
+      "tracks": []
+    },
+    {
+      "frame_id": 5,
+      "ts_cam_ns": 1900000000,
+      "phase": "SHOT_ACTIVE",
       "operator_events": ["TURN_RESOLVE"],
       "tracks": [
-        {"track_id": 1, "group": "cue", "center_mm": [100, 100]},
-        {"track_id": 99, "group": "black", "center_mm": [200, 200]}
+        {"track_id": 1, "group": "cue", "center_mm": [100, 100]}
       ]
     }
   ]

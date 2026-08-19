@@ -247,7 +247,7 @@ def test_strong_crossing_is_relayed_when_shot_phase_starts_late() -> None:
     assert any(event.name == "POCKET_DETECTED" for event in detected)
 
 
-def test_blurred_two_frame_ball_can_confirm_but_round_detection_cannot() -> None:
+def test_projected_only_blurred_ball_is_rejected_and_round_detection_is_ignored() -> None:
     config = StateConfig(engine="modern", pocket_visual_confirmation_ms=1300)
 
     def run(*, elongated: bool, quality: float) -> list[str]:
@@ -277,7 +277,8 @@ def test_blurred_two_frame_ball_can_confirm_but_round_detection_cannot() -> None
     round_names = run(elongated=False, quality=0.95)
 
     assert "POCKET_CANDIDATE" in blurred_names
-    assert blurred_names.count("POCKET_DETECTED") == 1
+    assert blurred_names.count("POCKET_REJECTED") == 1
+    assert "POCKET_DETECTED" not in blurred_names
     assert "POCKET_CANDIDATE" not in round_names
     assert "POCKET_DETECTED" not in round_names
 

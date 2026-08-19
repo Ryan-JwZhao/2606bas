@@ -48,7 +48,7 @@
 | 库边碰撞事件 | 本次补齐 | 状态机输出 `RAIL_COLLISION_CANDIDATE`，payload 包含轨迹 ID、边、距离、法向速度和是否反弹。 |
 | 口袋区域 + 轨迹趋势 + 消失确认 | 本次补齐 | 状态机在击球/收敛/结算阶段结合最近口袋距离、速度方向和消失确认输出 `POT_PROBABLE`；不满足条件仍输出 `BALL_DISAPPEARED` 供复核。 |
 | 异常恢复宏状态 | 部分实现 | 已检测多 cue、球数 >16、中心重叠等异常并进入 `ANOMALY_RECOVERY`；尚未做 Hungarian 回滚重配和 `unknown_track` 延迟决策。 |
-| 人工介入控制模块 | 本次补齐 | 状态机新增 `force_phase/set_operator_hold/snapshot_layout/clear_review_flags`；UI 新增强制状态、冻结、确认稳定、重置、清除复核。 |
+| 调试介入控制模块 | 已调整 | 保留 `force_phase/set_operator_hold/snapshot_layout` 供现场诊断；无人值守规则结算已移除 `clear_review_flags` 及全部人工复核控件。 |
 | 人工事件进入回放 | 本次补齐 | 操作员动作会写入 `OPERATOR_*` 事件，并随下一帧状态进入 replay JSONL。 |
 | 事件交互排查 | 本次补齐 | UI 事件列表显示事件关键字段，tooltip 展示完整 payload，回放也保留 payload。 |
 

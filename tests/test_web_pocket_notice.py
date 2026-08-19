@@ -61,6 +61,8 @@ def test_pocket_notice_tracker_supports_legacy_pot_event_and_deduplicates_modern
         payload=dict(modern_confirmed.payload),
     )
 
-    created = tracker.observe([legacy, modern_detected, modern_confirmed, modern_alias], now_s=10.0)
+    assert tracker.observe([modern_detected], now_s=9.0) == []
+
+    created = tracker.observe([legacy, modern_confirmed, modern_alias], now_s=10.0)
 
     assert [notice["message"] for notice in created] == ["stb进球", "sob进球"]

@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
         "--labels",
         type=Path,
         default=Path("tests/fixtures/long_video_goal_labels.json"),
-        help="小型人工复核标签清单",
+        help="小型离线标注核验清单",
     )
     parser.add_argument("--config", type=Path, default=Path("configs/default.yaml"))
     parser.add_argument(

@@ -8,13 +8,14 @@ from bas.state.replay import run_pocket_trace
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def test_pocket_trace_replay_flags_mouth_review_case() -> None:
-    result = run_pocket_trace(FIXTURES / "pocket_trace_mouth_review.json")
+def test_pocket_trace_replay_auto_rejects_ambiguous_mouth_case() -> None:
+    result = run_pocket_trace(FIXTURES / "pocket_trace_mouth_auto_reject.json")
 
     names = [event["name"] for event in result["events"]]
-    assert names[:2] == ["POCKET_TENTATIVE", "POCKET_REVIEW_REQUIRED"]
+    assert names[:2] == ["POCKET_TENTATIVE", "POCKET_REJECTED"]
     assert "POCKET_CONFIRMED" not in names
-    assert result["last_referee_intent"]["review_required"] is True
+    assert "review_required" not in result["last_referee_intent"]
+    assert result["rule_state"]["shot_number"] == 2
 
 
 def test_pocket_trace_replay_confirms_real_pocket_case() -> None:
@@ -34,7 +35,7 @@ def test_pocket_trace_replay_emits_single_victory_transition() -> None:
     assert names.count("POCKET_CONFIRMED") == 1
     assert names.count("GAME_STATUS_CHANGED") == 1
     assert names.count("GAME_OVER_CANDIDATE") == 1
-    assert result["rule_state"]["game_status"] == "ended_pending_review"
+    assert result["rule_state"]["game_status"] == "ended"
 
 
 def test_pocket_trace_replay_rejects_tracker_id_churn_near_same_pocket() -> None:
@@ -48,12 +49,13 @@ def test_pocket_trace_replay_rejects_tracker_id_churn_near_same_pocket() -> None
     assert result["last_shot_context"]["potted_confirmed"]["solid"] == 0
 
 
-def test_pocket_trace_replay_freezes_group_flip_near_same_pocket() -> None:
-    result = run_pocket_trace(FIXTURES / "pocket_trace_group_flip_review.json")
+def test_pocket_trace_replay_auto_rejects_group_flip_near_same_pocket() -> None:
+    result = run_pocket_trace(FIXTURES / "pocket_trace_group_flip_auto_reject.json")
 
     names = [event["name"] for event in result["events"]]
     assert "POCKET_REAPPEARED" in names
-    assert "POCKET_REVIEW_REQUIRED" in names
+    assert "POCKET_REJECTED" in names
     assert "POCKET_CONFIRMED" not in names
     assert result["ledger_remaining"]["solid"] == 7
-    assert result["last_referee_intent"]["review_required"] is True
+    assert "review_required" not in result["last_referee_intent"]
+    assert result["rule_state"]["shot_number"] == 2

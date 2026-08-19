@@ -1,40 +1,18 @@
 from __future__ import annotations
 
 from collections import deque
-from copy import deepcopy
-from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional
 
 import numpy as np
 
 from ..config import StateConfig
 from ..schemas import Event, MatchPhase, MatchStateFrame, PocketVisualObservationFrame, TrackObservation, TracksFrame
-from .models import InventoryLedger, MatchRuleState, RefereeIntent, ShotContext, normalize_group, normalize_object_group, other_object_group
+from .models import InventoryLedger, MatchRuleState, RefereeIntent, ShotContext, normalize_object_group, other_object_group
 from .phase import PhaseSignals, ShotPhaseMachine
 from .pocket import PerBallPocketFSM
 from .reconcile import ObservationReconciler
 from .referee import RefereeAdapter, ShotContextAggregator, shot_context_payload
 from .targeting import TargetGroupResolution, resolve_turn_target_group
-
-
-@dataclass
-class _PendingReviewDecision:
-    confirm_shot_ctx: ShotContext
-    confirm_ledger: InventoryLedger
-    confirm_intent: RefereeIntent
-    reject_shot_ctx: ShotContext
-    reject_intent: RefereeIntent
-    review_reasons: list[str]
-    decision_ids: list[str]
-
-    def to_payload(self) -> dict[str, object]:
-        return {
-            "decision_ids": list(self.decision_ids),
-            "review_reasons": list(self.review_reasons),
-            "group_choice_required": bool(self.confirm_intent.group_choice_required),
-            "review_pockets": list(self.confirm_shot_ctx.review_pockets),
-            "committed_pockets": list(self.confirm_shot_ctx.committed_pockets),
-        }
 
 
 class ModernMatchStateMachine:
@@ -62,7 +40,6 @@ class ModernMatchStateMachine:
         self._last_referee_payload: dict[str, object] = {}
         self._last_shot_payload: dict[str, object] = {}
         self._pending_turn_resolve: Optional[dict[str, int]] = None
-        self._pending_review: Optional[_PendingReviewDecision] = None
         self._table_inner_polygon_mm: list[tuple[float, float]] = []
         self._table_edge_polygon_mm: list[tuple[float, float]] = []
         self._ball_center_reachable_polygon_mm: list[tuple[float, float]] = []
@@ -106,7 +83,6 @@ class ModernMatchStateMachine:
         self._last_referee_payload = {}
         self._last_shot_payload = {}
         self._pending_turn_resolve = None
-        self._pending_review = None
 
     def set_table_context(
         self,
@@ -180,151 +156,6 @@ class ModernMatchStateMachine:
             payload={"tracks": len(self._snapshot_layout)},
         )
 
-    def clear_review_flags(self, *, frame_id: int = 0, ts_cam_ns: int = 0) -> None:
-        self.reject_episode(frame_id=frame_id, ts_cam_ns=ts_cam_ns, reason="operator_clear_review_flags")
-
-    def confirm_episode(
-        self,
-        *,
-        decision_id: Optional[str] = None,
-        frame_id: int = 0,
-        ts_cam_ns: int = 0,
-        reason: str = "operator",
-    ) -> bool:
-        pending = self._pending_review
-        if pending is None or not self._decision_matches_pending(pending, decision_id):
-            self._queue_operator_event(
-                "OPERATOR_CONFIRM_EPISODE_SKIPPED",
-                frame_id=frame_id,
-                ts_cam_ns=ts_cam_ns,
-                payload={"decision_id": decision_id, "reason": reason},
-            )
-            return False
-        previous_status = self.rule_state.game_status
-        self.ledger = pending.confirm_ledger.clone()
-        self._apply_intent(pending.confirm_intent)
-        self.rule_state.shot_number += 1
-        self._last_shot_payload = shot_context_payload(pending.confirm_shot_ctx)
-        self._last_referee_payload = pending.confirm_intent.to_payload()
-        self.pocket_fsm.mark_confirmed(pending.decision_ids)
-        self._pending_review = None
-        for pocket in pending.confirm_shot_ctx.committed_pockets:
-            confirmed_payload = self._confirmed_pocket_payload(pocket, reason_code="operator_confirmed_review")
-            self._queue_operator_event("POCKET_CONFIRMED", frame_id=frame_id, ts_cam_ns=ts_cam_ns, payload=confirmed_payload)
-            self._queue_operator_event("POT_PROBABLE", frame_id=frame_id, ts_cam_ns=ts_cam_ns, payload=confirmed_payload)
-        self._queue_operator_event(
-            "OPERATOR_CONFIRM_EPISODE",
-            frame_id=frame_id,
-            ts_cam_ns=ts_cam_ns,
-            payload={"decision_id": decision_id, "reason": reason},
-        )
-        self._queue_commit_status_events(
-            previous_status=previous_status,
-            intent=pending.confirm_intent,
-            shot_ctx=pending.confirm_shot_ctx,
-            frame_id=frame_id,
-            ts_cam_ns=ts_cam_ns,
-        )
-        return True
-
-    def reject_episode(
-        self,
-        *,
-        decision_id: Optional[str] = None,
-        frame_id: int = 0,
-        ts_cam_ns: int = 0,
-        reason: str = "operator",
-    ) -> bool:
-        pending = self._pending_review
-        if pending is None or not self._decision_matches_pending(pending, decision_id):
-            self._queue_operator_event(
-                "OPERATOR_REJECT_EPISODE_SKIPPED",
-                frame_id=frame_id,
-                ts_cam_ns=ts_cam_ns,
-                payload={"decision_id": decision_id, "reason": reason},
-            )
-            return False
-        previous_status = self.rule_state.game_status
-        self._apply_intent(pending.reject_intent)
-        self.rule_state.shot_number += 1
-        self._last_shot_payload = shot_context_payload(pending.reject_shot_ctx)
-        self._last_referee_payload = pending.reject_intent.to_payload()
-        self.pocket_fsm.mark_rejected(pending.decision_ids)
-        self._pending_review = None
-        self._queue_operator_event(
-            "OPERATOR_REJECT_EPISODE",
-            frame_id=frame_id,
-            ts_cam_ns=ts_cam_ns,
-            payload={"decision_id": decision_id, "reason": reason},
-        )
-        self._queue_commit_status_events(
-            previous_status=previous_status,
-            intent=pending.reject_intent,
-            shot_ctx=pending.reject_shot_ctx,
-            frame_id=frame_id,
-            ts_cam_ns=ts_cam_ns,
-        )
-        return True
-
-    def resolve_open_table_group(
-        self,
-        group: Optional[str],
-        *,
-        frame_id: int = 0,
-        ts_cam_ns: int = 0,
-        reason: str = "operator",
-    ) -> bool:
-        pending = self._pending_review
-        chosen = normalize_object_group(group)
-        if pending is None or chosen is None or not pending.confirm_intent.group_choice_required:
-            self._queue_operator_event(
-                "OPERATOR_RESOLVE_OPEN_TABLE_GROUP_SKIPPED",
-                frame_id=frame_id,
-                ts_cam_ns=ts_cam_ns,
-                payload={"group": group, "reason": reason},
-            )
-            return False
-        previous_status = self.rule_state.game_status
-        self.ledger = pending.confirm_ledger.clone()
-        next_group = self.referee._target_for_actor(chosen, self.ledger)  # type: ignore[attr-defined]
-        resolved_intent = RefereeIntent(
-            next_group_hint=next_group,
-            next_actor_changed=False,
-            table_state_after="closed",
-            actor_group_after=chosen,
-            opponent_group_after=other_object_group(chosen),
-            ball_in_hand_scope=pending.confirm_intent.ball_in_hand_scope,
-            foul_flags=dict(pending.confirm_intent.foul_flags),
-            review_required=False,
-            group_choice_required=False,
-            game_status=pending.confirm_intent.game_status,
-            reasons=[str(reason_code) for reason_code in pending.confirm_intent.reasons if str(reason_code).strip() != "open_table_group_choice_required"],
-        )
-        self._apply_intent(resolved_intent)
-        self.rule_state.shot_number += 1
-        self._last_shot_payload = shot_context_payload(pending.confirm_shot_ctx)
-        self._last_referee_payload = resolved_intent.to_payload()
-        self.pocket_fsm.mark_confirmed(pending.decision_ids)
-        self._pending_review = None
-        for pocket in pending.confirm_shot_ctx.committed_pockets:
-            confirmed_payload = self._confirmed_pocket_payload(pocket, reason_code="operator_resolved_open_table_group")
-            self._queue_operator_event("POCKET_CONFIRMED", frame_id=frame_id, ts_cam_ns=ts_cam_ns, payload=confirmed_payload)
-            self._queue_operator_event("POT_PROBABLE", frame_id=frame_id, ts_cam_ns=ts_cam_ns, payload=confirmed_payload)
-        self._queue_operator_event(
-            "OPERATOR_RESOLVE_OPEN_TABLE_GROUP",
-            frame_id=frame_id,
-            ts_cam_ns=ts_cam_ns,
-            payload={"group": chosen, "reason": reason},
-        )
-        self._queue_commit_status_events(
-            previous_status=previous_status,
-            intent=resolved_intent,
-            shot_ctx=pending.confirm_shot_ctx,
-            frame_id=frame_id,
-            ts_cam_ns=ts_cam_ns,
-        )
-        return True
-
     def set_turn_target_group(
         self,
         group: Optional[str],
@@ -369,7 +200,6 @@ class ModernMatchStateMachine:
         snapshot["pocket_geometry"] = self.pocket_fsm.geometry_diagnostics()
         snapshot["observation_reconcile"] = self.reconciler.event_payload(self.reconciler.last_result)
         snapshot["pending_turn_resolve"] = dict(self._pending_turn_resolve or {})
-        snapshot["pending_review"] = {} if self._pending_review is None else self._pending_review.to_payload()
         return snapshot
 
     def update(
@@ -463,7 +293,7 @@ class ModernMatchStateMachine:
         self._pending_turn_resolve = None
         ts_ms = self._ts_ms(tracks_frame.ts_cam_ns)
         if self.pocket_fsm.has_pending_resolution(tracks_frame.ts_cam_ns):
-            safety_events = self.pocket_fsm.review_pending(
+            safety_events = self.pocket_fsm.reject_pending(
                 tracks_frame,
                 reason_codes=["final_confirmation_window_not_reached"],
             )
@@ -471,97 +301,104 @@ class ModernMatchStateMachine:
             self.aggregator.ingest(safety_events, ts_ms=ts_ms, rule_state=self.rule_state)
             events.extend(safety_events)
         shot_ctx = self.aggregator.finalize(ts_ms=ts_ms, rule_state=self.rule_state)
-        commit_shot_ctx = self._confirmed_shot_context(shot_ctx)
-        commit_ledger = self.ledger.applied_copy(commit_shot_ctx)
+        commit_ledger = self.ledger.applied_copy(shot_ctx)
         reconcile_result = self.reconciler.reconcile(
             commit_ledger,
             supporting_events=[*self._recent_events, *events],
         )
-        target_resolution = self._target_resolution(reconcile_result=reconcile_result)
-        review_reasons = [str(item.get("mode", "")) for item in reconcile_result.mismatches if item.get("mode")]
-        review_reasons.extend(target_resolution.reasons)
-        commit_intent = self.referee.evaluate(
-            commit_shot_ctx,
+        automatic_corrections = self.reconciler.apply_automatic_restorations(commit_ledger, reconcile_result)
+        automatic_rejections = self._retract_observation_contradicted_pockets(
+            shot_ctx,
+            automatic_corrections,
+        )
+        target_resolution = self._target_resolution(
+            reconcile_result=reconcile_result,
+            ledger=commit_ledger,
+        )
+        observation_reasons = [
+            str(item.get("mode", ""))
+            for item in reconcile_result.mismatches
+            if item.get("mode")
+        ]
+        observation_reasons.extend(target_resolution.reasons)
+        intent = self.referee.evaluate(
+            shot_ctx,
             commit_ledger,
             self.rule_state,
             effective_remaining=target_resolution.effective_remaining,
-            review_reasons=[],
+            observation_reasons=observation_reasons,
         )
-        if commit_intent.group_choice_required and "open_table_group_choice_required" not in review_reasons:
-            review_reasons.append("open_table_group_choice_required")
-        current_target_resolution = self._target_resolution(
-            reconcile_result=self.reconciler.current_observation_result(self.ledger)
-        )
-        intent = self.referee.evaluate(
-            shot_ctx,
-            self.ledger,
-            self.rule_state,
-            effective_remaining=current_target_resolution.effective_remaining,
-            review_reasons=review_reasons,
-        )
-        turn_frozen = bool(shot_ctx.review_required or review_reasons or commit_intent.review_required or commit_intent.group_choice_required)
         previous_status = self.rule_state.game_status
-        if turn_frozen:
-            reject_shot_ctx = self._rejected_shot_context(shot_ctx)
-            reject_intent = self.referee.evaluate(
-                reject_shot_ctx,
-                self.ledger,
-                self.rule_state,
-                effective_remaining=current_target_resolution.effective_remaining,
-                review_reasons=[],
-            )
-            self._pending_review = _PendingReviewDecision(
-                confirm_shot_ctx=commit_shot_ctx,
-                confirm_ledger=commit_ledger,
-                confirm_intent=commit_intent,
-                reject_shot_ctx=reject_shot_ctx,
-                reject_intent=reject_intent,
-                review_reasons=list(review_reasons),
-                decision_ids=self._review_decision_ids(commit_shot_ctx, shot_ctx),
-            )
-            self.pocket_fsm.mark_review_required(self._pending_review.decision_ids)
-        else:
-            self.ledger = commit_ledger.clone()
-            self._apply_intent(commit_intent)
-            self.rule_state.shot_number += 1
-            self._pending_review = None
-            self.pocket_fsm.mark_confirmed(
-                [
-                    str(pocket.get("decision_id") or "")
-                    for pocket in commit_shot_ctx.committed_pockets
-                    if str(pocket.get("decision_id") or "").strip()
-                ]
-            )
-            for pocket in commit_shot_ctx.committed_pockets:
-                confirmed_payload = self._confirmed_pocket_payload(pocket)
-                events.append(
-                    Event(
-                        name="POCKET_CONFIRMED",
-                        ts_cam_ns=tracks_frame.ts_cam_ns,
-                        frame_id=tracks_frame.frame_id,
-                        payload=confirmed_payload,
-                        confidence=0.92,
-                    )
+        self.ledger = commit_ledger.clone()
+        self._apply_intent(intent)
+        self.rule_state.shot_number += 1
+        self.pocket_fsm.mark_confirmed(
+            [
+                str(pocket.get("decision_id") or "")
+                for pocket in shot_ctx.committed_pockets
+                if str(pocket.get("decision_id") or "").strip()
+            ]
+        )
+        self.pocket_fsm.mark_rejected(
+            [
+                str(pocket.get("decision_id") or "")
+                for pocket in automatic_rejections
+                if str(pocket.get("decision_id") or "").strip()
+            ]
+        )
+        for pocket in automatic_rejections:
+            events.append(
+                Event(
+                    name="POCKET_REJECTED",
+                    ts_cam_ns=tracks_frame.ts_cam_ns,
+                    frame_id=tracks_frame.frame_id,
+                    payload=dict(pocket),
+                    confidence=0.90,
                 )
-                events.append(
-                    Event(
-                        name="POT_PROBABLE",
-                        ts_cam_ns=tracks_frame.ts_cam_ns,
-                        frame_id=tracks_frame.frame_id,
-                        payload=confirmed_payload,
-                        confidence=0.92,
-                    )
+            )
+        for pocket in shot_ctx.committed_pockets:
+            confirmed_payload = self._confirmed_pocket_payload(pocket)
+            events.append(
+                Event(
+                    name="POCKET_CONFIRMED",
+                    ts_cam_ns=tracks_frame.ts_cam_ns,
+                    frame_id=tracks_frame.frame_id,
+                    payload=confirmed_payload,
+                    confidence=0.92,
                 )
-            intent = commit_intent
-        self._last_shot_payload = shot_context_payload(commit_shot_ctx if not turn_frozen else shot_ctx)
+            )
+            events.append(
+                Event(
+                    name="POT_PROBABLE",
+                    ts_cam_ns=tracks_frame.ts_cam_ns,
+                    frame_id=tracks_frame.frame_id,
+                    payload=confirmed_payload,
+                    confidence=0.92,
+                )
+            )
+        self._last_shot_payload = shot_context_payload(shot_ctx)
         self._last_referee_payload = intent.to_payload()
+        for correction in automatic_corrections:
+            events.append(
+                Event(
+                    name="LEDGER_AUTO_CORRECTED",
+                    ts_cam_ns=tracks_frame.ts_cam_ns,
+                    frame_id=tracks_frame.frame_id,
+                    payload=dict(correction),
+                    confidence=0.90,
+                )
+            )
         if reconcile_result.mismatches:
+            mismatch_payload = self.reconciler.event_payload(reconcile_result)
+            mismatch_payload["automatic_action"] = (
+                "ledger_restored" if automatic_corrections else "effective_view_only"
+            )
             events.append(
                 Event(
                     name="LEDGER_OBSERVATION_MISMATCH",
                     ts_cam_ns=tracks_frame.ts_cam_ns,
                     frame_id=tracks_frame.frame_id,
-                    payload=self.reconciler.event_payload(reconcile_result),
+                    payload=mismatch_payload,
                     confidence=0.70,
                 )
             )
@@ -598,11 +435,10 @@ class ModernMatchStateMachine:
         )
         if previous_status != intent.game_status:
             transition_payload = {
-                "shot_id": (commit_shot_ctx if not turn_frozen else shot_ctx).shot_id,
-                "decision_id": f"game-status:{(commit_shot_ctx if not turn_frozen else shot_ctx).shot_id}:{previous_status}->{intent.game_status}",
+                "shot_id": shot_ctx.shot_id,
+                "decision_id": f"game-status:{shot_ctx.shot_id}:{previous_status}->{intent.game_status}",
                 "from_status": previous_status,
                 "to_status": intent.game_status,
-                "review_required": bool(intent.review_required),
                 "reason_codes": [str(reason) for reason in intent.reasons if str(reason).strip()],
             }
             events.append(
@@ -623,7 +459,7 @@ class ModernMatchStateMachine:
                     payload={
                         "game_status": intent.game_status,
                         "reason": "black_confirmed",
-                        "shot_id": (commit_shot_ctx if not turn_frozen else shot_ctx).shot_id,
+                        "shot_id": shot_ctx.shot_id,
                     },
                     confidence=0.80,
                 )
@@ -960,93 +796,51 @@ class ModernMatchStateMachine:
         self.rule_state.game_status = intent.game_status
         self._turn_target_group = intent.next_group_hint
 
-    def _confirmed_shot_context(self, shot_ctx: ShotContext) -> ShotContext:
-        confirmed = deepcopy(shot_ctx)
-        for pocket in list(confirmed.review_pockets):
-            promoted = dict(pocket)
-            promoted["decision"] = "confirmed"
-            promoted["review_required"] = False
-            promoted["reason_codes"] = ["operator_confirmed_review"]
-            confirmed.committed_pockets.append(promoted)
-            group = normalize_group(promoted.get("group"))
-            if group is not None:
-                confirmed.potted_confirmed[group] = int(confirmed.potted_confirmed.get(group, 0)) + 1
-                if group == "cue":
-                    confirmed.cue_scratch_candidate = True
-        confirmed.review_pockets = []
-        confirmed.review_required = False
-        confirmed.tentative_pockets = []
-        confirmed.reasons = []
-        return confirmed
+    @staticmethod
+    def _retract_observation_contradicted_pockets(
+        shot_ctx: ShotContext,
+        corrections: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        """Turn stable visual contradictions into deterministic pocket rejections."""
 
-    def _rejected_shot_context(self, shot_ctx: ShotContext) -> ShotContext:
-        rejected = deepcopy(shot_ctx)
-        rejected.committed_pockets = []
-        rejected.review_pockets = []
-        rejected.tentative_pockets = []
-        rejected.review_required = False
-        rejected.reasons = []
-        rejected.potted_confirmed = {group: 0 for group in rejected.potted_confirmed}
-        rejected.cue_scratch_candidate = False
+        committed = list(getattr(shot_ctx, "committed_pockets", []))
+        rejected: list[dict[str, object]] = []
+        for correction in corrections:
+            group = str(correction.get("group") or "").strip().lower()
+            remaining = max(0, int(correction.get("restored", 0)))
+            if not group or remaining <= 0:
+                continue
+            retained_reversed: list[dict[str, object]] = []
+            for pocket in reversed(committed):
+                if remaining > 0 and str(pocket.get("group") or "").strip().lower() == group:
+                    automatic_reject = dict(pocket)
+                    automatic_reject["decision"] = "rejected"
+                    automatic_reject["reason_codes"] = ["stable_visible_contradicts_commit"]
+                    rejected.append(automatic_reject)
+                    remaining -= 1
+                else:
+                    retained_reversed.append(pocket)
+            committed = list(reversed(retained_reversed))
+
+        shot_ctx.committed_pockets = committed
+        counts = {"cue": 0, "solid": 0, "stripe": 0, "black": 0}
+        for pocket in committed:
+            group = str(pocket.get("group") or "").strip().lower()
+            if group in counts:
+                counts[group] += 1
+        shot_ctx.potted_confirmed = counts
+        shot_ctx.cue_scratch_candidate = bool(counts["cue"])
+        shot_ctx.rejected_pockets.extend(rejected)
+        if rejected:
+            shot_ctx.reasons.append("stable_visible_contradicts_commit")
         return rejected
-
-    @staticmethod
-    def _review_decision_ids(confirm_shot_ctx: ShotContext, original_shot_ctx: ShotContext) -> list[str]:
-        decision_ids: list[str] = []
-        for source in (
-            original_shot_ctx.review_pockets,
-            original_shot_ctx.committed_pockets,
-            confirm_shot_ctx.committed_pockets,
-        ):
-            for pocket in source:
-                decision_id = str(pocket.get("decision_id") or "").strip()
-                if decision_id and decision_id not in decision_ids:
-                    decision_ids.append(decision_id)
-        return decision_ids
-
-    @staticmethod
-    def _decision_matches_pending(pending: _PendingReviewDecision, decision_id: Optional[str]) -> bool:
-        if decision_id is None:
-            return True
-        normalized = str(decision_id).strip()
-        return bool(normalized) and normalized in pending.decision_ids
 
     @staticmethod
     def _confirmed_pocket_payload(pocket: dict[str, object], *, reason_code: str = "committed_pocket") -> dict[str, object]:
         payload = dict(pocket)
         payload["decision"] = "confirmed"
-        payload["review_required"] = False
         payload["reason_codes"] = [reason_code]
         return payload
-
-    def _queue_commit_status_events(
-        self,
-        *,
-        previous_status: str,
-        intent: RefereeIntent,
-        shot_ctx: ShotContext,
-        frame_id: int,
-        ts_cam_ns: int,
-    ) -> None:
-        self._queue_operator_event("SHOT_CONTEXT_FINALIZED", frame_id=frame_id, ts_cam_ns=ts_cam_ns, payload=self._last_shot_payload)
-        self._queue_operator_event("REFEREE_INTENT", frame_id=frame_id, ts_cam_ns=ts_cam_ns, payload=self._last_referee_payload)
-        if previous_status != intent.game_status:
-            transition_payload = {
-                "shot_id": shot_ctx.shot_id,
-                "decision_id": f"game-status:{shot_ctx.shot_id}:{previous_status}->{intent.game_status}",
-                "from_status": previous_status,
-                "to_status": intent.game_status,
-                "review_required": bool(intent.review_required),
-                "reason_codes": [str(reason) for reason in intent.reasons if str(reason).strip()],
-            }
-            self._queue_operator_event("GAME_STATUS_CHANGED", frame_id=frame_id, ts_cam_ns=ts_cam_ns, payload=transition_payload)
-            if intent.game_status != "in_progress":
-                self._queue_operator_event(
-                    "GAME_OVER_CANDIDATE",
-                    frame_id=frame_id,
-                    ts_cam_ns=ts_cam_ns,
-                    payload={"game_status": intent.game_status, "reason": "black_confirmed", "shot_id": shot_ctx.shot_id},
-                )
 
     def _annotate_shot_ids(self, events: List[Event], *, ts_ms: int) -> None:
         needs_shot_context = any(
@@ -1057,7 +851,6 @@ class ModernMatchStateMachine:
                 "POCKET_COMMIT_READY",
                 "POCKET_DETECTED",
                 "POCKET_CONFIRMED",
-                "POCKET_REVIEW_REQUIRED",
                 "POCKET_REJECTED",
             }
             for event in events
@@ -1074,7 +867,6 @@ class ModernMatchStateMachine:
                 "POCKET_COMMIT_READY",
                 "POCKET_DETECTED",
                 "POCKET_CONFIRMED",
-                "POCKET_REVIEW_REQUIRED",
                 "POCKET_REJECTED",
             }:
                 continue
@@ -1093,17 +885,26 @@ class ModernMatchStateMachine:
         group = str(self._turn_target_group or "").strip().lower()
         return group if group in {"solid", "stripe", "black"} else None
 
-    def _target_resolution(self, *, reconcile_result: object | None = None) -> TargetGroupResolution:
-        result = reconcile_result if reconcile_result is not None else self.reconciler.current_observation_result(self.ledger)
+    def _target_resolution(
+        self,
+        *,
+        reconcile_result: object | None = None,
+        ledger: InventoryLedger | None = None,
+    ) -> TargetGroupResolution:
+        active_ledger = ledger or self.ledger
+        result = (
+            reconcile_result
+            if reconcile_result is not None
+            else self.reconciler.current_observation_result(active_ledger)
+        )
         return resolve_turn_target_group(
             self._normalized_turn_target_group(),
             actor_group=self.rule_state.actor_group,
-            ledger_remaining=self.ledger.remaining,
+            ledger_remaining=active_ledger.remaining,
             observation_effective_remaining=getattr(result, "effective_remaining", {}),
             visible_counts=getattr(result, "visible_counts", {}),
             stable_frames=getattr(result, "stable_frames", {}),
             stable_frames_required=int(getattr(self.config, "observation_reconcile_stable_frames", 12)),
-            observation_review_required=bool(getattr(result, "review_required", False)),
         )
 
     @staticmethod

@@ -97,7 +97,7 @@ class PerBallPocketFSM:
     """Per-ball pocket evidence with retractable commit-ready decisions."""
 
     _REAPPEAR_STATES = {"candidate", "tentative", "commit_ready"}
-    _TERMINAL_STATES = {"confirmed", "review_required", "rejected"}
+    _TERMINAL_STATES = {"confirmed", "rejected"}
 
     def __init__(self, config: StateConfig):
         self.config = config
@@ -598,7 +598,7 @@ class PerBallPocketFSM:
     def geometry_diagnostics(self) -> dict[str, object]:
         return self._geometry_model.diagnostics()
 
-    def review_pending(
+    def reject_pending(
         self,
         frame: TracksFrame,
         *,
@@ -611,16 +611,13 @@ class PerBallPocketFSM:
                 continue
             if memory.state not in {"candidate", "tentative", "commit_ready"}:
                 continue
-            if memory.evidence.observer_active:
-                self._reject(
-                    memory,
-                    frame,
-                    events,
-                    reason_codes=[*reasons, "automatic_insufficient_evidence"],
-                    candidate_reason="automatic_insufficient_evidence",
-                )
-            else:
-                self._review(memory, frame, events, reason_codes=reasons)
+            self._reject(
+                memory,
+                frame,
+                events,
+                reason_codes=[*reasons, "automatic_ambiguous_reject"],
+                candidate_reason="automatic_ambiguous_reject",
+            )
         return events
 
     def has_pending_resolution(self, now_ns: int) -> bool:
@@ -669,17 +666,6 @@ class PerBallPocketFSM:
             memory.resolved = True
             memory.reason_codes = ["confirmed_at_turn_resolve"]
 
-    def mark_review_required(self, decision_ids: list[str]) -> None:
-        wanted = {str(value) for value in decision_ids if str(value).strip()}
-        for memory in self._memory.values():
-            evidence = memory.evidence
-            if evidence is None or evidence.decision_id not in wanted or memory.resolved:
-                continue
-            memory.state = "review_required"
-            memory.decision = "review_required"
-            memory.resolved = True
-            memory.reason_codes = ["state_frozen_pending_review"]
-
     def mark_rejected(self, decision_ids: list[str]) -> None:
         wanted = {str(value) for value in decision_ids if str(value).strip()}
         for memory in self._memory.values():
@@ -689,7 +675,7 @@ class PerBallPocketFSM:
             memory.state = "rejected"
             memory.decision = "rejected"
             memory.resolved = True
-            memory.reason_codes = ["operator_rejected_review"]
+            memory.reason_codes = ["automatic_turn_resolution_reject"]
 
     def _new_memory(self, track: TrackObservation, group: Group, frame: TracksFrame) -> _PocketMemory:
         return _PocketMemory(
@@ -734,7 +720,13 @@ class PerBallPocketFSM:
             if reappeared_group is not None and reappeared_group != memory.group:
                 memory.reappear_group = reappeared_group
                 reason_codes.append("reappeared_group_changed")
-                self._review(memory, frame, events, reason_codes=reason_codes)
+                self._reject(
+                    memory,
+                    frame,
+                    events,
+                    reason_codes=[*reason_codes, "automatic_ambiguous_reject"],
+                    candidate_reason="reappeared_group_changed",
+                )
             else:
                 self._reject(memory, frame, events, reason_codes=reason_codes, candidate_reason="reappeared_visible")
             reappeared_now = True
@@ -1047,11 +1039,17 @@ class PerBallPocketFSM:
                 memory,
                 frame,
                 events,
-                reason_codes=[*self._review_reason_codes(memory), "automatic_insufficient_evidence"],
+                reason_codes=[*self._ambiguity_reason_codes(memory), "automatic_insufficient_evidence"],
                 candidate_reason="automatic_insufficient_evidence",
             )
         else:
-            self._review(memory, frame, events, reason_codes=self._review_reason_codes(memory))
+            self._reject(
+                memory,
+                frame,
+                events,
+                reason_codes=[*self._ambiguity_reason_codes(memory), "automatic_ambiguous_reject"],
+                candidate_reason="automatic_ambiguous_reject",
+            )
 
     def _tentative(
         self,
@@ -1077,7 +1075,6 @@ class PerBallPocketFSM:
                     memory,
                     frame.ts_cam_ns,
                     decision="tentative",
-                    review_required=False,
                     reason_codes=reason_codes,
                 ),
                 confidence=0.62,
@@ -1096,7 +1093,6 @@ class PerBallPocketFSM:
             memory,
             frame.ts_cam_ns,
             decision="commit_ready",
-            review_required=False,
             reason_codes=["ready_for_turn_commit"],
         )
         events.append(
@@ -1138,33 +1134,9 @@ class PerBallPocketFSM:
                     memory,
                     frame.ts_cam_ns,
                     decision="detected",
-                    review_required=False,
                     reason_codes=["automatic_confirmation_window_elapsed"],
                 ),
                 confidence=0.94,
-            )
-        )
-
-    def _review(self, memory: _PocketMemory, frame: TracksFrame, events: List[Event], *, reason_codes: list[str]) -> None:
-        if memory.resolved or memory.evidence is None:
-            return
-        memory.state = "review_required"
-        memory.decision = "review_required"
-        memory.resolved = True
-        memory.reason_codes = list(reason_codes)
-        events.append(
-            Event(
-                name="POCKET_REVIEW_REQUIRED",
-                ts_cam_ns=frame.ts_cam_ns,
-                frame_id=frame.frame_id,
-                payload=self._decision_payload(
-                    memory,
-                    frame.ts_cam_ns,
-                    decision="review_required",
-                    review_required=True,
-                    reason_codes=reason_codes,
-                ),
-                confidence=0.70,
             )
         )
 
@@ -1193,7 +1165,6 @@ class PerBallPocketFSM:
                     memory,
                     frame.ts_cam_ns,
                     decision="rejected",
-                    review_required=False,
                     reason_codes=reason_codes,
                 ),
                 confidence=0.82,
@@ -1233,11 +1204,17 @@ class PerBallPocketFSM:
                 events,
             )
             if candidate.group != memory.group:
-                self._review(
+                self._reject(
                     candidate,
                     frame,
                     events,
-                    reason_codes=["reappeared_near_pocket", "track_relinked", "reappeared_group_changed"],
+                    reason_codes=[
+                        "reappeared_near_pocket",
+                        "track_relinked",
+                        "reappeared_group_changed",
+                        "automatic_ambiguous_reject",
+                    ],
+                    candidate_reason="reappeared_group_changed",
                 )
             else:
                 self._reject(
@@ -1285,7 +1262,6 @@ class PerBallPocketFSM:
         now_ns: int,
         *,
         decision: str,
-        review_required: bool,
         reason_codes: list[str],
     ) -> dict[str, object]:
         evidence = memory.evidence
@@ -1298,7 +1274,6 @@ class PerBallPocketFSM:
             "pocket_index": evidence.pocket_index,
             "decision_id": evidence.decision_id,
             "decision": decision,
-            "review_required": bool(review_required),
             "reason_codes": list(reason_codes),
             "candidate_reason": evidence.candidate_reason,
             "last_center_mm": list(memory.last_center_mm),
@@ -1520,7 +1495,7 @@ class PerBallPocketFSM:
             return ["mouth_missing"]
         return ["near_pocket_missing"]
 
-    def _review_reason_codes(self, memory: _PocketMemory) -> list[str]:
+    def _ambiguity_reason_codes(self, memory: _PocketMemory) -> list[str]:
         evidence = memory.evidence
         if memory.reappear_veto:
             reasons = ["reappeared_near_pocket"]
@@ -1528,10 +1503,10 @@ class PerBallPocketFSM:
                 reasons.append("reappeared_group_changed")
             return reasons
         if memory.resting_mouth_since_ns is not None and not bool(evidence and evidence.crossed_throat):
-            return ["mouth_rest_disappear_requires_review"]
+            return ["mouth_rest_disappear_ambiguous"]
         if not self._strong_confirmation_evidence(memory):
             return ["insufficient_pocket_evidence"]
-        return ["pocket_review_required"]
+        return ["pocket_evidence_ambiguous"]
 
     @staticmethod
     def _strong_confirmation_evidence(memory: _PocketMemory) -> bool:
@@ -1539,7 +1514,7 @@ class PerBallPocketFSM:
         return bool(
             evidence
             and not evidence.visual_outward
-            and (evidence.entered_interior or evidence.crossed_throat or evidence.projected_entry or evidence.visual_inward)
+            and (evidence.entered_interior or evidence.crossed_throat or evidence.visual_inward)
         )
 
     def _occluded_commit_allowed(self, memory: _PocketMemory) -> bool:

@@ -229,7 +229,7 @@ def test_projection_interaction_triggers_victory_animation_once(tmp_path: Path) 
                 name="GAME_STATUS_CHANGED",
                 ts_cam_ns=99,
                 frame_id=99,
-                payload={"shot_id": 7, "decision_id": "game-status:7:in_progress->ended_pending_review", "from_status": "in_progress", "to_status": "ended_pending_review"},
+                payload={"shot_id": 7, "decision_id": "game-status:7:in_progress->ended", "from_status": "in_progress", "to_status": "ended"},
             )
         ],
     )
@@ -317,7 +317,7 @@ def test_projection_interaction_can_disable_auto_victory_animation_without_affec
                 name="GAME_STATUS_CHANGED",
                 ts_cam_ns=101,
                 frame_id=101,
-                payload={"shot_id": 8, "decision_id": "game-status:8:in_progress->ended_pending_review", "from_status": "in_progress", "to_status": "ended_pending_review"},
+                payload={"shot_id": 8, "decision_id": "game-status:8:in_progress->ended", "from_status": "in_progress", "to_status": "ended"},
             )
         ],
     )
