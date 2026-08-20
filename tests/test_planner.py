@@ -39,7 +39,42 @@ def _service_for_table(width_mm: float, height_mm: float) -> CalibrationService:
             ball_diameter_mm=57.15,
             inner_polygon_mm=[(0, 0), (width_mm, 0), (width_mm, height_mm), (0, height_mm)],
             pockets_mm=[(0, 0), (width_mm * 0.5, 0), (width_mm, 0), (width_mm, height_mm), (width_mm * 0.5, height_mm), (0, height_mm)],
+            planning_pocket_mouths_mm=_ideal_pocket_mouths(width_mm, height_mm),
         ),
+    )
+
+
+def _ideal_pocket_mouths(width_mm: float, height_mm: float):
+    pockets = [(0.0, 0.0), (0.5 * width_mm, 0.0), (width_mm, 0.0), (width_mm, height_mm), (0.5 * width_mm, height_mm), (0.0, height_mm)]
+    return _test_mouths_for_pockets(pockets, width_mm, height_mm)
+
+
+def _test_mouths_for_pockets(pockets, width_mm: float, height_mm: float):
+    table_center = np.asarray([0.5 * width_mm, 0.5 * height_mm], dtype=np.float64)
+    # Generic planner fixtures are intentionally generous; physical mouth
+    # dimensions are covered by the recorded-geometry regression tests.
+    half_span = min(250.0, 0.48 * min(width_mm, height_mm))
+    depth = min(20.0, 0.05 * min(width_mm, height_mm))
+    mouths = []
+    for pocket in pockets:
+        pocket_arr = np.asarray(pocket, dtype=np.float64)
+        outward = pocket_arr - table_center
+        outward /= np.linalg.norm(outward)
+        tangent = np.asarray([-outward[1], outward[0]], dtype=np.float64)
+        midpoint = pocket_arr - outward * depth
+        jaw_a = midpoint - tangent * half_span
+        jaw_b = midpoint + tangent * half_span
+        mouths.append((tuple(jaw_a), tuple(jaw_b)))
+    return mouths
+
+
+def _set_test_pockets(service: CalibrationService, pockets) -> None:
+    service.table.pockets_mm = list(pockets)
+    service.table.planning_pockets_mm = []
+    service.table.planning_pocket_mouths_mm = _test_mouths_for_pockets(
+        pockets,
+        service.table.width_mm,
+        service.table.height_mm,
     )
 
 
@@ -91,6 +126,7 @@ def test_planner_uses_isolated_planning_pocket_centers() -> None:
     service = _service()
     service.table.pockets_mm = [(0.0, 0.0)]
     service.table.planning_pockets_mm = [(1000.0, 250.0)]
+    service.table.planning_pocket_mouths_mm = [((980.0, 195.0), (980.0, 305.0))]
     planner = GeometryPhysicsPlanner(PlannerConfig(top_k=3), service)
     state = MatchStateFrame(
         frame_id=1,
@@ -103,6 +139,43 @@ def test_planner_uses_isolated_planning_pocket_centers() -> None:
 
     assert plan.best is not None
     np.testing.assert_allclose(plan.best.pocket_point, (1000.0, 250.0), atol=1e-5)
+
+
+def test_planner_rejects_latest_no_line_route_when_ball_cannot_clear_side_pocket_jaw() -> None:
+    service = _service_for_table(2540.0, 1270.0)
+    service.table.planning_pockets_mm = [(1313.610107421875, -70.65151977539062)]
+    service.table.planning_pocket_mouths_mm = [
+        (
+            (1255.9141845703125, -54.37510681152344),
+            (1369.5958251953125, -43.73866271972656),
+        )
+    ]
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=3, target_shot_max_rebounds=0), service)
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="STABLE_IDLE",
+        layout=[
+            _obs(1, "cue", 657.3438110351562, 188.57998657226562),
+            _obs(2, "solid", 797.4368896484375, 216.83296966552734),
+        ],
+    )
+
+    plan = planner.plan(state)
+    balls = planner._extract_balls(state.layout)
+    target_candidate = planner.target_shot_planner.plan(
+        cue_ball=balls[0],
+        target=balls[1],
+        balls=balls,
+        decision=SimpleNamespace(status="recorded_regression"),
+    )
+    hook_plan = planner.plan(state, forced_shot_mode="hook")
+
+    assert plan.best is None
+    assert plan.candidates == []
+    assert target_candidate is None
+    assert hook_plan.best is None
+    assert hook_plan.candidates == []
 
 
 def test_corner_pocket_path_allows_terminal_exit_to_external_fitted_center() -> None:
@@ -941,7 +1014,7 @@ def test_target_lock_ignores_new_aim_during_shot_motion(monkeypatch) -> None:
 
 def test_target_shot_mode_activates_after_pointing_object_for_threshold(monkeypatch) -> None:
     service = _service()
-    service.table.pockets_mm = [(500, 0)]
+    _set_test_pockets(service, [(500, 0)])
     planner = GeometryPhysicsPlanner(
         PlannerConfig(
             top_k=20,
@@ -976,7 +1049,7 @@ def test_target_shot_mode_activates_after_pointing_object_for_threshold(monkeypa
 
 def test_target_shot_mode_keeps_edge_detection_available_when_scanning_candidates(monkeypatch) -> None:
     service = _service()
-    service.table.pockets_mm = [(500, 0)]
+    _set_test_pockets(service, [(500, 0)])
     planner = GeometryPhysicsPlanner(
         PlannerConfig(
             top_k=20,
@@ -1103,7 +1176,7 @@ def test_planner_reuses_same_shared_aim_for_target_shot_and_cue_sector(monkeypat
 
 def test_target_shot_mode_holds_without_cue_stick_and_keeps_route_independent_of_direction(monkeypatch) -> None:
     service = _service()
-    service.table.pockets_mm = [(500, 0)]
+    _set_test_pockets(service, [(500, 0)])
     planner = GeometryPhysicsPlanner(
         PlannerConfig(
             top_k=20,
@@ -1146,7 +1219,7 @@ def test_target_shot_mode_holds_without_cue_stick_and_keeps_route_independent_of
 
 def test_target_shot_mode_releases_after_release_confirmation_window(monkeypatch) -> None:
     service = _service()
-    service.table.pockets_mm = [(500, 0)]
+    _set_test_pockets(service, [(500, 0)])
     planner = GeometryPhysicsPlanner(
         PlannerConfig(
             top_k=20,
@@ -1178,7 +1251,7 @@ def test_target_shot_mode_releases_after_release_confirmation_window(monkeypatch
 
 def test_target_shot_mode_keeps_activation_progress_during_short_no_aim_gap(monkeypatch) -> None:
     service = _service()
-    service.table.pockets_mm = [(500, 0)]
+    _set_test_pockets(service, [(500, 0)])
     planner = GeometryPhysicsPlanner(
         PlannerConfig(
             top_k=20,
@@ -1217,7 +1290,7 @@ def test_target_shot_mode_keeps_activation_progress_during_short_no_aim_gap(monk
 
 def test_target_shot_mode_resets_activation_after_miss_exceeds_grace(monkeypatch) -> None:
     service = _service()
-    service.table.pockets_mm = [(500, 0)]
+    _set_test_pockets(service, [(500, 0)])
     planner = GeometryPhysicsPlanner(
         PlannerConfig(
             top_k=20,
@@ -1300,7 +1373,7 @@ def test_target_shot_mode_switches_only_after_longer_confirmation_window(monkeyp
 
 def test_target_shot_mode_can_choose_bank_route_when_direct_route_is_not_possible(monkeypatch) -> None:
     service = _service()
-    service.table.pockets_mm = [(500, 0)]
+    _set_test_pockets(service, [(500, 0)])
     planner = GeometryPhysicsPlanner(
         PlannerConfig(
             top_k=20,
@@ -1332,14 +1405,14 @@ def test_target_shot_direct_route_matches_rule_route_pocket_relief(monkeypatch) 
     service = _service_for_table(2540.0, 1270.0)
     service.table.inner_polygon_mm = [(172.16, 143.93), (2373.49, 143.93), (2373.49, 1117.6), (172.16, 1117.6)]
     service.table.center_playable_polygon_mm = list(service.table.inner_polygon_mm)
-    service.table.pockets_mm = [
+    _set_test_pockets(service, [
         (163.7, 148.2),
         (1259.41, 118.99),
         (2375.26, 137.54),
         (2383.8, 1118.35),
         (1261.18, 1142.0),
         (160.53, 1113.65),
-    ]
+    ])
     planner = GeometryPhysicsPlanner(
         PlannerConfig(
             top_k=20,

@@ -15,7 +15,8 @@ from ..utils import angle_deg, clamp, point_segment_distance, unit
 from .aim_context import PlannerAimFrameContext
 from .corridor_targeting import rank_object_balls_in_corridor
 from .cue_aim import CueStickAimDetector
-from .pocket_targets import planning_pocket_points
+from .pocket_clearance import assess_pocket_entry
+from .pocket_targets import planning_pocket_mouth, planning_pocket_points
 
 
 OBJECT_GROUPS = {"solid", "stripe", "black"}
@@ -54,6 +55,10 @@ class _Route:
     score: float
     risk: float
     clearance_mm: float
+    pocket_entry_angle_deg: float
+    pocket_jaw_clearance_mm: float
+    pocket_required_clearance_mm: float
+    pocket_clearance_margin_mm: float
 
 
 @dataclass(frozen=True)
@@ -397,6 +402,15 @@ class TargetShotPlanner:
         object_points = self._object_path(target_center, pocket, rails, motion)
         if object_points is None or len(object_points) < 2:
             return None
+        entry_assessment = assess_pocket_entry(
+            object_points[-2],
+            pocket,
+            planning_pocket_mouth(self.calibration.table, pocket_index),
+            ball_radius_mm=0.5 * float(self.calibration.table.ball_diameter_mm),
+            safety_margin_mm=float(self.config.object_path_margin_mm) + float(self.config.collision_padding_mm),
+        )
+        if not entry_assessment.feasible:
+            return None
 
         first_dir = unit(object_points[1] - target_center)
         if float(np.linalg.norm(first_dir)) < 1e-6:
@@ -426,8 +440,9 @@ class TargetShotPlanner:
         distance_penalty = (cue_distance + 0.65 * object_distance) / table_diag
         rebound_penalty = 0.18 * len(rails)
         clearance_norm = clamp(min(cue_clearance, object_clearance) / 80.0, 0.0, 1.0)
-        score = float(2.6 - 1.25 * cut_penalty - 0.85 * distance_penalty - rebound_penalty + 0.25 * clearance_norm)
-        risk = clamp(0.45 * cut_penalty + 0.35 * distance_penalty + rebound_penalty + 0.20 * (1.0 - clearance_norm), 0.0, 1.0)
+        pocket_angle_penalty = float(max(0.0, (entry_assessment.entrance_angle_deg - 20.0) / 70.0) ** 1.5)
+        score = float(2.6 - 1.25 * cut_penalty - 0.85 * distance_penalty - rebound_penalty - 0.30 * pocket_angle_penalty + 0.25 * clearance_norm)
+        risk = clamp(0.45 * cut_penalty + 0.35 * distance_penalty + rebound_penalty + 0.15 * pocket_angle_penalty + 0.20 * (1.0 - clearance_norm), 0.0, 1.0)
         return _Route(
             pocket_index=int(pocket_index),
             pocket=pocket.astype(np.float32),
@@ -439,7 +454,11 @@ class TargetShotPlanner:
             cut_angle_deg=float(cut),
             score=score,
             risk=float(risk),
-            clearance_mm=float(min(cue_clearance, object_clearance)),
+            clearance_mm=float(min(cue_clearance, object_clearance, entry_assessment.clearance_margin_mm)),
+            pocket_entry_angle_deg=float(entry_assessment.entrance_angle_deg),
+            pocket_jaw_clearance_mm=float(entry_assessment.jaw_clearance_mm),
+            pocket_required_clearance_mm=float(entry_assessment.required_clearance_mm),
+            pocket_clearance_margin_mm=float(entry_assessment.clearance_margin_mm),
         )
 
     def _object_path(
@@ -613,6 +632,10 @@ class TargetShotPlanner:
             "target_shot_status": decision.status,
             "target_shot_rebounds": int(route.rebounds),
             "target_shot_clearance_mm": float(route.clearance_mm),
+            "pocket_entry_angle_deg": float(route.pocket_entry_angle_deg),
+            "pocket_jaw_clearance_mm": float(route.pocket_jaw_clearance_mm),
+            "pocket_required_clearance_mm": float(route.pocket_required_clearance_mm),
+            "pocket_clearance_margin_mm": float(route.pocket_clearance_margin_mm),
             "target_shot_independent_of_cue_stick": True,
         }
         return ShotCandidate(

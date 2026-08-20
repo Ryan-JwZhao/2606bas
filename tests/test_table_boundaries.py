@@ -130,6 +130,9 @@ def test_planning_pocket_center_is_fitted_before_rail_inset_or_table_clipping() 
 
     np.testing.assert_allclose(raw_fitted_center, expected_center, atol=0.1)
     np.testing.assert_allclose(boundaries.planning_pocket_points_mm[0], raw_fitted_center, atol=0.1)
+    expected_mouth = (pocket_curve[0], pocket_curve[-1])
+    actual_mouth = boundaries.planning_pocket_mouths_mm[0]
+    np.testing.assert_allclose(actual_mouth, expected_mouth, atol=0.1)
 
 
 def test_middle_pocket_relief_brings_physical_boundary_closer_to_visible() -> None:

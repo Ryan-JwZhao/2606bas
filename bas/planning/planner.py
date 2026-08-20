@@ -17,7 +17,8 @@ from .cue_aim import CueStickAimDetector
 from .cue_sector import CueSectorCorrection
 from .hook_shot import HookShotPlanner
 from .learning import create_learning_ranker
-from .pocket_targets import planning_pocket_points
+from .pocket_clearance import assess_pocket_entry
+from .pocket_targets import planning_pocket_mouth, planning_pocket_points
 from .target_shot import TargetShotDecision, TargetShotModeController, TargetShotPlanner
 from .target_lock import TargetLockController, TargetLockDecision
 
@@ -531,6 +532,15 @@ class GeometryPhysicsPlanner:
         if obj_dist < 1.0:
             return None
         obj_dir = unit(obj_vec)
+        entry_assessment = assess_pocket_entry(
+            target.center_mm,
+            pocket,
+            planning_pocket_mouth(self.calibration.table, pocket_index),
+            ball_radius_mm=0.5 * float(self.calibration.table.ball_diameter_mm),
+            safety_margin_mm=float(self.config.object_path_margin_mm) + float(self.config.collision_padding_mm),
+        )
+        if not entry_assessment.feasible:
+            return None
         contact_dist = cue.radius_mm + target.radius_mm
         ghost = target.center_mm - obj_dir * contact_dist
         if not self._inside(inner_polygon, ghost, margin_mm=max(2.0, self.config.collision_padding_mm)):
@@ -570,7 +580,7 @@ class GeometryPhysicsPlanner:
         cut_penalty = (cut / max(1.0, self.config.max_cut_angle_deg)) ** 1.8
         dist_penalty = (cue_dist + 0.55 * obj_dist) / max(1.0, table_diag)
         clearance_norm = clamp(min(cue_clearance / 80.0, obj_clearance / 80.0), 0.0, 1.0)
-        pocket_angle_penalty = self._pocket_angle_penalty(target.center_mm, pocket, obj_dir)
+        pocket_angle_penalty = self._pocket_angle_penalty(entry_assessment.entrance_angle_deg)
         risk = clamp(0.45 * cut_penalty + 0.35 * dist_penalty + 0.20 * (1.0 - clearance_norm), 0.0, 1.0)
         score = float(2.0 - 1.3 * cut_penalty - 0.9 * dist_penalty - 0.35 * pocket_angle_penalty + 0.25 * clearance_norm)
 
@@ -598,6 +608,10 @@ class GeometryPhysicsPlanner:
                 "cut_penalty": float(cut_penalty),
                 "distance_penalty": float(dist_penalty),
                 "pocket_angle_penalty": float(pocket_angle_penalty),
+                "pocket_entry_angle_deg": float(entry_assessment.entrance_angle_deg),
+                "pocket_jaw_clearance_mm": float(entry_assessment.jaw_clearance_mm),
+                "pocket_required_clearance_mm": float(entry_assessment.required_clearance_mm),
+                "pocket_clearance_margin_mm": float(entry_assessment.clearance_margin_mm),
                 "learning_ranker": self.learning_ranker.version,
             },
         )
@@ -650,11 +664,9 @@ class GeometryPhysicsPlanner:
             min_clearance = min(min_clearance, float(clearance))
         return min_clearance if np.isfinite(min_clearance) else 9999.0
 
-    def _pocket_angle_penalty(self, target: np.ndarray, pocket: np.ndarray, obj_dir: np.ndarray) -> float:
-        table_center = np.asarray([self.calibration.table.width_mm * 0.5, self.calibration.table.height_mm * 0.5], dtype=np.float32)
-        inward = unit(table_center - pocket)
-        approach = angle_deg(obj_dir, inward)
-        return float(max(0.0, (approach - 20.0) / 70.0) ** 1.5)
+    @staticmethod
+    def _pocket_angle_penalty(entrance_angle_deg: float) -> float:
+        return float(max(0.0, (float(entrance_angle_deg) - 20.0) / 70.0) ** 1.5)
 
 
 def _pt(arr: np.ndarray) -> Point:

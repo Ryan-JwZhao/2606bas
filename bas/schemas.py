@@ -146,6 +146,9 @@ class TableModel:
     # Shot planning uses raw fitted pocket-arc centres.  Keep this separate from
     # pockets_mm because that legacy field is also consumed by pocket judging.
     planning_pockets_mm: List[Point] = field(default_factory=list)
+    # Each planning target has a same-index pair of physical jaw endpoints.
+    # Route generation fails closed when this geometry is unavailable.
+    planning_pocket_mouths_mm: List[Tuple[Point, Point]] = field(default_factory=list)
 
 
 @dataclass

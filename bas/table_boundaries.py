@@ -34,6 +34,7 @@ class TableBoundarySet:
     projection_visible_pocket_points_mm: List[Tuple[float, float]]
     physical_pocket_points_mm: List[Tuple[float, float]]
     planning_pocket_points_mm: List[Tuple[float, float]]
+    planning_pocket_mouths_mm: List[Tuple[Tuple[float, float], Tuple[float, float]]]
 
 
 def derive_table_boundaries(
@@ -86,6 +87,7 @@ def derive_table_boundaries(
         pocket_curves_mm,
         ball_diameter_mm=ball_diameter_mm,
     )
+    planning_mouths = fit_pocket_mouths_mm(pocket_curves_mm)
     return TableBoundarySet(
         projection_visible_polygon_mm=projection_visible,
         physical_rail_polygon_mm=physical_rail,
@@ -93,6 +95,7 @@ def derive_table_boundaries(
         projection_visible_pocket_points_mm=visible_pockets,
         physical_pocket_points_mm=physical_pockets,
         planning_pocket_points_mm=planning_pockets,
+        planning_pocket_mouths_mm=planning_mouths,
     )
 
 
@@ -180,6 +183,35 @@ def fit_pocket_centers_mm(
         center = pocket_arc_center(points, ball_diameter_mm)
         centers.append((float(center[0]), float(center[1])))
     return centers
+
+
+def fit_pocket_mouths_mm(
+    pocket_curves_mm: Sequence[np.ndarray],
+) -> List[Tuple[Tuple[float, float], Tuple[float, float]]]:
+    """Return the two physical jaw tips from every untouched pocket curve.
+
+    Annotation point order is not part of the geometry contract, so selecting
+    the farthest pair is more robust than assuming the first and last points
+    are the mouth endpoints.
+    """
+
+    mouths: List[Tuple[Tuple[float, float], Tuple[float, float]]] = []
+    for curve in pocket_curves_mm:
+        points = ensure_numpy_points(curve).astype(np.float64)
+        if points.shape[0] < 2:
+            continue
+        differences = points[:, np.newaxis, :] - points[np.newaxis, :, :]
+        squared_distances = np.sum(differences * differences, axis=2)
+        jaw_a_index, jaw_b_index = np.unravel_index(int(np.argmax(squared_distances)), squared_distances.shape)
+        jaw_a = points[jaw_a_index]
+        jaw_b = points[jaw_b_index]
+        mouths.append(
+            (
+                (float(jaw_a[0]), float(jaw_a[1])),
+                (float(jaw_b[0]), float(jaw_b[1])),
+            )
+        )
+    return mouths
 
 
 def _fallback_polygon(points_mm: np.ndarray, width_mm: float, height_mm: float) -> PointArray:

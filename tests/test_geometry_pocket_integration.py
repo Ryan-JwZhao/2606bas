@@ -321,6 +321,7 @@ def test_switching_inline_and_pocket_keeps_new_pocket_observer_and_state_effecti
     pipeline._update_table_geometry_for_frame(frame)
     old_center_polygon = np.asarray(pipeline.calibration.table.center_playable_polygon_mm, dtype=np.float32)
     old_pockets = list(pipeline.calibration.table.pockets_mm)
+    old_mouths = list(pipeline.calibration.table.planning_pocket_mouths_mm)
 
     # Match the field swap found in the live settings: content labels, rather
     # than picker-row order, must determine each geometry role.
@@ -333,9 +334,13 @@ def test_switching_inline_and_pocket_keeps_new_pocket_observer_and_state_effecti
     policy = pipeline._camera_detection_regions(frame)
     new_center_polygon = np.asarray(pipeline.calibration.table.center_playable_polygon_mm, dtype=np.float32)
     new_pockets = list(pipeline.calibration.table.pockets_mm)
+    new_mouths = list(pipeline.calibration.table.planning_pocket_mouths_mm)
 
     assert reset_calls == [True]
     assert old_pockets != new_pockets
+    assert len(old_mouths) == 6
+    assert len(new_mouths) == 6
+    assert old_mouths != new_mouths
     assert abs(new_pockets[1][0] - 50.0) < 0.1
     assert old_center_polygon.shape[0] >= 3
     assert new_center_polygon.shape[0] >= 3
