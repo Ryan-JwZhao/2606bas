@@ -10,7 +10,6 @@ import cv2
 import numpy as np
 
 from ..calibration.service import CalibrationService
-from ..display_geometry import DisplayGeometryStabilizer, stabilize_projection_overlay
 from ..paths import PROJECT_ROOT
 from ..schemas import MatchStateFrame, OverlayText, ProjectionOverlay, ShotPlan
 from .overlay import render_overlay_with_star
@@ -65,7 +64,6 @@ class ProjectionInteractionController:
         self._boot_notice_sent = False
         self._auto_pocket_animation_enabled = bool(auto_pocket_animation_enabled)
         self._auto_victory_animation_enabled = bool(auto_victory_animation_enabled)
-        self._display_geometry = DisplayGeometryStabilizer()
 
     def set_auto_triggers(
         self,
@@ -79,7 +77,9 @@ class ProjectionInteractionController:
             self._auto_victory_animation_enabled = bool(victory_enabled)
 
     def reset_display_geometry(self) -> None:
-        self._display_geometry.reset()
+        # Route continuity now lives in table-space planning inputs.  Rendering
+        # intentionally keeps no independent line-endpoint history.
+        return None
 
     def notify(self, text: str, *, duration_s: float = DEFAULT_NOTICE_DURATION_S) -> bool:
         message = str(text or "").strip()
@@ -180,8 +180,7 @@ class ProjectionInteractionController:
         star_formula: StarFormulaConfig,
         calibration: CalibrationService | None = None,
     ) -> np.ndarray:
-        shown_overlay = stabilize_projection_overlay(overlay, self._display_geometry)
-        image = render_overlay_with_star(shown_overlay, star_formula)
+        image = render_overlay_with_star(overlay, star_formula)
         animation = self._current_animation_frame(overlay.projector_size)
         if animation is not None:
             image = _alpha_blend_fullscreen(image, animation)

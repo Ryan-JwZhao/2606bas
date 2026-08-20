@@ -81,6 +81,21 @@ class UserSettings:
     replay_enabled: Optional[bool] = None
     state_machine_engine: Optional[str] = None
     shot_mode: Optional[str] = None
+    planner_route_stability_enabled: Optional[bool] = None
+    planner_route_stability_stationary_tau_ms: Optional[float] = None
+    planner_route_stability_motion_tau_ms: Optional[float] = None
+    planner_route_stability_quiet_speed_mm_s: Optional[float] = None
+    planner_route_stability_fast_speed_mm_s: Optional[float] = None
+    planner_route_stability_deadband_mm: Optional[float] = None
+    planner_route_stability_micro_gain: Optional[float] = None
+    planner_route_stability_response_distance_mm: Optional[float] = None
+    planner_route_stability_reset_distance_mm: Optional[float] = None
+    planner_route_stability_reset_gap_ms: Optional[float] = None
+    planner_route_stability_prediction_ms: Optional[float] = None
+    planner_route_stability_prediction_max_mm: Optional[float] = None
+    planner_route_topology_continuity_enabled: Optional[bool] = None
+    planner_route_topology_switch_confirm_ms: Optional[float] = None
+    planner_route_topology_switch_score_delta: Optional[float] = None
     planner_route_freeze_enabled: Optional[bool] = None
     planner_route_freeze_enter_frames: Optional[int] = None
     planner_route_freeze_release_frames: Optional[int] = None
@@ -298,6 +313,36 @@ class UserSettings:
         if self._has("shot_mode") and self.shot_mode:
             mode = str(self.shot_mode).strip().lower()
             config.planner.shot_mode = "hook" if mode in {"hook", "hook_shot"} else "rule"
+        if self.planner_route_stability_enabled is not None:
+            config.planner.route_stability_enabled = bool(self.planner_route_stability_enabled)
+        if self.planner_route_stability_stationary_tau_ms is not None:
+            config.planner.route_stability_stationary_tau_ms = max(10.0, float(self.planner_route_stability_stationary_tau_ms))
+        if self.planner_route_stability_motion_tau_ms is not None:
+            config.planner.route_stability_motion_tau_ms = max(5.0, float(self.planner_route_stability_motion_tau_ms))
+        if self.planner_route_stability_quiet_speed_mm_s is not None:
+            config.planner.route_stability_quiet_speed_mm_s = max(0.0, float(self.planner_route_stability_quiet_speed_mm_s))
+        if self.planner_route_stability_fast_speed_mm_s is not None:
+            config.planner.route_stability_fast_speed_mm_s = max(0.0, float(self.planner_route_stability_fast_speed_mm_s))
+        if self.planner_route_stability_deadband_mm is not None:
+            config.planner.route_stability_deadband_mm = max(0.0, float(self.planner_route_stability_deadband_mm))
+        if self.planner_route_stability_micro_gain is not None:
+            config.planner.route_stability_micro_gain = max(0.0001, min(1.0, float(self.planner_route_stability_micro_gain)))
+        if self.planner_route_stability_response_distance_mm is not None:
+            config.planner.route_stability_response_distance_mm = max(0.0, float(self.planner_route_stability_response_distance_mm))
+        if self.planner_route_stability_reset_distance_mm is not None:
+            config.planner.route_stability_reset_distance_mm = max(1.0, float(self.planner_route_stability_reset_distance_mm))
+        if self.planner_route_stability_reset_gap_ms is not None:
+            config.planner.route_stability_reset_gap_ms = max(1.0, float(self.planner_route_stability_reset_gap_ms))
+        if self.planner_route_stability_prediction_ms is not None:
+            config.planner.route_stability_prediction_ms = max(0.0, min(100.0, float(self.planner_route_stability_prediction_ms)))
+        if self.planner_route_stability_prediction_max_mm is not None:
+            config.planner.route_stability_prediction_max_mm = max(0.0, float(self.planner_route_stability_prediction_max_mm))
+        if self.planner_route_topology_continuity_enabled is not None:
+            config.planner.route_topology_continuity_enabled = bool(self.planner_route_topology_continuity_enabled)
+        if self.planner_route_topology_switch_confirm_ms is not None:
+            config.planner.route_topology_switch_confirm_ms = max(0.0, float(self.planner_route_topology_switch_confirm_ms))
+        if self.planner_route_topology_switch_score_delta is not None:
+            config.planner.route_topology_switch_score_delta = max(0.0, float(self.planner_route_topology_switch_score_delta))
         if self.planner_route_freeze_enabled is not None:
             config.planner.route_freeze_enabled = bool(self.planner_route_freeze_enabled)
         if self.planner_route_freeze_enter_frames is not None:
@@ -451,6 +496,21 @@ class UserSettings:
             replay_enabled=config.replay.enabled,
             state_machine_engine=config.state.engine,
             shot_mode=config.planner.shot_mode,
+            planner_route_stability_enabled=config.planner.route_stability_enabled,
+            planner_route_stability_stationary_tau_ms=config.planner.route_stability_stationary_tau_ms,
+            planner_route_stability_motion_tau_ms=config.planner.route_stability_motion_tau_ms,
+            planner_route_stability_quiet_speed_mm_s=config.planner.route_stability_quiet_speed_mm_s,
+            planner_route_stability_fast_speed_mm_s=config.planner.route_stability_fast_speed_mm_s,
+            planner_route_stability_deadband_mm=config.planner.route_stability_deadband_mm,
+            planner_route_stability_micro_gain=config.planner.route_stability_micro_gain,
+            planner_route_stability_response_distance_mm=config.planner.route_stability_response_distance_mm,
+            planner_route_stability_reset_distance_mm=config.planner.route_stability_reset_distance_mm,
+            planner_route_stability_reset_gap_ms=config.planner.route_stability_reset_gap_ms,
+            planner_route_stability_prediction_ms=config.planner.route_stability_prediction_ms,
+            planner_route_stability_prediction_max_mm=config.planner.route_stability_prediction_max_mm,
+            planner_route_topology_continuity_enabled=config.planner.route_topology_continuity_enabled,
+            planner_route_topology_switch_confirm_ms=config.planner.route_topology_switch_confirm_ms,
+            planner_route_topology_switch_score_delta=config.planner.route_topology_switch_score_delta,
             planner_route_freeze_enabled=config.planner.route_freeze_enabled,
             planner_route_freeze_enter_frames=config.planner.route_freeze_enter_frames,
             planner_route_freeze_release_frames=config.planner.route_freeze_release_frames,

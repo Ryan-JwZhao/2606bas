@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import cv2
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -120,6 +121,111 @@ def test_planner_generates_candidate() -> None:
     assert plan.best is not None
     assert len(plan.candidates) >= 1
     assert plan.best.score > -5
+
+
+def test_planner_recomputes_current_route_from_stable_table_space_centres() -> None:
+    service = _service_for_table(2540.0, 1270.0)
+    stable_planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            cue_sector_correction_enabled=False,
+            target_shot_enabled=False,
+            route_stability_enabled=True,
+        ),
+        service,
+    )
+    raw_planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=20,
+            cue_sector_correction_enabled=False,
+            target_shot_enabled=False,
+            route_stability_enabled=False,
+            route_topology_continuity_enabled=False,
+        ),
+        service,
+    )
+    overlay_builder = OverlayBuilder(ProjectionConfig(projector_width=2540, projector_height=1270), service)
+    samples = [
+        ((657.257, 188.631), (796.731, 217.189)),
+        ((657.820, 188.340), (795.839, 217.374)),
+        ((657.655, 188.465), (796.977, 217.180)),
+        ((657.328, 188.625), (797.751, 217.106)),
+        ((657.186, 188.619), (796.801, 217.093)),
+        ((657.197, 188.646), (797.167, 217.129)),
+        ((657.193, 188.654), (796.831, 217.130)),
+        ((657.210, 188.689), (797.344, 216.979)),
+        ((657.213, 188.695), (797.280, 216.957)),
+        ((657.215, 188.699), (798.762, 216.841)),
+        ((657.217, 188.702), (799.076, 216.907)),
+    ]
+    stable_starts = []
+    raw_starts = []
+    for index, (cue, target) in enumerate(samples, start=1):
+        layout = [
+            replace(_obs(1, "cue", *cue), velocity_mm_s=(0.0, 0.0)),
+            replace(_obs(2, "solid", *target), velocity_mm_s=(0.0, 0.0)),
+        ]
+        state = MatchStateFrame(
+            frame_id=index,
+            ts_cam_ns=index * 68_469_702,
+            phase="STABLE_IDLE",
+            layout=layout,
+            turn_target_group="solid",
+        )
+        stable_plan = stable_planner.plan(state)
+        raw_plan = raw_planner.plan(state)
+        assert stable_plan.best is not None
+        assert raw_plan.best is not None
+        stable_line = next(line for line in overlay_builder.from_plan(stable_plan).lines if line.label == "cue_guide")
+        raw_line = next(line for line in overlay_builder.from_plan(raw_plan).lines if line.label == "cue_guide")
+        stable_starts.append(stable_line.points[0])
+        raw_starts.append(raw_line.points[0])
+
+    def max_pairwise(points) -> float:
+        values = np.asarray(points, dtype=np.float64)
+        return float(np.max(np.linalg.norm(values[:, None, :] - values[None, :, :], axis=2)))
+
+    assert max_pairwise(raw_starts) > 10.0
+    assert max_pairwise(stable_starts) < 2.0
+    assert stable_planner.position_stability.last_status.startswith("continuous")
+
+
+def test_route_stability_keeps_collision_checks_on_current_raw_blocker_position() -> None:
+    service = _service()
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(cue_sector_correction_enabled=False, target_shot_enabled=False),
+        service,
+    )
+    first_layout = [
+        replace(_obs(1, "cue", 120.0, 250.0), velocity_mm_s=(0.0, 0.0)),
+        replace(_obs(2, "solid", 620.0, 250.0), velocity_mm_s=(0.0, 0.0)),
+        replace(_obs(3, "stripe", 400.0, 400.0), velocity_mm_s=(0.0, 0.0)),
+    ]
+    planner.plan(MatchStateFrame(frame_id=1, ts_cam_ns=68_469_702, phase="STABLE_IDLE", layout=first_layout))
+    second_layout = [
+        first_layout[0],
+        first_layout[1],
+        replace(_obs(3, "stripe", 430.0, 400.0), velocity_mm_s=(0.0, 0.0)),
+    ]
+    second_state = MatchStateFrame(
+        frame_id=2,
+        ts_cam_ns=136_939_404,
+        phase="STABLE_IDLE",
+        layout=second_layout,
+    )
+    balls = planner._stabilize_ball_positions(second_state, planner._extract_balls(second_layout))
+    blocker = next(ball for ball in balls if ball.track_id == 3)
+
+    assert float(blocker.center_mm[0]) < 430.0
+    np.testing.assert_allclose(blocker.clearance_center_mm, (430.0, 400.0), atol=1e-5)
+    clearance = planner._path_clearance(
+        np.asarray((430.0, 300.0), dtype=np.float32),
+        np.asarray((430.0, 500.0), dtype=np.float32),
+        balls,
+        ignore={1, 2},
+        moving_radius=28.575,
+    )
+    assert clearance <= -43.5
 
 
 def test_planner_uses_isolated_planning_pocket_centers() -> None:

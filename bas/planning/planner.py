@@ -19,6 +19,7 @@ from .hook_shot import HookShotPlanner
 from .learning import create_learning_ranker
 from .pocket_clearance import assess_pocket_entry
 from .pocket_targets import planning_pocket_mouth, planning_pocket_points
+from .route_stability import BallPositionMeasurement, PlanningPositionStabilizer, RouteTopologyContinuity
 from .target_shot import TargetShotDecision, TargetShotModeController, TargetShotPlanner
 from .target_lock import TargetLockController, TargetLockDecision
 
@@ -46,6 +47,7 @@ class _Ball:
     group: str
     center_px: np.ndarray
     center_mm: np.ndarray
+    clearance_center_mm: np.ndarray
     radius_mm: float
     radius_px: float
     quality: float
@@ -55,7 +57,7 @@ class _Ball:
 
 
 class GeometryPhysicsPlanner:
-    version = "geometry_physics_mvp_v1"
+    version = "geometry_physics_mvp_v2"
 
     def __init__(self, config: PlannerConfig, calibration: CalibrationService, learning_config: LearningConfig | None = None):
         self.config = config
@@ -71,16 +73,31 @@ class GeometryPhysicsPlanner:
         self.target_shot_mode = TargetShotModeController(config, aim_detector=self.aim_detector)
         self.target_shot_planner = TargetShotPlanner(config, calibration)
         self.hook_shot_planner = HookShotPlanner(config, self.target_shot_planner)
+        self.position_stability = PlanningPositionStabilizer(config)
+        self.route_topology = RouteTopologyContinuity(config)
         self.manual_target_id: Optional[int] = None
+
+    @property
+    def last_stability_status(self) -> str:
+        return f"{self.position_stability.last_status}; {self.route_topology.last_status}"
+
+    def reset_temporal_state(self) -> None:
+        self.target_lock.reset()
+        self.target_shot_mode.reset()
+        self.cue_sector.reset()
+        self.position_stability.reset()
+        self.route_topology.reset()
 
     def set_manual_target(self, track_id: int) -> None:
         self.manual_target_id = int(track_id)
         self.target_lock.reset()
         self.target_shot_mode.reset()
+        self.route_topology.reset()
 
     def clear_manual_target(self) -> None:
         self.manual_target_id = None
         self.target_lock.reset()
+        self.route_topology.reset()
 
     def plan(
         self,
@@ -100,7 +117,7 @@ class GeometryPhysicsPlanner:
         )
         if not self.config.enabled:
             return self._empty_plan(state, shot_mode=shot_mode, hook_status="disabled")
-        balls = self._extract_balls(state.layout)
+        balls = self._stabilize_ball_positions(state, self._extract_balls(state.layout))
         cue = next((b for b in balls if b.group == "cue"), None)
         if shot_mode == "hook":
             self.target_lock.reset()
@@ -183,6 +200,11 @@ class GeometryPhysicsPlanner:
                 aim=cue_sector_aim,
                 turn_target_group=turn_target_group,
             )
+        candidates = self.route_topology.select(
+            candidates,
+            ts_cam_ns=state.ts_cam_ns,
+            shot_mode="rule",
+        )
         candidates = candidates[: max(1, int(self.config.top_k))]
         best = candidates[0] if candidates else None
         return ShotPlan(
@@ -210,6 +232,7 @@ class GeometryPhysicsPlanner:
         hook_status: str = "off",
         target_lock: TargetLockDecision | None = None,
     ) -> ShotPlan:
+        self.route_topology.select([], ts_cam_ns=state.ts_cam_ns, shot_mode=shot_mode)
         return ShotPlan(
             plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
             frame_id=state.frame_id,
@@ -282,12 +305,17 @@ class GeometryPhysicsPlanner:
             balls=balls,
             selection_source=selection_source,
         )
+        candidates = self.route_topology.select(
+            result.candidates,
+            ts_cam_ns=state.ts_cam_ns,
+            shot_mode="hook",
+        )
         return ShotPlan(
             plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
             frame_id=state.frame_id,
             ts_cam_ns=state.ts_cam_ns,
-            candidates=result.candidates,
-            best=result.best,
+            candidates=candidates,
+            best=candidates[0] if candidates else None,
             shot_mode="hook",
             hook_status=result.status,
             planner_version=f"{self.version}+{self.hook_shot_planner.version}+{self.target_shot_planner.version}",
@@ -327,6 +355,7 @@ class GeometryPhysicsPlanner:
                     group=tr.group,
                     center_px=np.asarray(tr.center_px, dtype=np.float32).reshape((2,)),
                     center_mm=center.astype(np.float32),
+                    clearance_center_mm=center.astype(np.float32),
                     radius_mm=float(radius_mm),
                     radius_px=float(max(2.0, tr.radius_px)),
                     quality=effective_quality,
@@ -336,6 +365,33 @@ class GeometryPhysicsPlanner:
                 )
             )
         return balls
+
+    def _stabilize_ball_positions(self, state: MatchStateFrame, balls: Sequence[_Ball]) -> List[_Ball]:
+        tracks_by_id = {int(track.track_id): track for track in state.layout}
+        measurements: list[BallPositionMeasurement] = []
+        for ball in balls:
+            track = tracks_by_id.get(int(ball.track_id))
+            velocity = getattr(track, "velocity_mm_s", None) if track is not None else None
+            if velocity is None:
+                velocity = (0.0, 0.0)
+            measurements.append(
+                BallPositionMeasurement(
+                    track_id=int(ball.track_id),
+                    center_mm=_pt(ball.center_mm),
+                    velocity_mm_s=(float(velocity[0]), float(velocity[1])),
+                    quality=float(ball.quality),
+                    uncertainty_mm=float(ball.uncertainty_mm),
+                )
+            )
+        shown = self.position_stability.update(
+            state.ts_cam_ns,
+            measurements,
+            phase=state.phase,
+        )
+        return [
+            replace(ball, center_mm=np.asarray(shown.get(int(ball.track_id), ball.center_mm), dtype=np.float32))
+            for ball in balls
+        ]
 
     def _build_aim_frame_context(
         self,
@@ -387,6 +443,7 @@ class GeometryPhysicsPlanner:
         target = self._manual_target(balls)
         target_lock = TargetLockDecision(target_id, target.group if target is not None else None, "manual")
         if cue is None or target is None:
+            self.route_topology.select([], ts_cam_ns=state.ts_cam_ns, shot_mode="target")
             return ShotPlan(
                 plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
                 frame_id=state.frame_id,
@@ -408,6 +465,11 @@ class GeometryPhysicsPlanner:
         ]
         candidates = self.learning_ranker.rerank(candidates, state)
         candidates = [self._annotate_target_lock(candidate, target_lock) for candidate in candidates]
+        candidates = self.route_topology.select(
+            candidates,
+            ts_cam_ns=state.ts_cam_ns,
+            shot_mode="target",
+        )
         candidates = candidates[: max(1, int(self.config.top_k))]
         return ShotPlan(
             plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
@@ -457,6 +519,12 @@ class GeometryPhysicsPlanner:
             if best is not None:
                 candidates = [best]
             status = f"{status}:{self.target_shot_planner.last_status}"
+        candidates = self.route_topology.select(
+            candidates,
+            ts_cam_ns=state.ts_cam_ns,
+            shot_mode="target",
+        )
+        best = candidates[0] if candidates else None
         return ShotPlan(
             plan_id=f"plan_{state.frame_id}_{wall_time_id()}",
             frame_id=state.frame_id,
@@ -659,7 +727,9 @@ class GeometryPhysicsPlanner:
         for ball in balls:
             if ball.track_id in ignore:
                 continue
-            d = point_segment_distance(ball.center_mm, a, b)
+            # Geometry can be smoothed for a coherent aim line, but collision
+            # safety always evaluates the current measured blocker position.
+            d = point_segment_distance(ball.clearance_center_mm, a, b)
             clearance = d - ball.radius_mm - moving_radius
             min_clearance = min(min_clearance, float(clearance))
         return min_clearance if np.isfinite(min_clearance) else 9999.0

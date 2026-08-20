@@ -155,6 +155,23 @@ planner:
   cue_path_margin_mm: 3.0
   object_path_margin_mm: 3.0
   collision_padding_mm: 2.0
+  # 连续路线稳定：只滤规划球心，每帧仍完整重算路线；运动时不隐藏、不冻结旧坐标。
+  route_stability_enabled: true
+  route_stability_stationary_tau_ms: 3000.0
+  route_stability_motion_tau_ms: 60.0
+  route_stability_quiet_speed_mm_s: 12.0
+  route_stability_fast_speed_mm_s: 160.0
+  route_stability_deadband_mm: 2.5
+  route_stability_micro_gain: 0.08
+  route_stability_response_distance_mm: 7.0
+  route_stability_reset_distance_mm: 80.0
+  route_stability_reset_gap_ms: 500.0
+  route_stability_prediction_ms: 70.0
+  route_stability_prediction_max_mm: 12.0
+  route_topology_continuity_enabled: true
+  route_topology_switch_confirm_ms: 220.0
+  route_topology_switch_score_delta: 0.18
+  # 以下 route_freeze_* 仅用于读取旧设置，运行时不再冻结整条路线。
   route_freeze_enabled: false
   route_freeze_enter_frames: 2
   route_freeze_release_frames: 8

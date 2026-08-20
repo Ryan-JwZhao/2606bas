@@ -76,7 +76,6 @@ from ..projection.star_formula import StarFormulaConfig
 from ..projection.window import ProjectionWindow
 from ..recording_fps import RecordingFpsEstimator
 from ..remote_control import RemoteCommand, RemoteCommandQueue, is_stale_transient_command
-from ..route_freeze import MotionRouteFreezeController
 from ..route_geometry import cue_alignment_start, rule_cue_separation_end
 from ..schemas import MatchPhase, OverlayCircle, OverlayLine, ProjectionOverlay, to_jsonable
 from ..tracking.confirmation import confirmed_tracks
@@ -408,22 +407,46 @@ class SettingsDialog(QtWidgets.QDialog):
         training_prompt_grid.addWidget(training_prompt_note, 2, 2, 1, 2)
         self.training_prompt_enabled.toggled.connect(self._sync_training_prompt_inputs)
         self._sync_training_prompt_inputs()
-        self.route_freeze_enabled = QtWidgets.QCheckBox("运动时冻结路线")
-        self.route_freeze_enabled.setChecked(bool(config.planner.route_freeze_enabled))
-        self.route_freeze_enter_frames = self._spin(int(config.planner.route_freeze_enter_frames), 1, 30)
-        self.route_freeze_release_frames = self._spin(int(config.planner.route_freeze_release_frames), 1, 90)
-        self.route_freeze_same_route_refresh_mm = self._dspin(float(config.planner.route_freeze_same_route_refresh_mm), 0.0, 120.0, 1.0)
-        self.route_freeze_same_route_refresh_score_delta = self._dspin(
-            float(config.planner.route_freeze_same_route_refresh_score_delta),
-            0.0,
-            2.0,
-            0.01,
+        self.route_stability_enabled = QtWidgets.QCheckBox("启用连续路线稳定（运动中仍逐帧重算）")
+        self.route_stability_enabled.setChecked(bool(config.planner.route_stability_enabled))
+        self.route_topology_continuity_enabled = QtWidgets.QCheckBox("保持当前有效的目标球/袋口/碰库拓扑")
+        self.route_topology_continuity_enabled.setChecked(bool(config.planner.route_topology_continuity_enabled))
+        self.route_stability_stationary_tau_seconds = self._dspin(
+            float(config.planner.route_stability_stationary_tau_ms) / 1000.0,
+            0.05,
+            10.0,
+            0.1,
             decimals=2,
         )
-        self.route_freeze_switch_confirm_frames = self._spin(int(config.planner.route_freeze_switch_confirm_frames), 1, 30)
-        self.route_freeze_switch_min_distance_mm = self._dspin(float(config.planner.route_freeze_switch_min_distance_mm), 0.0, 240.0, 1.0)
-        self.route_freeze_switch_min_score_delta = self._dspin(
-            float(config.planner.route_freeze_switch_min_score_delta),
+        self.route_stability_motion_tau_ms = self._dspin(
+            float(config.planner.route_stability_motion_tau_ms),
+            5.0,
+            500.0,
+            5.0,
+            decimals=1,
+        )
+        self.route_stability_quiet_speed = self._dspin(
+            float(config.planner.route_stability_quiet_speed_mm_s),
+            0.0,
+            120.0,
+            1.0,
+        )
+        self.route_stability_deadband = self._dspin(
+            float(config.planner.route_stability_deadband_mm),
+            0.0,
+            20.0,
+            0.25,
+            decimals=2,
+        )
+        self.route_topology_switch_confirm_seconds = self._dspin(
+            float(config.planner.route_topology_switch_confirm_ms) / 1000.0,
+            0.0,
+            2.0,
+            0.05,
+            decimals=2,
+        )
+        self.route_topology_switch_score_delta = self._dspin(
+            float(config.planner.route_topology_switch_score_delta),
             0.0,
             2.0,
             0.01,
@@ -478,29 +501,39 @@ class SettingsDialog(QtWidgets.QDialog):
             0.05,
             decimals=2,
         )
-        route_freeze_box = QtWidgets.QGroupBox("路线防闪烁")
-        route_freeze_grid = QtWidgets.QGridLayout(route_freeze_box)
-        route_freeze_grid.addWidget(self.route_freeze_enabled, 0, 0, 1, 4)
-        self._grid_pair(route_freeze_grid, 1, "进入冻结连续帧", self.route_freeze_enter_frames, "解冻连续稳定帧", self.route_freeze_release_frames)
+        route_stability_box = QtWidgets.QGroupBox("连续路线稳定")
+        route_stability_grid = QtWidgets.QGridLayout(route_stability_box)
+        route_stability_grid.addWidget(self.route_stability_enabled, 0, 0, 1, 4)
+        route_stability_grid.addWidget(self.route_topology_continuity_enabled, 1, 0, 1, 4)
         self._grid_pair(
-            route_freeze_grid,
+            route_stability_grid,
             2,
-            "同路线刷新位移(mm)",
-            self.route_freeze_same_route_refresh_mm,
-            "同路线刷新分差",
-            self.route_freeze_same_route_refresh_score_delta,
+            "静止时间常数(s)",
+            self.route_stability_stationary_tau_seconds,
+            "运动时间常数(ms)",
+            self.route_stability_motion_tau_ms,
         )
         self._grid_pair(
-            route_freeze_grid,
+            route_stability_grid,
             3,
-            "切换确认连续帧",
-            self.route_freeze_switch_confirm_frames,
-            "切换最小位移(mm)",
-            self.route_freeze_switch_min_distance_mm,
+            "静止速度阈值(mm/s)",
+            self.route_stability_quiet_speed,
+            "静止软区(mm)",
+            self.route_stability_deadband,
         )
-        route_freeze_grid.addWidget(QtWidgets.QLabel("切换最小分差"), 4, 0)
-        route_freeze_grid.addWidget(self.route_freeze_switch_min_score_delta, 4, 1)
-        route_freeze_grid.addWidget(QtWidgets.QLabel("建议先从进入冻结 2、解冻 8、同路线 12mm、切换确认 3 开始调。"), 4, 2, 1, 2)
+        self._grid_pair(
+            route_stability_grid,
+            4,
+            "拓扑切换确认(s)",
+            self.route_topology_switch_confirm_seconds,
+            "拓扑切换最小分差",
+            self.route_topology_switch_score_delta,
+        )
+        route_stability_note = QtWidgets.QLabel(
+            "这里只稳定规划球心并锁定目标/袋口语义；每帧都会重新计算路线和净空，不会冻结旧坐标。"
+        )
+        route_stability_note.setWordWrap(True)
+        route_stability_grid.addWidget(route_stability_note, 5, 0, 1, 4)
         cue_sector_box = QtWidgets.QGroupBox("球杆矩形走廊纠正")
         cue_sector_grid = QtWidgets.QGridLayout(cue_sector_box)
         cue_sector_grid.addWidget(self.cue_sector_enabled, 0, 0, 1, 4)
@@ -622,7 +655,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 ("训练中文提示", training_prompt_box),
             ],
         )
-        self._add_widget_tab(tabs, "路线策略", [target_shot_box, target_lock_box, route_freeze_box, cue_sector_box])
+        self._add_widget_tab(tabs, "路线策略", [target_shot_box, target_lock_box, route_stability_box, cue_sector_box])
         self._add_form_tab(
             tabs,
             "学习数据",
@@ -853,14 +886,15 @@ class SettingsDialog(QtWidgets.QDialog):
         config.projection.training_prompt_x_pct = float(self.training_prompt_x_pct.value())
         config.projection.training_prompt_y_pct = float(self.training_prompt_y_pct.value())
         config.projection.training_prompt_font_size_px = int(self.training_prompt_font_size.value())
-        config.planner.route_freeze_enabled = self.route_freeze_enabled.isChecked()
-        config.planner.route_freeze_enter_frames = int(self.route_freeze_enter_frames.value())
-        config.planner.route_freeze_release_frames = int(self.route_freeze_release_frames.value())
-        config.planner.route_freeze_same_route_refresh_mm = float(self.route_freeze_same_route_refresh_mm.value())
-        config.planner.route_freeze_same_route_refresh_score_delta = float(self.route_freeze_same_route_refresh_score_delta.value())
-        config.planner.route_freeze_switch_confirm_frames = int(self.route_freeze_switch_confirm_frames.value())
-        config.planner.route_freeze_switch_min_distance_mm = float(self.route_freeze_switch_min_distance_mm.value())
-        config.planner.route_freeze_switch_min_score_delta = float(self.route_freeze_switch_min_score_delta.value())
+        config.planner.route_stability_enabled = self.route_stability_enabled.isChecked()
+        config.planner.route_topology_continuity_enabled = self.route_topology_continuity_enabled.isChecked()
+        config.planner.route_stability_stationary_tau_ms = float(self.route_stability_stationary_tau_seconds.value()) * 1000.0
+        config.planner.route_stability_motion_tau_ms = float(self.route_stability_motion_tau_ms.value())
+        config.planner.route_stability_quiet_speed_mm_s = float(self.route_stability_quiet_speed.value())
+        config.planner.route_stability_deadband_mm = float(self.route_stability_deadband.value())
+        config.planner.route_topology_switch_confirm_ms = float(self.route_topology_switch_confirm_seconds.value()) * 1000.0
+        config.planner.route_topology_switch_score_delta = float(self.route_topology_switch_score_delta.value())
+        config.planner.route_freeze_enabled = False
         config.planner.cue_sector_correction_enabled = self.cue_sector_enabled.isChecked()
         config.planner.cue_sector_corridor_width_px = float(self.cue_sector_corridor_width.value())
         config.planner.cue_sector_switch_confirm_frames = int(self.cue_sector_switch_confirm_frames.value())
@@ -1508,14 +1542,12 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             auto_pocket_animation_enabled=bool(self.config.projection.auto_pocket_animation_enabled),
             auto_victory_animation_enabled=bool(self.config.projection.auto_victory_animation_enabled),
         )
-        self._preview_route_geometry = DisplayGeometryStabilizer()
         self._preview_ball_center_geometry = DisplayGeometryStabilizer()
         self._preview_ball_shape_geometry = DisplayGeometryStabilizer(
             deadband_px=DISPLAY_SHAPE_DEADBAND_PX
         )
         self._preview_text_values = DisplayGeometryStabilizer(deadband_px=0.05)
         self.control_state = RuntimeControlState()
-        self._route_freeze = MotionRouteFreezeController(self.config.planner)
         self._recording_fps_estimator = RecordingFpsEstimator()
         self._pending_turn_target_group: Optional[str] = None
         self._pending_match_runtime_state: Optional[dict[str, object]] = None
@@ -2421,6 +2453,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.pipeline.calibration = calibration
             self.pipeline.planner.calibration = calibration
             self.pipeline.planner.target_shot_planner.calibration = calibration
+            self.pipeline.planner.reset_temporal_state()
             self.pipeline.overlay_builder.calibration = calibration
             self.pipeline.training_overlay_builder.calibration = calibration
             if self.last_output is not None:
@@ -2567,7 +2600,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.runtime_mode_combo.setCurrentIndex(max(0, self.runtime_mode_combo.findData(normalized)))
         self.runtime_mode_combo.blockSignals(False)
         self.control_state.clear_turn_overrides()
-        self._route_freeze.reset()
         self.last_output = None
         self._sync_mode_dependent_controls()
         self._refresh_training_controls()
@@ -2743,16 +2775,9 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._refresh_projection()
 
     def _apply_route_display_filters(self, out: PipelineOutput, *, force_raw: bool = False) -> PipelineOutput:
-        if out.training is not None:
-            self._route_freeze.reset()
-            return out
-        if force_raw:
-            decision = self._route_freeze.force(out.state, out.plan, out.overlay)
-        else:
-            decision = self._route_freeze.update(out.state, out.plan, out.overlay)
-        if decision.plan is out.plan and decision.overlay is out.overlay:
-            return out
-        return replace(out, plan=decision.plan, overlay=decision.overlay)
+        # Plan and overlay are already an atomic current-frame snapshot.  Do not
+        # replace them with coordinates retained from a previous frame.
+        return out
 
     def _toggle_turn_target_group(self, *, source: str) -> bool:
         current_group = self._current_turn_target_group()
@@ -3342,7 +3367,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
                 raw_plan=raw_out.plan,
                 display_plan=display_out.plan,
                 state_debug=self.pipeline.state_machine.debug_snapshot(),
-                route_status_text=self._route_freeze.last_status_text,
+                route_status_text=getattr(self.pipeline.planner, "last_stability_status", "continuous"),
             )
         except Exception as exc:
             self._append_log(f"深入调试写入失败，已自动停止: {exc}")
@@ -3574,12 +3599,12 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         for circle_index, point in enumerate(route_circle_points):
             cam = self._table_mm_to_camera_px([point])
             if cam.shape[0] >= 1:
-                shown_center = self._stabilize_preview_route_geometry(
+                shown_center = self._current_preview_route_geometry(
                     f"route.circle.{circle_index}.center",
                     cam[0],
                 )
                 point_radius_px = max(6.0, self._camera_radius_px(point, radius_mm))
-                shown_radius = self._stabilize_preview_route_geometry(
+                shown_radius = self._current_preview_route_geometry(
                     f"route.circle.{circle_index}.radius",
                     np.asarray([point_radius_px], dtype=np.float32),
                 )
@@ -3592,8 +3617,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
                 )
         pocket_px = self._table_mm_to_camera_px([pocket])
         if pocket_px.shape[0] >= 1:
-            shown_center = self._stabilize_preview_route_geometry("route.pocket.center", pocket_px[0])
-            shown_radius = self._stabilize_preview_route_geometry(
+            shown_center = self._current_preview_route_geometry("route.pocket.center", pocket_px[0])
+            shown_radius = self._current_preview_route_geometry(
                 "route.pocket.radius",
                 np.asarray([max(6.0, radius_px * 0.5)], dtype=np.float32),
             )
@@ -3628,7 +3653,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if points is None:
             return
         if stability_key:
-            points = self._stabilize_preview_route_geometry(stability_key, points)
+            points = self._current_preview_route_geometry(stability_key, points)
         draw_subpixel_line(image, points[0], points[1], color, max(1, int(thickness)))
 
     def _draw_dashed_segment_trimmed(
@@ -3649,7 +3674,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if points is None:
             return
         if stability_key:
-            points = self._stabilize_preview_route_geometry(stability_key, points)
+            points = self._current_preview_route_geometry(stability_key, points)
         start = points[0]
         end = points[1]
         v = end - start
@@ -3667,12 +3692,9 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
                 draw_subpixel_line(image, p1, p2, color, max(1, int(thickness)))
             drawn += step
 
-    def _stabilize_preview_route_geometry(self, key: str, values) -> np.ndarray:
-        stabilizer = self.__dict__.get("_preview_route_geometry")
+    def _current_preview_route_geometry(self, _key: str, values) -> np.ndarray:
         source = np.asarray(values, dtype=np.float32)
-        if stabilizer is None:
-            return source.copy()
-        return stabilizer.stabilize(key, source)
+        return source.copy()
 
     def _trimmed_camera_segment(
         self,
@@ -3876,8 +3898,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             plan_detail = f"rule / {len(out.plan.candidates)} candidates / {ranker_version}"
             if out.plan.locked_target_id is not None:
                 plan_detail += f" / lock #{out.plan.locked_target_id} {out.plan.target_lock_status}"
-        if self.config.planner.route_freeze_enabled:
-            plan_detail += f" / freeze {self._route_freeze.last_status_text}"
+        if bool(getattr(self.config.planner, "route_stability_enabled", True)):
+            plan_detail += f" / continuous {getattr(self.pipeline.planner, 'last_stability_status', 'on')}"
         self._set_module_status("规划", "运行中" if self.config.planner.enabled else "关闭", plan_detail)
         if self.pipeline.recorder is not None:
             self._set_module_status("回放", "记录中", self.pipeline.recorder.session_id)
@@ -4085,9 +4107,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             return
         self.last_output = None
         self._last_preview_update_ts = 0.0
-        self._route_freeze.reset()
         self._projection_interaction.reset_display_geometry()
-        self._preview_route_geometry.reset()
         self._preview_ball_center_geometry.reset()
         self._preview_ball_shape_geometry.reset()
         self._preview_text_values.reset()
@@ -4142,9 +4162,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._recording_fps_estimator.reset()
         self._instant_replay = InstantReplayBuffer(self.config.instant_replay)
         self._instant_replay_start_failed = False
-        self._route_freeze.reset()
         self._projection_interaction.reset_display_geometry()
-        self._preview_route_geometry.reset()
         self._preview_ball_center_geometry.reset()
         self._preview_ball_shape_geometry.reset()
         self._preview_text_values.reset()
@@ -4184,9 +4202,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._stop_instant_replay()
         self._instant_replay_start_failed = False
         self._stop_all_media_recordings()
-        self._route_freeze.reset()
         self._projection_interaction.reset_display_geometry()
-        self._preview_route_geometry.reset()
         self._preview_ball_center_geometry.reset()
         self._preview_ball_shape_geometry.reset()
         self._preview_text_values.reset()
@@ -4215,7 +4231,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
         dialog.apply_to_config(self.config)
-        self._route_freeze.reset()
+        if self.pipeline is not None:
+            self.pipeline.planner.reset_temporal_state()
         self.star_formula = dialog.star_formula_config()
         self._sync_controls_from_config()
         self._save_user_settings()

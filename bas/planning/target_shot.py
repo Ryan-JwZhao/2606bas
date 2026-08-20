@@ -49,6 +49,7 @@ class _Route:
     ghost: np.ndarray
     object_points: list[np.ndarray]
     rebounds: int
+    rails: tuple[str, ...]
     cue_distance_mm: float
     object_distance_mm: float
     cut_angle_deg: float
@@ -449,6 +450,7 @@ class TargetShotPlanner:
             ghost=ghost.astype(np.float32),
             object_points=[point.astype(np.float32) for point in object_points],
             rebounds=len(rails),
+            rails=tuple(str(rail) for rail in rails),
             cue_distance_mm=cue_distance,
             object_distance_mm=object_distance,
             cut_angle_deg=float(cut),
@@ -601,7 +603,10 @@ class TargetShotPlanner:
         for ball in balls:
             if int(getattr(ball, "track_id")) in ignore:
                 continue
-            center = np.asarray(getattr(ball, "center_mm"), dtype=np.float32).reshape((2,))
+            center = np.asarray(
+                getattr(ball, "clearance_center_mm", getattr(ball, "center_mm")),
+                dtype=np.float32,
+            ).reshape((2,))
             d = point_segment_distance(center, a, b)
             radius = float(max(1.0, getattr(ball, "radius_mm", 0.5 * self.calibration.table.ball_diameter_mm)))
             min_clearance = min(min_clearance, float(d - radius - moving_radius))
@@ -631,6 +636,7 @@ class TargetShotPlanner:
             "target_shot_route_version": self.version,
             "target_shot_status": decision.status,
             "target_shot_rebounds": int(route.rebounds),
+            "target_shot_rails": list(route.rails),
             "target_shot_clearance_mm": float(route.clearance_mm),
             "pocket_entry_angle_deg": float(route.pocket_entry_angle_deg),
             "pocket_jaw_clearance_mm": float(route.pocket_jaw_clearance_mm),

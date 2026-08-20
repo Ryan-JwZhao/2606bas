@@ -372,6 +372,7 @@ class RuntimePipeline:
         self.config.training.operating_mode = normalized
         self.tracker = self.training_tracker if normalized == TRAINING_MODE else self.rule_tracker
         self.tracker.reset()
+        self.planner.reset_temporal_state()
         self._last_tracks = None
         self._last_state = None
         self._last_plan = None
@@ -429,9 +430,7 @@ class RuntimePipeline:
         if callable(reset_state):
             reset_state()
         self.training_session.reset()
-        self.planner.target_lock.reset()
-        self.planner.target_shot_mode.reset()
-        self.planner.cue_sector.reset()
+        self.planner.reset_temporal_state()
         self._last_tracks = None
         self._last_state = None
         self._last_plan = None

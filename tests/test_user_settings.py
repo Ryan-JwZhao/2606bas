@@ -259,6 +259,30 @@ def test_user_settings_applies_route_freeze_parameters(tmp_path) -> None:
     assert cfg.planner.route_freeze_switch_min_score_delta == 0.27
 
 
+def test_user_settings_round_trips_continuous_route_stability_parameters(tmp_path) -> None:
+    cfg = AppConfig()
+    cfg.planner.route_stability_enabled = True
+    cfg.planner.route_stability_stationary_tau_ms = 2400.0
+    cfg.planner.route_stability_motion_tau_ms = 55.0
+    cfg.planner.route_stability_quiet_speed_mm_s = 11.0
+    cfg.planner.route_stability_deadband_mm = 2.25
+    cfg.planner.route_topology_switch_confirm_ms = 180.0
+    cfg.planner.route_topology_switch_score_delta = 0.21
+    path = tmp_path / "user_settings.json"
+
+    UserSettings.from_config(cfg).save(path)
+    restored = AppConfig()
+    UserSettings.load(path).apply_to_config(restored)
+
+    assert restored.planner.route_stability_enabled is True
+    assert restored.planner.route_stability_stationary_tau_ms == 2400.0
+    assert restored.planner.route_stability_motion_tau_ms == 55.0
+    assert restored.planner.route_stability_quiet_speed_mm_s == 11.0
+    assert restored.planner.route_stability_deadband_mm == 2.25
+    assert restored.planner.route_topology_switch_confirm_ms == 180.0
+    assert restored.planner.route_topology_switch_score_delta == 0.21
+
+
 def test_user_settings_applies_cue_sector_correction_parameters(tmp_path) -> None:
     path = tmp_path / "user_settings.json"
     path.write_text(

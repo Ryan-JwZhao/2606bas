@@ -207,6 +207,25 @@ class PlannerConfig:
     cue_path_margin_mm: float = 4.0
     object_path_margin_mm: float = 4.0
     collision_padding_mm: float = 2.0
+    # Continuous route stability operates on planning-only ball centres.  It
+    # never suppresses planning or reuses coordinates from an older frame.
+    route_stability_enabled: bool = True
+    route_stability_stationary_tau_ms: float = 3000.0
+    route_stability_motion_tau_ms: float = 60.0
+    route_stability_quiet_speed_mm_s: float = 12.0
+    route_stability_fast_speed_mm_s: float = 160.0
+    route_stability_deadband_mm: float = 2.5
+    route_stability_micro_gain: float = 0.08
+    route_stability_response_distance_mm: float = 7.0
+    route_stability_reset_distance_mm: float = 80.0
+    route_stability_reset_gap_ms: float = 500.0
+    route_stability_prediction_ms: float = 70.0
+    route_stability_prediction_max_mm: float = 12.0
+    route_topology_continuity_enabled: bool = True
+    route_topology_switch_confirm_ms: float = 220.0
+    route_topology_switch_score_delta: float = 0.18
+    # Legacy display-snapshot settings are still accepted when loading old
+    # user settings, but the runtime no longer applies whole-route freezing.
     route_freeze_enabled: bool = False
     route_freeze_enter_frames: int = 2
     route_freeze_release_frames: int = 8

@@ -82,7 +82,7 @@ def test_projection_overlay_stability_is_presentation_only() -> None:
     assert shown_jittered.circles[0].center == shown_first.circles[0].center
 
 
-def test_projection_controller_removes_stationary_route_flash_without_route_freeze(tmp_path) -> None:
+def test_projection_controller_renders_current_frame_geometry_without_endpoint_history(tmp_path) -> None:
     controller = ProjectionInteractionController(asset_root=tmp_path, time_source=lambda: 0.0)
     first = _overlay(1, aim_end_y=665.49, cue_x=1121.49)
     jittered = _overlay(2, aim_end_y=665.53, cue_x=1121.55)
@@ -99,7 +99,7 @@ def test_projection_controller_removes_stationary_route_flash_without_route_free
     jittered_image = controller.compose_frame(jittered, star_formula=star)
     moved_image = controller.compose_frame(moved, star_formula=star)
 
-    assert np.array_equal(jittered_image, first_image)
+    assert not np.array_equal(jittered_image, first_image)
     assert not np.array_equal(moved_image, first_image)
 
 
@@ -112,4 +112,3 @@ def test_projection_renderer_uses_subpixel_rasterization_instead_of_integer_flip
     diff = cv2.absdiff(first_image, jittered_image)
 
     assert int(np.count_nonzero(diff >= 32)) < 300
-

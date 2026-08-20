@@ -22,10 +22,8 @@ from ..display_geometry import (
     DISPLAY_SHAPE_DEADBAND_PX,
     DisplayGeometryStabilizer,
     draw_subpixel_circle,
-    stabilize_projection_overlay,
 )
 from ..projection.overlay import render_overlay_image
-from ..route_freeze import MotionRouteFreezeController
 from ..runtime_env import prepare_runtime_environment, preload_torch_for_backend
 from ..schemas import Detection, DetectionsFrame
 from ..tracking.confirmation import confirmed_tracks
@@ -271,10 +269,9 @@ def _route_signature(out: PipelineOutput) -> tuple[Any, ...]:
     )
 
 
-def _primitive_image(out: PipelineOutput, stabilizer: DisplayGeometryStabilizer) -> np.ndarray:
+def _primitive_image(out: PipelineOutput) -> np.ndarray:
     primitive_overlay = replace(out.overlay, labels=[], texts=[], suppress_star_formula=True)
-    shown = stabilize_projection_overlay(primitive_overlay, stabilizer)
-    image = render_overlay_image(shown)
+    image = render_overlay_image(primitive_overlay)
     return np.max(image, axis=2).astype(np.uint8, copy=False)
 
 
@@ -638,8 +635,6 @@ def diagnose_video(
 
         pipeline.pocket_observer.update = observer_update  # type: ignore[method-assign]
 
-        route_freeze = MotionRouteFreezeController(cfg.planner)
-        projection_stabilizer = DisplayGeometryStabilizer()
         preview_center_stabilizer = DisplayGeometryStabilizer()
         preview_shape_stabilizer = DisplayGeometryStabilizer(deadband_px=DISPLAY_SHAPE_DEADBAND_PX)
 
@@ -687,10 +682,7 @@ def diagnose_video(
             raw_out.frame.exposure_meta["diagnostic_source_frame"] = current_source_frame
             if cache_writer is not None:
                 cache_writer.write(current_source_frame, raw_out.detections)
-            decision = route_freeze.update(raw_out.state, raw_out.plan, raw_out.overlay)
             out = raw_out
-            if decision.plan is not raw_out.plan or decision.overlay is not raw_out.overlay:
-                out = replace(raw_out, plan=decision.plan, overlay=decision.overlay)
             if report_geometry is None:
                 report_geometry = _static_geometry_report(pipeline)
 
@@ -714,7 +706,7 @@ def diagnose_video(
             pixel_detectors["preview_ball_circle_pixels"].push(current_source_frame, circle_image, stable=stable)
             pixel_detectors["projection_route_pixels"].push(
                 current_source_frame,
-                _primitive_image(out, projection_stabilizer),
+                _primitive_image(out),
                 stable=stable,
             )
 
@@ -864,7 +856,8 @@ def diagnose_video(
                 "detection_cache_read": str(Path(read_detections).resolve()) if read_detections is not None else None,
                 "detection_cache_written": str(Path(write_detections).resolve()) if write_detections is not None else None,
                 "state_engine": str(cfg.state.engine),
-                "route_freeze_enabled": bool(cfg.planner.route_freeze_enabled),
+                "route_stability_enabled": bool(cfg.planner.route_stability_enabled),
+                "route_topology_continuity_enabled": bool(cfg.planner.route_topology_continuity_enabled),
             },
             "flicker": {
                 "semantic_failures": semantic_failures,
