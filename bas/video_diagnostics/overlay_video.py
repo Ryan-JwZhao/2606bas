@@ -452,6 +452,7 @@ def _timeline_row(pipeline: RuntimePipeline, out: PipelineOutput, source_frame: 
         "time_s": float(source_frame / fps),
         "phase": str(out.state.phase),
         "turn_target_group": out.state.turn_target_group,
+        "break_shot_pending": bool(getattr(out.state, "break_shot_pending", False)),
         "state_debug": _json_value(
             {
                 key: debug_snapshot.get(key)
@@ -462,6 +463,7 @@ def _timeline_row(pipeline: RuntimePipeline, out: PipelineOutput, source_frame: 
                     "visible_counts",
                     "target_resolution",
                     "raw_turn_target_group",
+                    "break_lifecycle",
                 )
                 if key in debug_snapshot
             }
@@ -543,12 +545,28 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _normalize_target_group_override(target_group: str | None) -> str | None:
+    if target_group is None:
+        return None
+    group = str(target_group).strip().lower()
+    if group not in {"solid", "stripe", "black"}:
+        raise ValueError("target_group must be solid, stripe, black, or None")
+    return group
+
+
+def _apply_target_group_override(state_machine: Any, target_group: str | None) -> bool:
+    if target_group is None:
+        return False
+    state_machine.set_turn_target_group(target_group, reason="diagnostic_video_replay")
+    return True
+
+
 def diagnose_video(
     video_path: str | Path,
     *,
     config_path: str | Path = "configs/default.yaml",
     output_path: str | Path | None = None,
-    target_group: str = "solid",
+    target_group: str | None = None,
     start_frame: int = 0,
     max_frames: int = 0,
     progress_every: int = 250,
@@ -565,9 +583,7 @@ def diagnose_video(
     if fps <= 0.0:
         raise RuntimeError(f"Video reports invalid FPS: {fps}")
 
-    group = str(target_group).strip().lower()
-    if group not in {"solid", "stripe", "black"}:
-        raise ValueError("target_group must be solid, stripe, or black")
+    group = _normalize_target_group_override(target_group)
 
     cfg = UserSettings.load().apply_to_config(AppConfig.load(config_path)).resolve_paths()
     configured_detector_backend = str(cfg.detector.backend)
@@ -608,7 +624,10 @@ def diagnose_video(
             cache_writer = _DetectionCacheWriter(Path(write_detections), video=video, fps=fps)
         if start_frame > 0:
             pipeline.seek_video(int(start_frame))
-        pipeline.state_machine.set_turn_target_group(group, reason="diagnostic_video_replay")
+        target_group_override_applied = _apply_target_group_override(
+            pipeline.state_machine,
+            group,
+        )
 
         original_observer_update = pipeline.pocket_observer.update
 
@@ -830,6 +849,9 @@ def diagnose_video(
             "simulation": {
                 "config_path": str(Path(config_path).resolve()),
                 "target_group": group,
+                "target_group_source": (
+                    "diagnostic_override" if target_group_override_applied else "state_machine"
+                ),
                 "start_frame": int(start_frame),
                 "max_frames": int(max_frames),
                 "processed_frames": int(processed),
@@ -881,8 +903,9 @@ def diagnose_video(
                 "judgment_event_count": int(sum(event_counts[name] for name in POCKET_EVENT_NAMES)),
             },
         }
+        output_suffix = group if group is not None else "state"
         destination = Path(output_path) if output_path is not None else (
-            Path(".tmp") / "overlay_video_diagnosis" / f"{video.stem}_{group}.json"
+            Path(".tmp") / "overlay_video_diagnosis" / f"{video.stem}_{output_suffix}.json"
         )
         destination = destination.resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -919,7 +942,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video", type=Path, required=True, help="无画线 MP4 输入。")
     parser.add_argument("--config", type=Path, default=Path("configs/default.yaml"), help="基础 YAML 配置。")
     parser.add_argument("--output", type=Path, default=None, help="JSON 报告路径；默认写入 .tmp。")
-    parser.add_argument("--target-group", choices=("solid", "stripe", "black"), default="solid")
+    parser.add_argument(
+        "--target-group",
+        choices=("solid", "stripe", "black"),
+        default=None,
+        help="可选的诊断花色覆盖；默认不注入，完全使用状态机判断。",
+    )
     parser.add_argument("--start-frame", type=int, default=0)
     parser.add_argument("--max-frames", type=int, default=0, help="0 表示处理到视频结尾。")
     parser.add_argument("--progress-every", type=int, default=250)

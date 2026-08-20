@@ -18,6 +18,7 @@ PocketState = Literal[
 TableState = Literal["open", "closed"]
 BallInHandScope = Literal["none", "table_anywhere", "behind_head_string"]
 GameStatus = Literal["in_progress", "ended"]
+GameOutcome = Literal["in_progress", "legal_black_win", "illegal_black_loss"]
 
 GROUPS: tuple[Group, ...] = ("cue", "solid", "stripe", "black")
 OBJECT_GROUPS: tuple[ObjectGroup, ...] = ("solid", "stripe")
@@ -52,14 +53,19 @@ class ShotContext:
     break_shot: bool = False
     table_state_before: TableState = "open"
     actor_group: Optional[ObjectGroup] = None
+    legal_first_group: Optional[TargetGroup] = None
+    shot_started: bool = False
     first_contact_group: Optional[Group] = None
     first_contact_confidence: float = 0.0
+    first_contact_ts_ns: Optional[int] = None
     potted_confirmed: dict[Group, int] = field(default_factory=empty_group_counts)
     off_table_confirmed: dict[Group, int] = field(default_factory=empty_group_counts)
     committed_pockets: list[dict[str, object]] = field(default_factory=list)
     tentative_pockets: list[dict[str, object]] = field(default_factory=list)
     rejected_pockets: list[dict[str, object]] = field(default_factory=list)
     rail_contact_seen: bool = False
+    rail_contact_after_first_seen: bool = False
+    rail_contact_track_ids: set[int] = field(default_factory=set)
     cue_scratch_candidate: bool = False
     wrong_first_contact_candidate: bool = False
     reasons: list[str] = field(default_factory=list)
@@ -103,10 +109,13 @@ class MatchRuleState:
     opponent_group: Optional[ObjectGroup] = None
     shot_number: int = 0
     game_status: GameStatus = "in_progress"
+    game_outcome: GameOutcome = "in_progress"
+    winner_group: Optional[ObjectGroup] = None
+    active_shot_is_break: bool = False
 
     @property
     def break_shot(self) -> bool:
-        return self.shot_number == 0
+        return bool(self.active_shot_is_break)
 
     def reset(self) -> None:
         self.table_state = "open"
@@ -114,6 +123,9 @@ class MatchRuleState:
         self.opponent_group = None
         self.shot_number = 0
         self.game_status = "in_progress"
+        self.game_outcome = "in_progress"
+        self.winner_group = None
+        self.active_shot_is_break = False
 
 
 @dataclass
@@ -126,6 +138,8 @@ class RefereeIntent:
     ball_in_hand_scope: BallInHandScope
     foul_flags: dict[str, bool]
     game_status: GameStatus = "in_progress"
+    game_outcome: GameOutcome = "in_progress"
+    winner_group: Optional[ObjectGroup] = None
     reasons: list[str] = field(default_factory=list)
 
     def to_payload(self) -> dict[str, object]:
@@ -138,6 +152,8 @@ class RefereeIntent:
             "ball_in_hand_scope": self.ball_in_hand_scope,
             "foul_flags": dict(self.foul_flags),
             "game_status": self.game_status,
+            "game_outcome": self.game_outcome,
+            "winner_group": self.winner_group,
             "reasons": list(self.reasons),
         }
 

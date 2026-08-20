@@ -110,3 +110,19 @@ def test_secondary_correction_does_not_update_after_wrong_first_hit() -> None:
     assert second is None
     assert state_machine.calls == []
     assert controller.pending is None
+
+
+def test_secondary_correction_does_not_arm_while_break_is_pending() -> None:
+    controller = SecondaryCorrectionController(PlannerConfig())
+    plan = ShotPlan(plan_id="p", frame_id=1, ts_cam_ns=1, best=_candidate(), candidates=[_candidate()])
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        break_shot_pending=True,
+    )
+
+    controller.arm_from_plan(state, plan)
+
+    assert controller.pending is None
+    assert controller.last_status == "break_pending"

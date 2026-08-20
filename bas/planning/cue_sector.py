@@ -540,7 +540,7 @@ class CueSectorCorrection:
         selected: Sequence[ShotCandidate],
         policy: str,
     ) -> list[ShotCandidate]:
-        requires_confirmation = policy == "opponent_confirmation"
+        requires_confirmation = policy in {"opponent_confirmation", "open_table"}
         confirmation_target_id = int(selected[0].target_track_id) if requires_confirmation else None
         confirmation_target_group = str(selected[0].target_group) if requires_confirmation else None
         self.last_status = policy

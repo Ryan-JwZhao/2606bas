@@ -38,6 +38,10 @@ class SecondaryCorrectionController:
             self.reset()
             self.last_status = "disabled"
             return
+        if bool(getattr(state, "break_shot_pending", False)):
+            self.pending = None
+            self.last_status = "break_pending"
+            return
         phase = str(state.phase or "").strip().upper()
         if phase not in ARMING_PHASES:
             return

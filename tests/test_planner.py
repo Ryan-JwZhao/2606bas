@@ -458,6 +458,29 @@ def test_planner_excludes_black_on_open_table() -> None:
     assert all(candidate.target_group != "black" for candidate in plan.candidates)
 
 
+def test_open_table_cue_sector_candidate_requires_first_contact_confirmation() -> None:
+    planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20, cue_sector_switch_confirm_frames=1), _service())
+    state = MatchStateFrame(
+        frame_id=1,
+        ts_cam_ns=1,
+        phase="PRE_SHOT_ARMED",
+        turn_target_group=None,
+        layout=[
+            _obs(1, "cue", 120, 250),
+            _stick(9, 20, 240, 90, 260),
+            _obs(2, "solid", 620, 250),
+            _obs(3, "stripe", 620, 380),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert plan.best.explanation["cue_sector_policy"] == "open_table"
+    assert plan.best.explanation["cue_sector_requires_confirmation"] is True
+    assert plan.best.explanation["cue_sector_confirmation_target_group"] == "solid"
+
+
 def test_planner_uses_black_only_for_cleared_solid_turn() -> None:
     planner = GeometryPhysicsPlanner(PlannerConfig(top_k=20), _service())
     state = MatchStateFrame(

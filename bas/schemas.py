@@ -165,6 +165,7 @@ class MatchStateFrame:
     events: List[Event] = field(default_factory=list)
     layout: List[TrackObservation] = field(default_factory=list)
     turn_target_group: Optional[str] = None
+    break_shot_pending: bool = False
     confidence: float = 1.0
     state_version: str = "temporal_state_v1"
 

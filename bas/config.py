@@ -188,6 +188,14 @@ class StateConfig:
     shot_tip_radius_multiplier: float = 3.0
     shot_speed_jump_mm_s: float = 18.0
     shot_accel_mm_s2: float = 120.0
+    break_rack_min_object_balls: int = 10
+    break_rack_min_quality: float = 0.40
+    break_rack_cluster_radius_diameters: float = 3.8
+    break_rack_cluster_fraction: float = 0.80
+    break_rack_max_outlier_balls: int = 1
+    break_rack_stable_frames: int = 3
+    break_rack_foot_spot_x_tolerance: float = 0.20
+    break_rack_center_y_tolerance: float = 0.28
 
 
 @dataclass

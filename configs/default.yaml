@@ -136,6 +136,16 @@ state:
   observation_reconcile_min_quality: 0.45
   observation_reconcile_min_confidence: 0.35
   observation_reconcile_infer_missing_with_event: true
+  # 开球不再按“第 1 杆”猜测，而由开球前紧密球堆识别。位置只作为宽松先验：
+  # 同时允许球台两端脚点，并容许较大的摆放偏差；轻开球与重开球使用同一规则。
+  break_rack_min_object_balls: 10
+  break_rack_min_quality: 0.40
+  break_rack_cluster_radius_diameters: 3.8
+  break_rack_cluster_fraction: 0.80
+  break_rack_max_outlier_balls: 1
+  break_rack_stable_frames: 3
+  break_rack_foot_spot_x_tolerance: 0.20
+  break_rack_center_y_tolerance: 0.28
 
 planner:
   enabled: true

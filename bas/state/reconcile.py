@@ -5,7 +5,52 @@ from typing import Iterable
 
 from ..config import StateConfig
 from ..schemas import Event, TrackObservation, TracksFrame
-from .models import GROUPS, Group, InventoryLedger, empty_group_counts, normalize_group
+from .models import GROUPS, Group, InventoryLedger, ShotContext, empty_group_counts, normalize_group
+
+
+def finalized_shot_support_events(
+    shot_ctx: ShotContext,
+    *,
+    ts_cam_ns: int,
+    frame_id: int,
+) -> list[Event]:
+    """Build reconciliation support from this shot's terminal decisions only.
+
+    ``ShotContextAggregator`` has already removed any committed pocket whose
+    ``decision_id`` was later rejected.  Reconstructing from the finalized
+    context therefore prevents candidate, tentative, rejected, and previous-
+    shot events from leaking into the observation planning view.
+    """
+
+    events: list[Event] = []
+    for pocket in shot_ctx.committed_pockets:
+        payload = dict(pocket)
+        payload["shot_id"] = shot_ctx.shot_id
+        events.append(
+            Event(
+                "POCKET_CONFIRMED",
+                ts_cam_ns,
+                frame_id,
+                payload=payload,
+                confidence=1.0,
+            )
+        )
+    for group, count in shot_ctx.off_table_confirmed.items():
+        for index in range(max(0, int(count))):
+            events.append(
+                Event(
+                    "BALL_OFF_TABLE_CONFIRMED",
+                    ts_cam_ns,
+                    frame_id,
+                    payload={
+                        "group": group,
+                        "shot_id": shot_ctx.shot_id,
+                        "decision_id": f"off-table:{shot_ctx.shot_id}:{group}:{index}",
+                    },
+                    confidence=1.0,
+                )
+            )
+    return events
 
 
 @dataclass
@@ -176,22 +221,28 @@ class ObservationReconciler:
 
     @staticmethod
     def _supporting_event_groups(events: Iterable[Event]) -> set[Group]:
-        groups: set[Group] = set()
+        groups_without_decision: set[Group] = set()
+        decision_groups: dict[str, Group | None] = {}
         supporting_names = {
-            "POCKET_CANDIDATE",
-            "POCKET_TENTATIVE",
             "POCKET_COMMIT_READY",
             "POCKET_DETECTED",
             "POCKET_CONFIRMED",
-            "POCKET_REJECTED",
-            "BALL_LOST_UNCONFIRMED",
             "BALL_OFF_TABLE_CONFIRMED",
-            "POT_PROBABLE",
         }
         for event in events:
+            payload = event.payload or {}
+            decision_id = str(payload.get("decision_id") or "").strip()
+            if event.name == "POCKET_REJECTED":
+                if decision_id:
+                    decision_groups[decision_id] = None
+                continue
             if event.name not in supporting_names:
                 continue
-            group = normalize_group((event.payload or {}).get("group"))
-            if group is not None:
-                groups.add(group)
-        return groups
+            group = normalize_group(payload.get("group"))
+            if group is None:
+                continue
+            if decision_id:
+                decision_groups[decision_id] = group
+            else:
+                groups_without_decision.add(group)
+        return groups_without_decision | {group for group in decision_groups.values() if group is not None}

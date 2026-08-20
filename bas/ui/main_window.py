@@ -1518,6 +1518,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._route_freeze = MotionRouteFreezeController(self.config.planner)
         self._recording_fps_estimator = RecordingFpsEstimator()
         self._pending_turn_target_group: Optional[str] = None
+        self._pending_match_runtime_state: Optional[dict[str, object]] = None
         self._remote_command_queue = RemoteCommandQueue()
         self.web_control = WebControlServer()
         self._manual_web_target_id: Optional[int] = None
@@ -2508,7 +2509,18 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         return self._pending_turn_target_group
 
     def _apply_pending_turn_target_group(self) -> None:
-        if self.pipeline is None or self._pending_turn_target_group is None:
+        if self.pipeline is None:
+            return
+        restored = False
+        if self._pending_match_runtime_state is not None:
+            restore = getattr(self.pipeline.state_machine, "restore_runtime_state", None)
+            if callable(restore):
+                restored = bool(restore(self._pending_match_runtime_state))
+            self._pending_match_runtime_state = None
+        if restored:
+            self._pending_turn_target_group = self.pipeline.state_machine.turn_target_group
+            return
+        if self._pending_turn_target_group is None:
             return
         frame_id, ts_cam_ns = self._last_frame_marker()
         self.pipeline.state_machine.set_turn_target_group(
@@ -2761,6 +2773,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self._update_module_status(self.last_output)
             self._append_log(f"当前目标花色已切换为 {next_group} ({source})")
             return True
+        self._pending_match_runtime_state = None
         self._append_log(f"当前目标花色已预设为 {next_group}，开始采集后生效 ({source})")
         return True
 
@@ -3008,6 +3021,8 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
 
     @QtCore.pyqtSlot()
     def reset_state_machine(self) -> None:
+        self._pending_match_runtime_state = None
+        self._pending_turn_target_group = None
         sm = self._state_machine_or_none()
         if sm is None:
             return
@@ -4176,6 +4191,10 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._preview_ball_shape_geometry.reset()
         self._preview_text_values.reset()
         if self.pipeline is not None:
+            export_runtime_state = getattr(self.pipeline.state_machine, "export_runtime_state", None)
+            self._pending_match_runtime_state = (
+                export_runtime_state() if callable(export_runtime_state) else None
+            )
             self._pending_turn_target_group = self.pipeline.state_machine.turn_target_group
             try:
                 self.pipeline.close()

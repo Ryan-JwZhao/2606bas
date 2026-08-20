@@ -224,14 +224,16 @@ def test_referee_open_table_single_group_pot_assigns_groups() -> None:
     assert intent.next_group_hint == "solid"
 
 
-def test_modern_operator_force_turn_resolve_finalizes_context() -> None:
+def test_modern_operator_force_turn_resolve_ignores_empty_context() -> None:
     sm = ModernMatchStateMachine(StateConfig(engine="modern"))
     sm.force_phase(MatchPhase.TURN_RESOLVE, frame_id=10, ts_cam_ns=1_000_000_000)
 
     out = sm.update(TracksFrame(frame_id=10, ts_cam_ns=1_000_000_000, tracks=[_ball(1, "cue", 100, 100)]))
 
     assert out.phase == "TURN_RESOLVE"
-    assert any(event.name == "REFEREE_INTENT" for event in out.events)
+    assert any(event.name == "TURN_RESOLVE_IGNORED" for event in out.events)
+    assert not any(event.name == "REFEREE_INTENT" for event in out.events)
+    assert sm.rule_state.shot_number == 0
 
 
 def test_modern_defers_turn_resolve_until_pending_pocket_confirms() -> None:
@@ -317,6 +319,11 @@ def test_visible_pocket_candidate_is_resolved_before_turn_can_finish() -> None:
         ball_diameter_mm=56,
     )
     sm.phase = MatchPhase.SHOT_ACTIVE
+    sm.aggregator.ingest(
+        [Event("SHOT_STARTED", 900_000_000, 0)],
+        ts_ms=900,
+        rule_state=sm.rule_state,
+    )
 
     sm.update(TracksFrame(1, 1_000_000_000, [_ball(2, "solid", -50, -25)]))
     sm.force_phase(MatchPhase.TURN_RESOLVE, frame_id=2, ts_cam_ns=1_100_000_000)
@@ -767,7 +774,17 @@ def test_observation_reconciler_can_lower_count_with_event_support() -> None:
 
     reconciler.update_observation(TracksFrame(frame_id=1, ts_cam_ns=1, tracks=[]))
     reconciler.update_observation(TracksFrame(frame_id=2, ts_cam_ns=2, tracks=[]))
-    result = reconciler.reconcile(ledger, supporting_events=[Event("BALL_LOST_UNCONFIRMED", 2, 2, payload={"group": "solid"})])
+    result = reconciler.reconcile(
+        ledger,
+        supporting_events=[
+            Event(
+                "POCKET_CONFIRMED",
+                2,
+                2,
+                payload={"group": "solid", "decision_id": "confirmed:solid"},
+            )
+        ],
+    )
 
     assert result.effective_remaining["solid"] == 0
     assert ledger.remaining["solid"] == 2

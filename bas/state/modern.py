@@ -7,10 +7,11 @@ import numpy as np
 
 from ..config import StateConfig
 from ..schemas import Event, MatchPhase, MatchStateFrame, PocketVisualObservationFrame, TrackObservation, TracksFrame
+from .break_detection import BreakShotLifecycle
 from .models import InventoryLedger, MatchRuleState, RefereeIntent, ShotContext, normalize_object_group, other_object_group
 from .phase import PhaseSignals, ShotPhaseMachine
 from .pocket import PerBallPocketFSM
-from .reconcile import ObservationReconciler
+from .reconcile import ObservationReconciler, finalized_shot_support_events
 from .referee import RefereeAdapter, ShotContextAggregator, shot_context_payload
 from .targeting import TargetGroupResolution, resolve_turn_target_group
 
@@ -28,13 +29,13 @@ class ModernMatchStateMachine:
         self.rule_state = MatchRuleState()
         self.referee = RefereeAdapter()
         self.reconciler = ObservationReconciler(config)
+        self.break_lifecycle = BreakShotLifecycle(config)
         self._turn_target_group: Optional[str] = None
         self._snapshot_layout: List[TrackObservation] = []
         self._last_layout: List[TrackObservation] = []
         self._operator_hold = False
         self._operator_lock_frames = 0
         self._pending_operator_events: Deque[Event] = deque(maxlen=32)
-        self._recent_events: Deque[Event] = deque(maxlen=160)
         self._event_cooldowns: Dict[str, int] = {}
         self._last_debug_snapshot: Dict[str, object] = {}
         self._last_referee_payload: dict[str, object] = {}
@@ -46,6 +47,7 @@ class ModernMatchStateMachine:
         self._pockets_mm: list[tuple[float, float]] = []
         self._pocket_curves_mm: list[list[tuple[float, float]]] = []
         self._ball_diameter_mm = 57.15
+        self._previous_velocities: dict[int, tuple[float, float]] = {}
 
     @property
     def phase(self) -> MatchPhase:
@@ -71,18 +73,19 @@ class ModernMatchStateMachine:
         self.ledger.reset()
         self.rule_state.reset()
         self.reconciler.reset()
+        self.break_lifecycle.reset()
         self._turn_target_group = None
         self._snapshot_layout = []
         self._last_layout = []
         self._operator_hold = False
         self._operator_lock_frames = 0
         self._pending_operator_events.clear()
-        self._recent_events.clear()
         self._event_cooldowns.clear()
         self._last_debug_snapshot = {}
         self._last_referee_payload = {}
         self._last_shot_payload = {}
         self._pending_turn_resolve = None
+        self._previous_velocities = {}
 
     def set_table_context(
         self,
@@ -122,6 +125,10 @@ class ModernMatchStateMachine:
             pockets_mm=self._pockets_mm,
             ball_diameter_mm=self._ball_diameter_mm,
             pocket_curves_mm=self._pocket_curves_mm,
+        )
+        self.break_lifecycle.set_table_context(
+            inner_polygon_mm=self._table_inner_polygon_mm,
+            ball_diameter_mm=self._ball_diameter_mm,
         )
 
     def force_phase(self, phase: MatchPhase | str, *, frame_id: int = 0, ts_cam_ns: int = 0, reason: str = "operator") -> None:
@@ -193,6 +200,8 @@ class ModernMatchStateMachine:
             "opponent_group": self.rule_state.opponent_group,
             "shot_number": self.rule_state.shot_number,
             "game_status": self.rule_state.game_status,
+            "game_outcome": self.rule_state.game_outcome,
+            "winner_group": self.rule_state.winner_group,
         }
         snapshot["referee_intent"] = dict(self._last_referee_payload)
         snapshot["last_shot_context"] = dict(self._last_shot_payload)
@@ -200,7 +209,61 @@ class ModernMatchStateMachine:
         snapshot["pocket_geometry"] = self.pocket_fsm.geometry_diagnostics()
         snapshot["observation_reconcile"] = self.reconciler.event_payload(self.reconciler.last_result)
         snapshot["pending_turn_resolve"] = dict(self._pending_turn_resolve or {})
+        snapshot["break_lifecycle"] = self.break_lifecycle.debug_payload()
         return snapshot
+
+    def export_runtime_state(self) -> dict[str, object]:
+        """Export committed match state for an in-process capture restart."""
+
+        return {
+            "version": self.version,
+            "rule_state": {
+                "table_state": self.rule_state.table_state,
+                "actor_group": self.rule_state.actor_group,
+                "opponent_group": self.rule_state.opponent_group,
+                "shot_number": int(self.rule_state.shot_number),
+                "game_status": self.rule_state.game_status,
+                "game_outcome": self.rule_state.game_outcome,
+                "winner_group": self.rule_state.winner_group,
+            },
+            "ledger": {
+                "remaining": dict(self.ledger.remaining),
+                "removed_confirmed": dict(self.ledger.removed_confirmed),
+            },
+            "turn_target_group": self._normalized_turn_target_group(),
+            "break_lifecycle": self.break_lifecycle.snapshot(),
+        }
+
+    def restore_runtime_state(self, payload: object) -> bool:
+        """Restore committed state while discarding frame-local tracking evidence."""
+
+        if not isinstance(payload, dict) or str(payload.get("version") or "") != self.version:
+            return False
+        rule = dict(payload.get("rule_state") or {})
+        ledger = dict(payload.get("ledger") or {})
+        remaining = dict(ledger.get("remaining") or {})
+        removed = dict(ledger.get("removed_confirmed") or {})
+        self.reset()
+        self.rule_state.table_state = "closed" if str(rule.get("table_state")) == "closed" else "open"
+        self.rule_state.actor_group = normalize_object_group(rule.get("actor_group"))
+        self.rule_state.opponent_group = normalize_object_group(rule.get("opponent_group"))
+        self.rule_state.shot_number = max(0, int(rule.get("shot_number", 0)))
+        self.rule_state.game_status = "ended" if str(rule.get("game_status")) == "ended" else "in_progress"
+        outcome = str(rule.get("game_outcome") or "in_progress")
+        self.rule_state.game_outcome = (
+            outcome if outcome in {"in_progress", "legal_black_win", "illegal_black_loss"} else "in_progress"
+        )  # type: ignore[assignment]
+        self.rule_state.winner_group = normalize_object_group(rule.get("winner_group"))
+        self.rule_state.active_shot_is_break = False
+        for group in self.ledger.remaining:
+            if group in remaining:
+                self.ledger.remaining[group] = max(0, int(remaining[group]))
+            if group in removed:
+                self.ledger.removed_confirmed[group] = max(0, int(removed[group]))
+        target = str(payload.get("turn_target_group") or "").strip().lower()
+        self._turn_target_group = target if target in {"solid", "stripe", "black"} else None
+        self.break_lifecycle.restore(payload.get("break_lifecycle"))
+        return True
 
     def update(
         self,
@@ -212,8 +275,6 @@ class ModernMatchStateMachine:
         events: List[Event] = self._drain_operator_events(tracks_frame)
         if self._operator_hold:
             self.reconciler.update_observation(tracks_frame)
-            for event in events:
-                self._recent_events.append(event)
             layout = self._snapshot_layout if self._snapshot_layout else tracks
             state = self._state_frame(tracks_frame, events, layout, confidence=0.70, suffix="+operator_hold")
             self._last_debug_snapshot = self._build_debug_snapshot(
@@ -222,6 +283,7 @@ class ModernMatchStateMachine:
                 self._empty_signals(),
                 operator_hold_short_circuit=True,
             )
+            self._remember_motion(tracks)
             return state
 
         if self._operator_lock_frames > 0:
@@ -235,11 +297,10 @@ class ModernMatchStateMachine:
             )
             events.extend(pocket_events)
             ts_ms = self._ts_ms(tracks_frame.ts_cam_ns)
+            self._prepare_shot_context(events, ts_ms=ts_ms)
             self._annotate_shot_ids(pocket_events, ts_ms=ts_ms)
             self.aggregator.ingest(pocket_events, ts_ms=ts_ms, rule_state=self.rule_state)
             self._process_turn_resolve_if_needed(tracks_frame, events)
-            for event in events:
-                self._recent_events.append(event)
             state = self._state_frame(tracks_frame, events, tracks, confidence=0.85, suffix="+operator_override")
             self._last_debug_snapshot = self._build_debug_snapshot(
                 tracks_frame,
@@ -247,12 +308,13 @@ class ModernMatchStateMachine:
                 self._empty_signals(),
                 operator_override_short_circuit=True,
             )
+            self._remember_motion(tracks)
             return state
 
         self._tick_event_cooldowns()
+        self.break_lifecycle.observe(tracks_frame, phase=self.phase_machine.phase)
         signals, sensed_events = self._sense(tracks_frame)
         events.extend(sensed_events)
-        phase_before = self.phase_machine.phase
         phase = self.phase_machine.update(tracks_frame, signals, events)
         if self._pending_turn_resolve is not None and phase != MatchPhase.ANOMALY_RECOVERY:
             self.phase_machine.force(MatchPhase.TURN_RESOLVE)
@@ -264,12 +326,11 @@ class ModernMatchStateMachine:
         pocket_events = self.pocket_fsm.update(tracks_frame, pocket_phase, pocket_observations)
         events.extend(pocket_events)
         ts_ms = self._ts_ms(tracks_frame.ts_cam_ns)
+        self._prepare_shot_context(events, ts_ms=ts_ms)
         self._annotate_shot_ids(events, ts_ms=ts_ms)
         self.aggregator.ingest(events, ts_ms=ts_ms, rule_state=self.rule_state)
         self._process_turn_resolve_if_needed(tracks_frame, events)
-
-        for event in events:
-            self._recent_events.append(event)
+        self._remember_motion(tracks)
 
         confidence = 1.0
         if phase == MatchPhase.ANOMALY_RECOVERY:
@@ -301,10 +362,49 @@ class ModernMatchStateMachine:
             self.aggregator.ingest(safety_events, ts_ms=ts_ms, rule_state=self.rule_state)
             events.extend(safety_events)
         shot_ctx = self.aggregator.finalize(ts_ms=ts_ms, rule_state=self.rule_state)
-        commit_ledger = self.ledger.applied_copy(shot_ctx)
+        if shot_ctx is None:
+            self.break_lifecycle.mark_shot_resolved(valid=False)
+            self.rule_state.active_shot_is_break = False
+            events.append(
+                Event(
+                    name="TURN_RESOLVE_IGNORED",
+                    ts_cam_ns=tracks_frame.ts_cam_ns,
+                    frame_id=tracks_frame.frame_id,
+                    payload={"reason": "no_shot_context"},
+                    confidence=1.0,
+                )
+            )
+            return
+        valid_shot = bool(
+            shot_ctx.shot_started
+            or shot_ctx.committed_pockets
+            or any(int(value) > 0 for value in shot_ctx.off_table_confirmed.values())
+            or shot_ctx.first_contact_group is not None
+            or shot_ctx.rail_contact_seen
+        )
+        if not valid_shot:
+            self._last_shot_payload = shot_context_payload(shot_ctx)
+            self.break_lifecycle.mark_shot_resolved(valid=False)
+            self.rule_state.active_shot_is_break = False
+            events.append(
+                Event(
+                    name="TURN_RESOLVE_IGNORED",
+                    ts_cam_ns=tracks_frame.ts_cam_ns,
+                    frame_id=tracks_frame.frame_id,
+                    payload={"reason": "no_valid_shot_evidence", "shot_id": shot_ctx.shot_id},
+                    confidence=1.0,
+                )
+            )
+            return
+        ledger_before = self.ledger.clone()
+        commit_ledger = ledger_before.applied_copy(shot_ctx)
         reconcile_result = self.reconciler.reconcile(
             commit_ledger,
-            supporting_events=[*self._recent_events, *events],
+            supporting_events=finalized_shot_support_events(
+                shot_ctx,
+                ts_cam_ns=tracks_frame.ts_cam_ns,
+                frame_id=tracks_frame.frame_id,
+            ),
         )
         automatic_corrections = self.reconciler.apply_automatic_restorations(commit_ledger, reconcile_result)
         automatic_rejections = self._retract_observation_contradicted_pockets(
@@ -327,11 +427,15 @@ class ModernMatchStateMachine:
             self.rule_state,
             effective_remaining=target_resolution.effective_remaining,
             observation_reasons=observation_reasons,
+            ledger_before=ledger_before,
+            legal_first_group=shot_ctx.legal_first_group,
         )
         previous_status = self.rule_state.game_status
         self.ledger = commit_ledger.clone()
         self._apply_intent(intent)
         self.rule_state.shot_number += 1
+        self.break_lifecycle.mark_shot_resolved(valid=True)
+        self.rule_state.active_shot_is_break = False
         self.pocket_fsm.mark_confirmed(
             [
                 str(pocket.get("decision_id") or "")
@@ -458,6 +562,8 @@ class ModernMatchStateMachine:
                     frame_id=tracks_frame.frame_id,
                     payload={
                         "game_status": intent.game_status,
+                        "game_outcome": intent.game_outcome,
+                        "winner_group": intent.winner_group,
                         "reason": "black_confirmed",
                         "shot_id": shot_ctx.shot_id,
                     },
@@ -505,8 +611,21 @@ class ModernMatchStateMachine:
         moving = self._is_moving(tracks)
         stable = self._is_stable(tracks)
         anomaly = self._detect_anomaly(tracks)
-        cue_stick_seen = any(t.group == "cue_stick" and t.visibility == "visible" and t.quality > 0.35 for t in tracks)
-        cue_motion = any(t.group == "cue" and self._speed(t) > self._moving_threshold(t) for t in tracks)
+        cue_stick_seen = any(
+            t.group == "cue_stick"
+            and t.visibility == "visible"
+            and bool(t.confirmed)
+            and t.quality > 0.35
+            for t in tracks
+        )
+        cue_motion = any(
+            t.group == "cue"
+            and t.visibility == "visible"
+            and bool(t.confirmed)
+            and t.quality > 0.25
+            and self._speed(t) > self._moving_threshold(t)
+            for t in tracks
+        )
         events: List[Event] = []
         events.extend(self._detect_ball_collisions(tracks_frame))
         events.extend(self._detect_rail_collisions(tracks_frame))
@@ -538,6 +657,7 @@ class ModernMatchStateMachine:
             events=events,
             layout=layout,
             turn_target_group=self._target_resolution().target_group,
+            break_shot_pending=self.break_lifecycle.break_pending,
             confidence=float(confidence),
             state_version=f"{self.version}{suffix}",
         )
@@ -570,7 +690,10 @@ class ModernMatchStateMachine:
         balls = [
             t
             for t in tracks_frame.tracks
-            if t.group in {"cue", "solid", "stripe", "black"} and t.visibility == "visible" and t.quality > 0.25
+            if t.group in {"cue", "solid", "stripe", "black"}
+            and t.visibility == "visible"
+            and bool(t.confirmed)
+            and t.quality > 0.25
         ]
         for i, a in enumerate(balls):
             pa = self._position(a)
@@ -624,7 +747,12 @@ class ModernMatchStateMachine:
             return events
         x_min, y_min, x_max, y_max = bounds
         for track in tracks_frame.tracks:
-            if track.group not in {"cue", "solid", "stripe", "black"} or track.visibility != "visible" or track.quality <= 0.25:
+            if (
+                track.group not in {"cue", "solid", "stripe", "black"}
+                or track.visibility != "visible"
+                or not bool(track.confirmed)
+                or track.quality <= 0.25
+            ):
                 continue
             key = self._cooldown_key("RAIL_COLLISION_CANDIDATE", track.track_id)
             if key in self._event_cooldowns:
@@ -650,7 +778,13 @@ class ModernMatchStateMachine:
                     name="RAIL_COLLISION_CANDIDATE",
                     ts_cam_ns=tracks_frame.ts_cam_ns,
                     frame_id=tracks_frame.frame_id,
-                    payload={"track_id": track.track_id, "side": side, "distance_to_rail": dist, "limit": float(limit)},
+                    payload={
+                        "track_id": track.track_id,
+                        "group": track.group,
+                        "side": side,
+                        "distance_to_rail": dist,
+                        "limit": float(limit),
+                    },
                     confidence=0.58,
                 )
             )
@@ -658,14 +792,30 @@ class ModernMatchStateMachine:
         return events
 
     def _detect_shot_start_vote(self, tracks_frame: TracksFrame) -> Optional[Event]:
-        cue = next((t for t in tracks_frame.tracks if t.group == "cue" and t.visibility == "visible" and t.quality > 0.25), None)
+        cue = next(
+            (
+                t
+                for t in tracks_frame.tracks
+                if t.group == "cue"
+                and t.visibility == "visible"
+                and bool(t.confirmed)
+                and t.quality > 0.25
+            ),
+            None,
+        )
         if cue is None:
             return None
         cue_speed = self._speed(cue)
         votes = {
             "cue_ball_motion": cue_speed >= self._moving_threshold(cue),
             "cue_ball_accel_peak": cue_speed >= float(self.config.shot_speed_jump_mm_s if cue.velocity_mm_s is not None else self.config.moving_speed_px_s),
-            "cue_stick_seen": any(t.group == "cue_stick" and t.visibility == "visible" and t.quality > 0.25 for t in tracks_frame.tracks),
+            "cue_stick_seen": any(
+                t.group == "cue_stick"
+                and t.visibility == "visible"
+                and bool(t.confirmed)
+                and t.quality > 0.25
+                for t in tracks_frame.tracks
+            ),
         }
         if sum(1 for value in votes.values() if value) < 2:
             return None
@@ -684,13 +834,22 @@ class ModernMatchStateMachine:
     def _is_moving(self, tracks: List[TrackObservation]) -> bool:
         return any(
             t.group in {"cue", "solid", "stripe", "black"}
+            and t.visibility == "visible"
+            and bool(t.confirmed)
             and self._speed(t) >= self._moving_threshold(t)
             and t.quality > 0.25
             for t in tracks
         )
 
     def _is_stable(self, tracks: List[TrackObservation]) -> bool:
-        ball_tracks = [t for t in tracks if t.group in {"cue", "solid", "stripe", "black"}]
+        ball_tracks = [
+            t
+            for t in tracks
+            if t.group in {"cue", "solid", "stripe", "black"}
+            and t.visibility == "visible"
+            and bool(t.confirmed)
+            and t.quality > 0.25
+        ]
         if not ball_tracks:
             return False
         return all(self._speed(t) <= self._still_threshold(t) or t.quality < 0.25 for t in ball_tracks)
@@ -699,7 +858,10 @@ class ModernMatchStateMachine:
         visible_balls = [
             t
             for t in tracks
-            if t.group in {"cue", "solid", "stripe", "black"} and t.visibility == "visible" and t.quality > 0.25
+            if t.group in {"cue", "solid", "stripe", "black"}
+            and t.visibility == "visible"
+            and bool(t.confirmed)
+            and t.quality > 0.25
         ]
         if sum(1 for t in visible_balls if t.group == "cue") > 1:
             return True
@@ -732,8 +894,27 @@ class ModernMatchStateMachine:
             return float(self._ball_diameter_mm * 0.5)
         return float(track.radius_px)
 
-    def _heading_changed(self, _track: TrackObservation) -> bool:
-        return False
+    def _heading_changed(self, track: TrackObservation) -> bool:
+        previous = self._previous_velocities.get(int(track.track_id))
+        if previous is None:
+            return False
+        before = np.asarray(previous, dtype=np.float32)
+        after = np.asarray(self._velocity(track), dtype=np.float32)
+        before_speed = float(np.linalg.norm(before))
+        after_speed = float(np.linalg.norm(after))
+        if float(np.linalg.norm(after - before)) >= self._moving_threshold(track):
+            return True
+        if before_speed <= self._still_threshold(track) or after_speed <= self._still_threshold(track):
+            return False
+        cosine = float(np.dot(before, after) / max(1e-6, before_speed * after_speed))
+        return cosine <= float(np.cos(np.deg2rad(25.0)))
+
+    def _remember_motion(self, tracks: List[TrackObservation]) -> None:
+        self._previous_velocities = {
+            int(track.track_id): self._velocity(track)
+            for track in tracks
+            if track.visibility == "visible" and bool(track.confirmed) and track.quality > 0.25
+        }
 
     def _table_bounds(self) -> Optional[tuple[float, float, float, float]]:
         if len(self._table_inner_polygon_mm) < 3:
@@ -768,6 +949,7 @@ class ModernMatchStateMachine:
             "state_version": str(state.state_version),
             "operator_hold": bool(self._operator_hold),
             "turn_target_group": target_resolution.target_group,
+            "break_shot_pending": self.break_lifecycle.break_pending,
             "raw_turn_target_group": self._normalized_turn_target_group(),
             "target_resolution": target_resolution.to_payload(),
             "signals": {
@@ -794,7 +976,27 @@ class ModernMatchStateMachine:
         self.rule_state.actor_group = intent.actor_group_after
         self.rule_state.opponent_group = intent.opponent_group_after
         self.rule_state.game_status = intent.game_status
+        self.rule_state.game_outcome = intent.game_outcome
+        self.rule_state.winner_group = intent.winner_group
         self._turn_target_group = intent.next_group_hint
+
+    def _prepare_shot_context(self, events: List[Event], *, ts_ms: int) -> None:
+        if self.aggregator.active is not None:
+            return
+        context_events = {
+            "SHOT_STARTED",
+            "SHOT_START_VOTED",
+            "POCKET_CANDIDATE",
+            "POCKET_TENTATIVE",
+            "POCKET_COMMIT_READY",
+            "POCKET_CONFIRMED",
+            "POCKET_REJECTED",
+        }
+        if not any(event.name in context_events for event in events):
+            return
+        self.rule_state.active_shot_is_break = self.break_lifecycle.mark_shot_started()
+        shot_ctx = self.aggregator.begin_if_needed(ts_ms=ts_ms, rule_state=self.rule_state)
+        shot_ctx.legal_first_group = self._target_resolution().target_group
 
     @staticmethod
     def _retract_observation_contradicted_pockets(
