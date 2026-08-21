@@ -452,8 +452,6 @@ class SettingsDialog(QtWidgets.QDialog):
             0.01,
             decimals=2,
         )
-        self.rail_assist_enabled = QtWidgets.QCheckBox("启用受限贴库球辅助路线")
-        self.rail_assist_enabled.setChecked(bool(config.planner.rail_assist_enabled))
         self.pocket_entry_safety_margin = self._dspin(
             float(config.planner.pocket_entry_safety_margin_mm),
             0.0,
@@ -465,20 +463,6 @@ class SettingsDialog(QtWidgets.QDialog):
             float(config.planner.pocket_entry_max_angle_deg),
             20.0,
             70.0,
-            1.0,
-            decimals=1,
-        )
-        self.rail_assist_alignment_angle = self._dspin(
-            float(config.planner.rail_assist_max_alignment_angle_deg),
-            1.0,
-            45.0,
-            1.0,
-            decimals=1,
-        )
-        self.rail_assist_deflection_angle = self._dspin(
-            float(config.planner.rail_assist_max_deflection_deg),
-            10.0,
-            75.0,
             1.0,
             decimals=1,
         )
@@ -564,31 +548,22 @@ class SettingsDialog(QtWidgets.QDialog):
         )
         route_stability_note.setWordWrap(True)
         route_stability_grid.addWidget(route_stability_note, 5, 0, 1, 4)
-        pocket_route_box = QtWidgets.QGroupBox("入袋球心走廊 / 贴库球")
+        pocket_route_box = QtWidgets.QGroupBox("入袋球心走廊")
         pocket_route_grid = QtWidgets.QGridLayout(pocket_route_box)
-        pocket_route_grid.addWidget(self.rail_assist_enabled, 0, 0, 1, 4)
         self._grid_pair(
             pocket_route_grid,
-            1,
+            0,
             "袋颚额外净空(mm)",
             self.pocket_entry_safety_margin,
             "最大入袋角(°)",
             self.pocket_entry_max_angle,
         )
-        self._grid_pair(
-            pocket_route_grid,
-            2,
-            "贴库方向偏差上限(°)",
-            self.rail_assist_alignment_angle,
-            "袋口导向转角上限(°)",
-            self.rail_assist_deflection_angle,
-        )
         pocket_route_note = QtWidgets.QLabel(
-            "默认标准为完整球半径 + 2 mm、最大入袋角 50°。贴库辅助仅在普通路线全部失败时启用，"
-            "只允许沿相邻库边进入角袋，并以高风险路线显示。"
+            "默认标准为完整球半径 + 2 mm、最大入袋角 50°。贴库球只有在直线球心走廊可通过时才会推荐；"
+            "需要撞库的路线必须由目标击球/勾球模式显式计算真实碰库点。"
         )
         pocket_route_note.setWordWrap(True)
-        pocket_route_grid.addWidget(pocket_route_note, 3, 0, 1, 4)
+        pocket_route_grid.addWidget(pocket_route_note, 1, 0, 1, 4)
         cue_sector_box = QtWidgets.QGroupBox("球杆矩形走廊纠正")
         cue_sector_grid = QtWidgets.QGridLayout(cue_sector_box)
         cue_sector_grid.addWidget(self.cue_sector_enabled, 0, 0, 1, 4)
@@ -956,9 +931,6 @@ class SettingsDialog(QtWidgets.QDialog):
         config.planner.route_freeze_enabled = False
         config.planner.pocket_entry_safety_margin_mm = float(self.pocket_entry_safety_margin.value())
         config.planner.pocket_entry_max_angle_deg = float(self.pocket_entry_max_angle.value())
-        config.planner.rail_assist_enabled = self.rail_assist_enabled.isChecked()
-        config.planner.rail_assist_max_alignment_angle_deg = float(self.rail_assist_alignment_angle.value())
-        config.planner.rail_assist_max_deflection_deg = float(self.rail_assist_deflection_angle.value())
         config.planner.cue_sector_correction_enabled = self.cue_sector_enabled.isChecked()
         config.planner.cue_sector_corridor_width_px = float(self.cue_sector_corridor_width.value())
         config.planner.cue_sector_switch_confirm_frames = int(self.cue_sector_switch_confirm_frames.value())
@@ -2517,7 +2489,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.pipeline.calibration = calibration
             self.pipeline.planner.calibration = calibration
             self.pipeline.planner.target_shot_planner.calibration = calibration
-            self.pipeline.planner.rail_shot_planner.calibration = calibration
             self.pipeline.planner.reset_temporal_state()
             self.pipeline.overlay_builder.calibration = calibration
             self.pipeline.training_overlay_builder.calibration = calibration
@@ -3011,10 +2982,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
             self.config.planner.collision_padding_mm,
             self.config.planner.pocket_entry_safety_margin_mm,
             self.config.planner.pocket_entry_max_angle_deg,
-            self.config.planner.rail_assist_enabled,
-            self.config.planner.rail_assist_max_center_distance_mm,
-            self.config.planner.rail_assist_max_alignment_angle_deg,
-            self.config.planner.rail_assist_max_deflection_deg,
             self.config.learning.ranker_enabled,
             self.config.learning.ranker_model_path,
             self.config.learning.score_blend,

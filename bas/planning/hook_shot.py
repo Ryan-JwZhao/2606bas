@@ -37,8 +37,7 @@ class HookShotPlanner:
         balls: Sequence[object],
         selection_source: str,
     ) -> HookShotResult:
-        ordinary_candidates: list[ShotCandidate] = []
-        rail_fallback_candidates: list[ShotCandidate] = []
+        candidates: list[ShotCandidate] = []
         eligible_targets = [target for target in targets if str(getattr(target, "group")) != "cue"]
         evaluated_ids = [int(getattr(target, "track_id")) for target in eligible_targets]
         for target in eligible_targets:
@@ -67,12 +66,8 @@ class HookShotPlanner:
                     }
                 )
                 annotated = replace(candidate, explanation=explanation)
-                if bool(explanation.get("rail_assisted")):
-                    rail_fallback_candidates.append(annotated)
-                else:
-                    ordinary_candidates.append(annotated)
+                candidates.append(annotated)
 
-        candidates = ordinary_candidates if ordinary_candidates else rail_fallback_candidates
         candidates.sort(key=lambda item: (float(item.score), -float(item.risk)), reverse=True)
         candidates = candidates[: max(1, int(self.config.top_k))]
         if candidates:

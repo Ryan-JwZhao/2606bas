@@ -59,11 +59,22 @@ def test_operator_window_uses_scrollable_three_column_layout() -> None:
     assert window.pocket_notice_label.parent() is window.preview_frame
     assert window.pocket_notice_label.isHidden() is True
 
-    window._show_desktop_pocket_notice([{"message": "sob进球"}])
+    notices = window._observe_web_events(
+        [
+            Event(
+                "POCKET_DETECTED",
+                1,
+                1,
+                payload={"decision_id": "pocket:gui", "group": "solid", "track_id": 2, "pocket_index": 0},
+            )
+        ]
+    )
+    if notices:
+        window._show_desktop_pocket_notice(notices)
     app.processEvents()
 
     assert window.pocket_notice_label.isVisible() is True
-    assert "sob进球" in window.pocket_notice_label.text()
+    assert "全色球进洞" in window.pocket_notice_label.text()
 
     window.close()
     app.processEvents()

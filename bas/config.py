@@ -212,10 +212,6 @@ class PlannerConfig:
     # to open-table collision padding.
     pocket_entry_safety_margin_mm: float = 2.0
     pocket_entry_max_angle_deg: float = 50.0
-    rail_assist_enabled: bool = True
-    rail_assist_max_center_distance_mm: Optional[float] = None
-    rail_assist_max_alignment_angle_deg: float = 18.0
-    rail_assist_max_deflection_deg: float = 60.0
     # Continuous route stability operates on planning-only ball centres.  It
     # never suppresses planning or reuses coordinates from an older frame.
     route_stability_enabled: bool = True

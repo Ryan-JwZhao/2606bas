@@ -283,14 +283,10 @@ def test_user_settings_round_trips_continuous_route_stability_parameters(tmp_pat
     assert restored.planner.route_topology_switch_score_delta == 0.21
 
 
-def test_user_settings_round_trips_pocket_corridor_and_rail_assist(tmp_path) -> None:
+def test_user_settings_round_trips_pocket_corridor(tmp_path) -> None:
     cfg = AppConfig()
     cfg.planner.pocket_entry_safety_margin_mm = 2.5
     cfg.planner.pocket_entry_max_angle_deg = 52.0
-    cfg.planner.rail_assist_enabled = True
-    cfg.planner.rail_assist_max_center_distance_mm = 66.0
-    cfg.planner.rail_assist_max_alignment_angle_deg = 16.0
-    cfg.planner.rail_assist_max_deflection_deg = 58.0
     path = tmp_path / "user_settings.json"
 
     UserSettings.from_config(cfg).save(path)
@@ -298,10 +294,27 @@ def test_user_settings_round_trips_pocket_corridor_and_rail_assist(tmp_path) -> 
 
     assert restored.planner.pocket_entry_safety_margin_mm == 2.5
     assert restored.planner.pocket_entry_max_angle_deg == 52.0
-    assert restored.planner.rail_assist_enabled is True
-    assert restored.planner.rail_assist_max_center_distance_mm == 66.0
-    assert restored.planner.rail_assist_max_alignment_angle_deg == 16.0
-    assert restored.planner.rail_assist_max_deflection_deg == 58.0
+
+
+def test_user_settings_ignores_removed_unphysical_rail_assist_fields(tmp_path) -> None:
+    path = tmp_path / "user_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "planner_pocket_entry_max_angle_deg": 51.0,
+                "planner_rail_assist_enabled": True,
+                "planner_rail_assist_max_center_distance_mm": 66.0,
+                "planner_rail_assist_max_alignment_angle_deg": 18.0,
+                "planner_rail_assist_max_deflection_deg": 60.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    restored = UserSettings.load(path).apply_to_config(AppConfig())
+
+    assert restored.planner.pocket_entry_max_angle_deg == 51.0
+    assert not hasattr(restored.planner, "rail_assist_enabled")
 
 
 def test_user_settings_applies_cue_sector_correction_parameters(tmp_path) -> None:

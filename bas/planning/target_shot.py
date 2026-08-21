@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Optional, Sequence
 
 import numpy as np
@@ -17,7 +17,6 @@ from .corridor_targeting import rank_object_balls_in_corridor
 from .cue_aim import CueStickAimDetector
 from .pocket_clearance import assess_pocket_entry, find_pocket_entry_path
 from .pocket_targets import planning_pocket_mouth, planning_pocket_points
-from .rail_shot import RailAssistedShotPlanner
 
 
 OBJECT_GROUPS = {"solid", "stripe", "black"}
@@ -356,12 +355,9 @@ class TargetShotPlanner:
         self,
         config: PlannerConfig,
         calibration: CalibrationService,
-        *,
-        rail_shot_planner: RailAssistedShotPlanner | None = None,
     ):
         self.config = config
         self.calibration = calibration
-        self.rail_shot_planner = rail_shot_planner or RailAssistedShotPlanner(config, calibration)
         self.last_status = "idle"
 
     def plan(
@@ -374,27 +370,6 @@ class TargetShotPlanner:
     ) -> ShotCandidate | None:
         routes = self._routes(cue_ball=cue_ball, target=target, balls=balls)
         if not routes:
-            rail_candidates = self.rail_shot_planner.candidates(
-                cue_ball=cue_ball,
-                target=target,
-                balls=balls,
-            )
-            if rail_candidates:
-                best = rail_candidates[0]
-                explanation = dict(best.explanation)
-                explanation.update(
-                    {
-                        "target_shot": True,
-                        "target_shot_mode_version": TargetShotModeController.version,
-                        "target_shot_route_version": self.version,
-                        "target_shot_status": str(getattr(decision, "status", "rail_assisted")),
-                        "target_shot_rebounds": 0,
-                        "target_shot_rails": [],
-                        "target_shot_independent_of_cue_stick": True,
-                    }
-                )
-                self.last_status = "ok:rail_assisted"
-                return replace(best, explanation=explanation)
             self.last_status = "no_theoretical_route"
             return None
         best = max(routes, key=lambda route: route.score)

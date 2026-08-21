@@ -21,7 +21,7 @@ BALL_MESSAGE_BY_GROUP = {
     "stripe": "花色球进洞",
 }
 
-POCKET_NOTICE_EVENT_NAMES = {"POCKET_CONFIRMED", "POT_PROBABLE"}
+POCKET_NOTICE_EVENT_NAMES = {"POCKET_DETECTED", "POCKET_CONFIRMED", "POT_PROBABLE"}
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ class PocketNotice:
 
 
 class PocketNoticeTracker:
-    """Keeps short-lived, de-duplicated pocket notices for server-side UIs."""
+    """Keeps prompt, short-lived, de-duplicated pocket notices for server-side UIs."""
 
     def __init__(self, *, retention_s: float = 8.0, max_notices: int = 16, max_seen: int = 128) -> None:
         self.retention_s = max(1.0, float(retention_s))

@@ -333,7 +333,7 @@ def test_video_successful_left_rail_ball_gets_a_safe_direct_route() -> None:
     assert plan.best.explanation["pocket_clearance_margin_mm"] > 0.0
 
 
-def test_video_top_rail_ball_gets_only_a_bounded_high_risk_rail_assist() -> None:
+def test_video_top_rail_ball_is_not_given_an_unphysical_pocket_mouth_turn() -> None:
     service = _service_for_table(2540.0, 1270.0)
     _set_recorded_top_left_pocket(service)
     planner = GeometryPhysicsPlanner(
@@ -359,12 +359,11 @@ def test_video_top_rail_ball_gets_only_a_bounded_high_risk_rail_assist() -> None
         decision=SimpleNamespace(status="video_rail_target"),
     )
 
-    assert candidate is not None
-    assert candidate.explanation["rail_assisted"] is True
-    assert candidate.explanation["rail_assist_rail"] == "top"
-    assert candidate.explanation["rail_assist_deflection_deg"] <= 60.0
-    assert candidate.risk >= 0.75
-    assert len(candidate.object_line) == 3
+    # This is the blue solid at about 01:55 in the captured replay.  It cannot
+    # reach the fitted pocket centre along a straight line, and no cushion
+    # rebound was requested, so a route that bends by itself at the pocket
+    # mouth is physically invalid.
+    assert candidate is None
 
 
 def test_corner_pocket_path_allows_terminal_exit_to_external_fitted_center() -> None:

@@ -310,7 +310,6 @@ def _candidate_topology(candidate: ShotCandidate, shot_mode: str) -> tuple:
     explanation = dict(getattr(candidate, "explanation", {}) or {})
     rails = tuple(str(value) for value in (explanation.get("target_shot_rails") or ()))
     rebounds = int(explanation.get("target_shot_rebounds", len(rails)) or 0)
-    rail_assist = str(explanation.get("rail_assist_rail") or "")
     return (
         str(shot_mode or "rule").strip().lower(),
         int(candidate.target_track_id),
@@ -318,7 +317,6 @@ def _candidate_topology(candidate: ShotCandidate, shot_mode: str) -> tuple:
         int(candidate.pocket_index),
         rebounds,
         rails,
-        rail_assist,
     )
 
 

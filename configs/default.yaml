@@ -156,14 +156,9 @@ planner:
   object_path_margin_mm: 3.0
   collision_padding_mm: 2.0
   # 入袋采用“完整球心走廊”：球半径之外保留 2 mm，且最终入袋角不超过 50°。
-  # 贴库辅助只在普通路线全部失败时启用，并继续执行球径、障碍球和袋颚检查。
+  # 贴库球也必须满足直线走廊；需要撞库时只允许显式、带真实碰库点的路线。
   pocket_entry_safety_margin_mm: 2.0
   pocket_entry_max_angle_deg: 50.0
-  rail_assist_enabled: true
-  # 留空时按 1.15 个球直径自动计算贴库距离。
-  rail_assist_max_center_distance_mm:
-  rail_assist_max_alignment_angle_deg: 18.0
-  rail_assist_max_deflection_deg: 60.0
   # 连续路线稳定：只滤规划球心，每帧仍完整重算路线；运动时不隐藏、不冻结旧坐标。
   route_stability_enabled: true
   route_stability_stationary_tau_ms: 3000.0

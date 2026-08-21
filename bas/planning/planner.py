@@ -19,7 +19,6 @@ from .hook_shot import HookShotPlanner
 from .learning import create_learning_ranker
 from .pocket_clearance import find_pocket_entry_path
 from .pocket_targets import planning_pocket_mouth, planning_pocket_points
-from .rail_shot import RailAssistedShotPlanner
 from .route_stability import BallPositionMeasurement, PlanningPositionStabilizer, RouteTopologyContinuity
 from .target_shot import TargetShotDecision, TargetShotModeController, TargetShotPlanner
 from .target_lock import TargetLockController, TargetLockDecision
@@ -72,8 +71,7 @@ class GeometryPhysicsPlanner:
         self.cue_sector = CueSectorCorrection(config, calibration, aim_detector=self.aim_detector)
         self.target_lock = TargetLockController(config)
         self.target_shot_mode = TargetShotModeController(config, aim_detector=self.aim_detector)
-        self.rail_shot_planner = RailAssistedShotPlanner(config, calibration)
-        self.target_shot_planner = TargetShotPlanner(config, calibration, rail_shot_planner=self.rail_shot_planner)
+        self.target_shot_planner = TargetShotPlanner(config, calibration)
         self.hook_shot_planner = HookShotPlanner(config, self.target_shot_planner)
         self.position_stability = PlanningPositionStabilizer(config)
         self.route_topology = RouteTopologyContinuity(config)
@@ -185,20 +183,13 @@ class GeometryPhysicsPlanner:
         pockets = [np.asarray(p, dtype=np.float32) for p in planning_pocket_points(self.calibration.table)]
         center_polygon = self.calibration.table.center_playable_polygon_mm or self.calibration.table.inner_polygon_mm
         inner = np.asarray(center_polygon, dtype=np.float32)
-        rail_fallback_candidates: List[ShotCandidate] = []
         for target in targets:
             target_candidates: List[ShotCandidate] = []
             for pocket_index, pocket in enumerate(pockets):
                 candidate = self._candidate(cue, target, pocket, pocket_index, balls, inner)
                 if candidate is not None:
                     target_candidates.append(candidate)
-            if not target_candidates:
-                rail_fallback_candidates.extend(
-                    self.rail_shot_planner.candidates(cue_ball=cue, target=target, balls=balls)
-                )
             candidates.extend(target_candidates)
-        if not candidates:
-            candidates = rail_fallback_candidates
         candidates = self.learning_ranker.rerank(candidates, state)
         if locked_target is not None:
             candidates = self._apply_target_lock(candidates, target_lock)
@@ -474,8 +465,6 @@ class GeometryPhysicsPlanner:
             for pocket_index, pocket in enumerate(pockets)
             if (candidate := self._candidate(cue, target, pocket, pocket_index, list(balls), inner)) is not None
         ]
-        if not candidates:
-            candidates = self.rail_shot_planner.candidates(cue_ball=cue, target=target, balls=balls)
         candidates = self.learning_ranker.rerank(candidates, state)
         candidates = [self._annotate_target_lock(candidate, target_lock) for candidate in candidates]
         candidates = self.route_topology.select(

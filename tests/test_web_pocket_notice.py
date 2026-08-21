@@ -34,7 +34,7 @@ def test_pocket_notice_tracker_expires_notices_and_keeps_sequences_monotonic_aft
     assert after_reset[0]["notice_id"] != created[0]["notice_id"]
 
 
-def test_pocket_notice_tracker_supports_legacy_pot_event_and_deduplicates_modern_alias() -> None:
+def test_pocket_notice_tracker_announces_detection_and_deduplicates_confirmation_aliases() -> None:
     tracker = PocketNoticeTracker()
     legacy = Event(
         "POT_PROBABLE",
@@ -61,8 +61,9 @@ def test_pocket_notice_tracker_supports_legacy_pot_event_and_deduplicates_modern
         payload=dict(modern_confirmed.payload),
     )
 
-    assert tracker.observe([modern_detected], now_s=9.0) == []
+    detected = tracker.observe([modern_detected], now_s=9.0)
 
     created = tracker.observe([legacy, modern_confirmed, modern_alias], now_s=10.0)
 
-    assert [notice["message"] for notice in created] == ["花色球进洞", "全色球进洞"]
+    assert [notice["message"] for notice in detected] == ["全色球进洞"]
+    assert [notice["message"] for notice in created] == ["花色球进洞"]

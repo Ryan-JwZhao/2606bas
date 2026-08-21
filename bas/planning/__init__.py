@@ -3,7 +3,6 @@ from __future__ import annotations
 from .cue_sector import CueSectorCorrection
 from .hook_shot import HookShotPlanner
 from .planner import GeometryPhysicsPlanner
-from .rail_shot import RailAssistedShotPlanner
 from .route_stability import BallPositionMeasurement, PlanningPositionStabilizer, RouteTopologyContinuity
 from .target_shot import TargetShotModeController, TargetShotPlanner
 from .target_lock import TargetLockController
@@ -15,7 +14,6 @@ __all__ = [
     "BallPositionMeasurement",
     "PlanningPositionStabilizer",
     "RouteTopologyContinuity",
-    "RailAssistedShotPlanner",
     "TargetLockController",
     "TargetShotModeController",
     "TargetShotPlanner",
