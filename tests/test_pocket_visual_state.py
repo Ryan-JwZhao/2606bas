@@ -325,14 +325,133 @@ def test_strong_crossing_is_relayed_when_shot_phase_starts_late() -> None:
         _visual(3, 1_300_000_000, group="stripe", clear=True, track_ids=[14]),
     )
     detected = fsm.update(
-        TracksFrame(4, 2_400_000_000, []),
+        TracksFrame(4, 2_600_000_000, []),
         MatchPhase.SHOT_ACTIVE,
-        _visual(4, 2_400_000_000, group="stripe", clear=True, track_ids=[14]),
+        _visual(4, 2_600_000_000, group="stripe", clear=True, track_ids=[14]),
     )
 
     assert not any(event.name == "POCKET_CANDIDATE" for event in deferred)
     assert any(event.name == "POCKET_CANDIDATE" for event in activated)
     assert any(event.name == "POCKET_DETECTED" for event in detected)
+
+
+def test_lip_departure_is_relayed_across_two_second_shot_start_delay() -> None:
+    """00:13: a lip ball vanished before fragmented cue tracking armed the shot."""
+
+    fsm = PerBallPocketFSM(StateConfig(engine="modern", pocket_visual_confirmation_ms=1300))
+    fsm.set_table_context(
+        inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
+        pockets_mm=[(500, 0)],
+        ball_diameter_mm=56,
+    )
+    ball = _ball(9, "solid", 500, 15)
+    ball.velocity_mm_s = (0.0, 0.0)
+    fsm.update(
+        TracksFrame(1, 1_000_000_000, [ball]),
+        MatchPhase.STABLE_IDLE,
+        _visual(1, 1_000_000_000, lip=True, track_ids=[9]),
+    )
+    fsm.update(
+        TracksFrame(2, 1_350_000_000, []),
+        MatchPhase.STABLE_IDLE,
+        _visual(
+            2,
+            1_350_000_000,
+            inward=True,
+            track_ids=[9],
+            motion_score=0.55,
+            foreground_score=1.0,
+            foreground_depth_diameters=-1.05,
+        ),
+    )
+    activated = fsm.update(
+        TracksFrame(3, 3_300_000_000, []),
+        MatchPhase.SHOT_ACTIVE,
+        _visual(3, 3_300_000_000, lip=True, track_ids=[]),
+    )
+    detected = fsm.update(
+        TracksFrame(4, 4_600_000_000, []),
+        MatchPhase.SHOT_ACTIVE,
+        _visual(4, 4_600_000_000, clear=True, track_ids=[]),
+    )
+
+    assert any(event.name == "POCKET_CANDIDATE" for event in activated)
+    assert any(event.name == "POCKET_DETECTED" for event in detected)
+
+
+def test_newborn_mouth_track_uses_handoff_and_terminal_disappearance() -> None:
+    """01:33: the target changed from track 72 to one-frame track 73 at the mouth."""
+
+    sm = _machine()
+    source = _ball(72, "solid", 500, 235)
+    source.velocity_mm_s = (0.0, 0.0)
+    newborn = _ball(73, "solid", 500, 62)
+    newborn.velocity_mm_s = (0.0, 0.0)
+    sm.update(
+        TracksFrame(1, 1_000_000_000, [source]),
+        _visual(1, 1_000_000_000, clear=True),
+    )
+    candidate = sm.update(
+        TracksFrame(2, 1_116_000_000, [newborn]),
+        _visual(
+            2,
+            1_116_000_000,
+            track_ids=[73],
+            motion_score=0.44,
+            foreground_score=0.55,
+            foreground_depth_diameters=-0.41,
+        ),
+    )
+    sm.update(
+        TracksFrame(3, 1_232_000_000, []),
+        _visual(3, 1_232_000_000, track_ids=[73], motion_score=1.0, foreground_score=1.0),
+    )
+    sm.update(
+        TracksFrame(4, 1_950_000_000, []),
+        _visual(4, 1_950_000_000, clear=True, track_ids=[73]),
+    )
+    detected = sm.update(
+        TracksFrame(5, 2_450_000_000, []),
+        _visual(5, 2_450_000_000, clear=True, track_ids=[73]),
+    )
+
+    event = next(event for event in candidate.events if event.name == "POCKET_CANDIDATE")
+    assert event.payload["candidate_reason"] == "projected_entry_track_handoff"
+    assert event.payload["evidence"]["entry_source_track_id"] == 72
+    assert any(event.name == "POCKET_DETECTED" for event in detected.events)
+
+
+def test_narrow_same_track_terminal_disappearance_confirms_without_lip_flag() -> None:
+    """01:40: a narrow same-track entry was visible, but the observer stayed clear."""
+
+    sm = _machine()
+    far = _ball(4, "solid", 500, 178)
+    far.velocity_mm_s = (-23.0, -362.0)
+    near = _ball(4, "solid", 500, 52)
+    near.velocity_mm_s = (-3.0, -416.0)
+    sm.update(
+        TracksFrame(1, 1_000_000_000, [far]),
+        _visual(1, 1_000_000_000, clear=True),
+    )
+    candidate = sm.update(
+        TracksFrame(2, 1_100_000_000, [near]),
+        _visual(2, 1_100_000_000, track_ids=[4], motion_score=1.0, foreground_score=1.0),
+    )
+    sm.update(
+        TracksFrame(3, 1_216_000_000, []),
+        _visual(3, 1_216_000_000, track_ids=[4], motion_score=1.0, foreground_score=1.0),
+    )
+    sm.update(
+        TracksFrame(4, 1_950_000_000, []),
+        _visual(4, 1_950_000_000, clear=True, track_ids=[4]),
+    )
+    detected = sm.update(
+        TracksFrame(5, 2_450_000_000, []),
+        _visual(5, 2_450_000_000, clear=True, track_ids=[4]),
+    )
+
+    assert any(event.name == "POCKET_CANDIDATE" for event in candidate.events)
+    assert any(event.name == "POCKET_DETECTED" for event in detected.events)
 
 
 def test_projected_only_blurred_ball_is_rejected_and_round_detection_is_ignored() -> None:

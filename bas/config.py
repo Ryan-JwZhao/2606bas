@@ -175,6 +175,7 @@ class StateConfig:
     pocket_entry_history_depth_mm: Optional[float] = None
     pocket_entry_history_ms: int = 1500
     pocket_entry_handoff_ms: int = 450
+    pocket_pre_shot_visual_relay_ms: int = 2600
     pocket_blur_max_aspect_ratio: float = 2.8
     pocket_entry_min_speed_mm_s: float = 100.0
     pocket_entry_max_speed_mm_s: float = 4000.0

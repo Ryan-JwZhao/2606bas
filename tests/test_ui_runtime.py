@@ -56,14 +56,14 @@ def test_operator_window_uses_scrollable_three_column_layout() -> None:
     assert window.preview_caption.height() < 30
     assert abs((window.preview_label.width() / max(1, window.preview_label.height())) - (16.0 / 9.0)) < 0.05
     assert window.preview_panel.height() > window.plan_panel.height()
-    assert window._desktop_pocket_notice_popup.parent() is window
-    assert window._desktop_pocket_notice_popup.isHidden() is True
+    assert window.pocket_notice_label.parent() is window.preview_frame
+    assert window.pocket_notice_label.isHidden() is True
 
     window.close()
     app.processEvents()
 
 
-def test_pocket_event_opens_a_non_modal_popup_on_the_operator_frontend_only() -> None:
+def test_pocket_event_shows_the_preview_popup_on_the_operator_frontend_only() -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())
     projection_calls: list[str] = []
@@ -87,14 +87,10 @@ def test_pocket_event_opens_a_non_modal_popup_on_the_operator_frontend_only() ->
     window._show_desktop_pocket_notice(notices)
     app.processEvents()
 
-    popup = window._desktop_pocket_notice_popup
+    popup = window.pocket_notice_label
     assert popup.isVisible() is True
-    assert popup.isModal() is False
-    assert popup.parent() is window
+    assert popup.parent() is window.preview_frame
     assert "全色球进洞" in popup.text()
-    assert popup.windowFlags() & QtCore.Qt.WindowStaysOnTopHint
-    assert popup.testAttribute(QtCore.Qt.WA_ShowWithoutActivating) is True
-    assert popup.windowHandle().screen() is window.windowHandle().screen()
     assert projection_calls == []
     assert "进球提示：全色球进洞" in window.log_box.toPlainText()
 

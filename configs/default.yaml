@@ -127,6 +127,8 @@ state:
   pocket_entry_history_depth_mm: 450.0
   pocket_entry_history_ms: 1500
   pocket_entry_handoff_ms: 450
+  # 高速白球发生 ID 碎片时，保留击球启动前已经形成的可信袋口穿越证据。
+  pocket_pre_shot_visual_relay_ms: 2600
   pocket_blur_max_aspect_ratio: 2.8
   pocket_entry_min_speed_mm_s: 100.0
   pocket_entry_max_speed_mm_s: 4000.0

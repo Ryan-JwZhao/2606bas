@@ -97,6 +97,14 @@ class _PocketMemory:
     track_lip_veto: bool = False
 
 
+@dataclass(frozen=True)
+class _DeferredPocketObservation:
+    frame_id: int
+    ts_cam_ns: int
+    observation: PocketVisualObservation
+    latency_ms: float
+
+
 class PerBallPocketFSM:
     """Per-ball pocket evidence with retractable commit-ready decisions."""
 
@@ -112,7 +120,7 @@ class PerBallPocketFSM:
         self.pocket_curves_mm: list[list[tuple[float, float]]] = []
         self.ball_diameter_mm = 57.15
         self._memory: Dict[int, _PocketMemory] = {}
-        self._deferred_visual_crossings: list[tuple[int, int, PocketVisualObservation, float]] = []
+        self._deferred_visual_crossings: list[_DeferredPocketObservation] = []
         self._decision_seq = 1
         self._geometry_context_fingerprint: Optional[tuple[object, ...]] = None
         self._geometry_model = PocketGeometryModel.build(
@@ -212,7 +220,7 @@ class PerBallPocketFSM:
                     and self._apply_cross_track_reappear_veto(memory, track, sample, frame, events)
                 )
                 trajectory: Optional[PocketEntryAssessment] = None
-                if active and not cross_track_vetoed and sample.zone is None:
+                if active and not cross_track_vetoed:
                     trajectory = self._entry_trajectory(
                         memory,
                         track,
@@ -261,48 +269,115 @@ class PerBallPocketFSM:
 
     def _remember_deferred_visual_crossings(self, frame: PocketVisualObservationFrame) -> None:
         for observed in frame.observations:
-            if not self._strong_deferred_visual_crossing(observed):
+            group = normalize_group(observed.group)
+            if group is None:
+                continue
+            memory = self._memory_for_visual_candidate(observed, group, frame.ts_cam_ns)
+            if memory is None:
+                continue
+            currently_visible = int(frame.ts_cam_ns) == int(memory.last_visible_ts_ns)
+            if not self._credible_visual_entry(
+                memory,
+                observed,
+                now_ns=frame.ts_cam_ns,
+                currently_visible=currently_visible,
+            ):
                 continue
             track_ids = tuple(sorted(int(value) for value in observed.associated_track_ids))
             key = (int(observed.pocket_index), track_ids)
             self._deferred_visual_crossings = [
                 row
                 for row in self._deferred_visual_crossings
-                if (int(row[2].pocket_index), tuple(sorted(int(value) for value in row[2].associated_track_ids)))
+                if (
+                    int(row.observation.pocket_index),
+                    tuple(sorted(int(value) for value in row.observation.associated_track_ids)),
+                )
                 != key
             ]
             self._deferred_visual_crossings.append(
-                (int(frame.frame_id), int(frame.ts_cam_ns), observed, float(frame.latency_ms))
+                _DeferredPocketObservation(
+                    frame_id=int(frame.frame_id),
+                    ts_cam_ns=int(frame.ts_cam_ns),
+                    observation=observed,
+                    latency_ms=float(frame.latency_ms),
+                )
             )
 
     def _apply_deferred_visual_crossings(self, frame: TracksFrame, events: List[Event]) -> None:
         pending = list(self._deferred_visual_crossings)
         self._deferred_visual_crossings.clear()
-        for frame_id, ts_ns, observed, latency_ms in pending:
-            proxy = TracksFrame(
-                frame_id=int(frame_id),
-                ts_cam_ns=int(ts_ns),
-                tracks=frame.tracks,
+        for deferred in pending:
+            self._start_visual_candidate(
+                frame,
+                deferred.observation,
+                deferred.latency_ms,
+                events,
+                observed_ts_ns=deferred.ts_cam_ns,
             )
-            self._start_visual_candidate(proxy, observed, latency_ms, events)
 
     def _prune_deferred_visual_crossings(self, now_ns: int) -> None:
-        handoff_ns = self._trajectory_limits().handoff_ms * 1_000_000
+        relay_ns = self._pre_shot_visual_relay_ms() * 1_000_000
         self._deferred_visual_crossings = [
-            row for row in self._deferred_visual_crossings if int(now_ns) - int(row[1]) <= handoff_ns
+            row
+            for row in self._deferred_visual_crossings
+            if int(now_ns) - row.ts_cam_ns <= relay_ns
         ]
 
-    @staticmethod
-    def _strong_deferred_visual_crossing(observed: PocketVisualObservation) -> bool:
-        return bool(
-            observed.inward_crossing
-            and normalize_group(observed.group) is not None
-            and observed.associated_track_ids
-            and float(observed.motion_score) >= 0.35
+    def _credible_visual_entry(
+        self,
+        memory: _PocketMemory,
+        observed: PocketVisualObservation,
+        *,
+        now_ns: int,
+        currently_visible: bool,
+    ) -> bool:
+        if not observed.inward_crossing or not observed.associated_track_ids:
+            return False
+        sources = {str(value) for value in observed.evidence_sources}
+        required_sources = {"foreground_motion", "ball_sized_motion"}
+        if not required_sources.issubset(sources):
+            return False
+        has_ball_foreground = bool(
+            {"foreground_motion", "ball_sized_motion"}.intersection(sources)
+        )
+        if not has_ball_foreground:
+            return False
+
+        credible_approach = (
+            memory.last_inward_speed_mm_s >= self._trajectory_limits().min_speed_mm_s
+        )
+        recently_disappeared = (
+            not currently_visible
+            and self._elapsed_ms(now_ns, memory.last_visible_ts_ns)
+            <= self._trajectory_limits().handoff_ms
+        )
+        depth = observed.foreground_depth_diameters
+        strong_crossing_shape = bool(
+            float(observed.motion_score) >= 0.35
             and float(observed.foreground_score) >= 0.20
-            and observed.foreground_depth_diameters is not None
-            and float(observed.foreground_depth_diameters) >= -0.15
-            and {"foreground_motion", "ball_sized_motion"}.issubset(observed.evidence_sources)
+            and depth is not None
+            and float(depth) >= 0.20
+        )
+        newborn_visible_crossing = bool(
+            currently_visible
+            and memory.visible_observation_count <= 2
+            and self._elapsed_ms(now_ns, memory.first_seen_ts_ns)
+            <= self._trajectory_limits().handoff_ms
+            and float(observed.motion_score) >= 0.75
+            and float(observed.foreground_score) >= 0.60
+        )
+        lip_departure = bool(
+            recently_disappeared
+            and self._memory_in_terminal_corridor(memory, int(observed.pocket_index))
+            and float(observed.motion_score) >= 0.45
+            and float(observed.foreground_score) >= 0.50
+            and depth is not None
+            and float(depth) >= -1.25
+        )
+        return bool(
+            credible_approach
+            or (strong_crossing_shape and (recently_disappeared or newborn_visible_crossing))
+            or lip_departure
         )
 
     def _expire_stale_observed_candidates(self, frame: TracksFrame, events: List[Event]) -> None:
@@ -385,6 +460,8 @@ class PerBallPocketFSM:
                     live_lip_track = bool(
                         visible_track_ids & {int(value) for value in observed.associated_track_ids}
                     )
+                    if memory.detected_emitted and not live_lip_track:
+                        continue
                     if (
                         evidence.visual_status == "stale_lip"
                         and self._projected_visual_candidate(memory)
@@ -431,7 +508,7 @@ class PerBallPocketFSM:
                 and evidence.visual_status == "lip_occupied"
                 and evidence.visual_lip_last_seen_ns is not None
                 and self._elapsed_ms(frame.ts_cam_ns, evidence.visual_lip_last_seen_ns) >= 450
-                and self._projected_visual_candidate(memory)
+                and (evidence.visual_inward or self._projected_visual_candidate(memory))
             ):
                 # The observer no longer associates the old lip foreground with
                 # this candidate.  Preserve that distinction instead of letting
@@ -445,6 +522,8 @@ class PerBallPocketFSM:
         observed: PocketVisualObservation,
         latency_ms: float,
         events: List[Event],
+        *,
+        observed_ts_ns: int | None = None,
     ) -> None:
         group = normalize_group(observed.group)
         if group is None or not observed.associated_track_ids:
@@ -453,40 +532,18 @@ class PerBallPocketFSM:
         if memory is None or memory.resolved:
             return
         if memory.evidence is None:
-            has_ball_foreground = bool(
-                {"foreground_motion", "ball_sized_motion"}.intersection(observed.evidence_sources)
-            )
-            credible_approach = memory.last_inward_speed_mm_s >= self._trajectory_limits().min_speed_mm_s
             currently_visible = any(
                 int(track.track_id) == int(memory.track_id)
                 and track.visibility == "visible"
                 and float(track.quality) > 0.25
                 for track in frame.tracks
             )
-            recently_disappeared = bool(
-                not currently_visible
-                and self._elapsed_ms(frame.ts_cam_ns, memory.last_visible_ts_ns)
-                <= self._trajectory_limits().handoff_ms
-            )
-            strong_crossing_shape = bool(
-                float(observed.motion_score) >= 0.35
-                and float(observed.foreground_score) >= 0.20
-                and observed.foreground_depth_diameters is not None
-                and float(observed.foreground_depth_diameters) >= 0.20
-                and {"foreground_motion", "ball_sized_motion"}.issubset(observed.evidence_sources)
-            )
-            newborn_visible_crossing = bool(
-                currently_visible
-                and memory.visible_observation_count <= 2
-                and self._elapsed_ms(frame.ts_cam_ns, memory.first_seen_ts_ns)
-                <= self._trajectory_limits().handoff_ms
-                and float(observed.motion_score) >= 0.75
-                and float(observed.foreground_score) >= 0.60
-            )
-            strong_fast_crossing = bool(
-                strong_crossing_shape and (recently_disappeared or newborn_visible_crossing)
-            )
-            if not has_ball_foreground or not (credible_approach or strong_fast_crossing):
+            if not self._credible_visual_entry(
+                memory,
+                observed,
+                now_ns=frame.ts_cam_ns if observed_ts_ns is None else int(observed_ts_ns),
+                currently_visible=currently_visible,
+            ):
                 return
         pocket_index = int(observed.pocket_index)
         if memory.evidence is not None and memory.evidence.pocket_index != pocket_index:
@@ -894,7 +951,15 @@ class PerBallPocketFSM:
                 evidence.evidence_sources.append("prolonged_visible_at_lip")
         allow_occluded = self._occluded_commit_allowed(memory)
         if visual_mode:
-            allow_occluded = bool(memory.evidence and memory.evidence.visual_inward)
+            evidence_sources = set(memory.evidence.evidence_sources) if memory.evidence is not None else set()
+            allow_occluded = bool(
+                allow_occluded
+                and memory.evidence is not None
+                and (
+                    memory.evidence.visual_inward
+                    or "terminal_track_disappearance" in evidence_sources
+                )
+            )
         self._advance_missing(memory, frame, events, allow_occluded_commit=allow_occluded)
 
     def _handle_absent(self, memory: _PocketMemory, frame: TracksFrame, events: List[Event]) -> None:
@@ -991,7 +1056,8 @@ class PerBallPocketFSM:
         if not has_zone_evidence and trajectory is None:
             return
         pocket_index = int(sample.pocket_index) if has_zone_evidence else int(trajectory.pocket_index)
-        reason = self._candidate_reason(track, sample) if has_zone_evidence else trajectory.reason
+        zone_reason = self._candidate_reason(track, sample) if has_zone_evidence else None
+        reason = zone_reason or (trajectory.reason if trajectory is not None else None)
         if memory.evidence is None and reason is None:
             return
         if memory.evidence is not None and memory.evidence.pocket_index != pocket_index:
@@ -1071,6 +1137,7 @@ class PerBallPocketFSM:
         allow_occluded_commit: bool,
     ) -> None:
         missing_ms = self._memory_missing_ms(memory, frame.ts_cam_ns)
+        self._record_terminal_disappearance_evidence(memory)
         if missing_ms >= self._tentative_missing_ms() and not memory.tentative_emitted:
             self._tentative(memory, frame, events, reason_codes=self._tentative_reason_codes(memory))
         if memory.resolved:
@@ -1437,21 +1504,17 @@ class PerBallPocketFSM:
                 or source.resolved
                 or source.group != memory.group
                 or source.track_id in visible_ids
-                or (source.trajectory_anchor_probe is None and source.last_approach_probe is None)
             ):
                 continue
-            source_probe = source.trajectory_anchor_probe or source.last_approach_probe
-            source_ts_ns = source.trajectory_anchor_ts_ns or source.last_visible_ts_ns
-            elapsed_ms = self._elapsed_ms(frame.ts_cam_ns, source_ts_ns)
-            assessment = assess_track_handoff(
-                source_probe,
+            handoff = self._assess_cross_track_history(
+                source,
                 approach,
-                source_track_id=source.track_id,
-                elapsed_ms=float(elapsed_ms),
+                frame.ts_cam_ns,
                 limits=limits,
             )
-            if assessment is None:
+            if handoff is None:
                 continue
+            elapsed_ms, assessment = handoff
             matches.append(
                 (
                     float(elapsed_ms),
@@ -1467,6 +1530,30 @@ class PerBallPocketFSM:
         assessment = matches[0][3]
         self._adopt_track_handoff(memory, source)
         return assessment
+
+    def _assess_cross_track_history(
+        self,
+        source: _PocketMemory,
+        current: PocketApproachProbe,
+        now_ns: int,
+        *,
+        limits: PocketTrajectoryLimits,
+    ) -> tuple[float, PocketEntryAssessment] | None:
+        samples = list(source.trajectory_history)
+        if source.trajectory_anchor_probe is not None and source.trajectory_anchor_ts_ns is not None:
+            samples.insert(0, (source.trajectory_anchor_ts_ns, source.trajectory_anchor_probe))
+        for ts_ns, probe in reversed(samples):
+            elapsed_ms = float(self._elapsed_ms(now_ns, ts_ns))
+            assessment = assess_track_handoff(
+                probe,
+                current,
+                source_track_id=source.track_id,
+                elapsed_ms=elapsed_ms,
+                limits=limits,
+            )
+            if assessment is not None:
+                return elapsed_ms, assessment
+        return None
 
     def _assess_same_track_history(
         self,
@@ -1583,7 +1670,53 @@ class PerBallPocketFSM:
                 or evidence.crossed_throat
                 or evidence.visual_inward
                 or self._projected_visual_confirmation(memory)
+                or "terminal_track_disappearance" in evidence.evidence_sources
             )
+        )
+
+    def _record_terminal_disappearance_evidence(self, memory: _PocketMemory) -> None:
+        evidence = memory.evidence
+        if evidence is None or "terminal_track_disappearance" in evidence.evidence_sources:
+            return
+        if memory.nonvisible_since_ns is None:
+            return
+        if memory.reappear_veto or evidence.visual_outward:
+            return
+        if not evidence.projected_entry or not evidence.observer_active:
+            return
+        if evidence.visual_status not in {"clear", "stale_lip"}:
+            return
+        if memory.track_id not in {int(value) for value in evidence.associated_track_ids}:
+            return
+        required_sources = {"frame_difference", "ball_sized_motion", "foreground_motion"}
+        if not required_sources.issubset({str(value) for value in evidence.evidence_sources}):
+            return
+        limits = self._trajectory_limits()
+        if float(evidence.entry_speed_mm_s) < float(limits.min_speed_mm_s):
+            return
+        corridor_half_width = 0.75 * max(1.0, float(self.ball_diameter_mm))
+        if abs(float(evidence.entry_lateral_mm)) > corridor_half_width:
+            return
+        if abs(float(evidence.projected_lateral_mm)) > corridor_half_width:
+            return
+        if evidence.best_entry_depth_mm is None:
+            return
+        terminal_depth = 2.0 * max(1.0, float(self.ball_diameter_mm))
+        if float(evidence.best_entry_depth_mm) < -terminal_depth:
+            return
+        if evidence.visual_motion_score < 0.30 or evidence.visual_foreground_score < 0.20:
+            return
+        evidence.evidence_sources.append("terminal_track_disappearance")
+
+    def _memory_in_terminal_corridor(self, memory: _PocketMemory, pocket_index: int) -> bool:
+        probe = memory.last_approach_probe
+        if probe is None or not probe.geometry_valid or probe.pocket_index != int(pocket_index):
+            return False
+        depth_limit = 1.1 * max(1.0, float(self.ball_diameter_mm))
+        lateral_limit = float(probe.mouth_half_width_mm) + 0.5 * float(self.ball_diameter_mm)
+        return bool(
+            float(probe.depth_mm) >= -depth_limit
+            and abs(float(probe.signed_lateral_mm)) <= lateral_limit
         )
 
     def _projected_visual_candidate(self, memory: _PocketMemory) -> bool:
@@ -1729,6 +1862,12 @@ class PerBallPocketFSM:
 
     def _entry_history_ms(self) -> int:
         return max(100, int(getattr(self.config, "pocket_entry_history_ms", 1500) or 1500))
+
+    def _pre_shot_visual_relay_ms(self) -> int:
+        return max(
+            self._trajectory_limits().handoff_ms,
+            int(getattr(self.config, "pocket_pre_shot_visual_relay_ms", 2600) or 2600),
+        )
 
     def _blur_max_aspect_ratio(self) -> float:
         return max(1.45, float(getattr(self.config, "pocket_blur_max_aspect_ratio", 2.8) or 2.8))
