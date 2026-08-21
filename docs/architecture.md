@@ -33,5 +33,5 @@ flowchart LR
 - 阻挡球碰撞净空始终使用本帧原始测量位置，避免滤波延迟降低安全性。
 - `PocketEntryCorridor` 在有限袋口内搜索完整球可通过的球心入口；拟合袋心只保留为袋号和洞心语义，不再强迫物体球线穿过单一点。
 - 非撞库目标球路线必须是从目标球到袋口走廊的单一直线；需要撞库的路线只能由目标击球模块给出包含真实碰库点的显式折线，禁止在袋口人工插入无碰撞折点。
-- 进球通知位于检测事件 seam：状态机发出 `POCKET_DETECTED` 时立即提示，后续同一决定的 `POCKET_CONFIRMED / POT_PROBABLE` 由桌面GUI与Web共享的 `PocketNoticeTracker` 去重。
+- 进球通知位于检测事件 seam：状态机发出 `POCKET_DETECTED` 时立即提示，后续同一决定的 `POCKET_CONFIRMED / POT_PROBABLE` 由桌面GUI与Web共享的 `PocketNoticeTracker` 去重。桌面适配器是主控制台拥有的非模态 `OperatorPocketNoticePopup`，不经过 `ProjectionWindow`。
 - 学习系统不在本程序内实现，不做训练数据采集。

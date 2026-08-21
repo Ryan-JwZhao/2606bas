@@ -95,6 +95,7 @@ from .calibration_workbench import CalibrationWorkbenchDialog
 from .complete_calibration_wizard import CompleteCalibrationWizardDialog
 from .engineered_ball_compensation_wizard import EngineeredBallCompensationWizardDialog
 from .geometry_reference import draw_geometry_reference_lines
+from .pocket_notice_popup import OperatorPocketNoticePopup
 from .projection_debug import append_projected_ball_overlays, append_projected_boundary_overlays
 from .projection_calibration_result import build_projection_calibration_result_overlay
 from .web_control_bridge import WebControlOperatorMixin
@@ -1609,6 +1610,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.resize(self.BASE_WIDTH, self.BASE_HEIGHT)
         self.setMinimumSize(1120, 720)
         self._build_ui()
+        self._desktop_pocket_notice_popup = OperatorPocketNoticePopup(self)
         self._sync_controls_from_config()
         self._apply_scale(force=True)
         self._set_running(False)
@@ -1888,26 +1890,6 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self.preview_frame.zoomChanged.connect(self._update_preview_zoom_controls)
         self._update_preview_zoom_controls(self.preview_frame.zoomFactor())
         self.preview_frame.viewportChanged.connect(self._refresh_preview_pixmap)
-        self.preview_frame.viewportChanged.connect(self._position_desktop_pocket_notice)
-        self.pocket_notice_label = QtWidgets.QLabel(self.preview_frame)
-        self.pocket_notice_label.setObjectName("pocketNotice")
-        self.pocket_notice_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.pocket_notice_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        self.pocket_notice_label.setStyleSheet(
-            "QLabel#pocketNotice {"
-            "background: rgba(8, 18, 14, 235);"
-            "border: 3px solid #5cde97;"
-            "border-radius: 14px;"
-            "color: #f5fff9;"
-            "font-size: 30px;"
-            "font-weight: 800;"
-            "padding: 14px 26px;"
-            "}"
-        )
-        self.pocket_notice_label.hide()
-        self._desktop_pocket_notice_timer = QtCore.QTimer(self)
-        self._desktop_pocket_notice_timer.setSingleShot(True)
-        self._desktop_pocket_notice_timer.timeout.connect(self.pocket_notice_label.hide)
         self.preview_layout.addWidget(self.preview_frame, 1)
         self.video_timeline_widget = QtWidgets.QWidget()
         self.video_timeline_widget.setObjectName("videoTimeline")
@@ -1970,31 +1952,15 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         messages = [message for message in messages if message]
         if not messages:
             return
-        self.pocket_notice_label.setText(f"进球！\n{' · '.join(messages)}")
-        self.pocket_notice_label.adjustSize()
-        self._position_desktop_pocket_notice()
-        self.pocket_notice_label.show()
-        self.pocket_notice_label.raise_()
-        self._desktop_pocket_notice_timer.start(4500)
-
-    def _position_desktop_pocket_notice(self) -> None:
-        label = getattr(self, "pocket_notice_label", None)
-        frame = getattr(self, "preview_frame", None)
-        if label is None or frame is None:
-            return
-        label.adjustSize()
-        x = max(12, int(round((frame.width() - label.width()) * 0.5)))
-        y = max(12, int(round(frame.height() * 0.08)))
-        label.move(x, y)
+        self._desktop_pocket_notice_popup.show_messages(messages)
+        self._append_log(f"进球提示：{' · '.join(messages)}")
+        LOGGER.info("Operator pocket notice displayed: %s", " | ".join(messages))
 
     def _clear_pocket_notices(self) -> None:
         self._pocket_notice_tracker().reset()
-        label = getattr(self, "pocket_notice_label", None)
-        if label is not None:
-            label.hide()
-        timer = getattr(self, "_desktop_pocket_notice_timer", None)
-        if timer is not None:
-            timer.stop()
+        popup = getattr(self, "_desktop_pocket_notice_popup", None)
+        if popup is not None:
+            popup.clear()
 
     def _build_right_sidebar(self) -> None:
         self.right_scroll_area = self._scroll_area()

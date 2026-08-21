@@ -9,7 +9,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtWidgets
+from PyQt5 import QtCore, QtWidgets
 
 from bas.config import AppConfig
 from bas.capture import VideoTimelineState
@@ -56,8 +56,23 @@ def test_operator_window_uses_scrollable_three_column_layout() -> None:
     assert window.preview_caption.height() < 30
     assert abs((window.preview_label.width() / max(1, window.preview_label.height())) - (16.0 / 9.0)) < 0.05
     assert window.preview_panel.height() > window.plan_panel.height()
-    assert window.pocket_notice_label.parent() is window.preview_frame
-    assert window.pocket_notice_label.isHidden() is True
+    assert window._desktop_pocket_notice_popup.parent() is window
+    assert window._desktop_pocket_notice_popup.isHidden() is True
+
+    window.close()
+    app.processEvents()
+
+
+def test_pocket_event_opens_a_non_modal_popup_on_the_operator_frontend_only() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    projection_calls: list[str] = []
+    window.projection_window = SimpleNamespace(
+        set_overlay=lambda *_args, **_kwargs: projection_calls.append("set_overlay"),
+        set_image=lambda *_args, **_kwargs: projection_calls.append("set_image"),
+    )
+    window.show()
+    app.processEvents()
 
     notices = window._observe_web_events(
         [
@@ -65,17 +80,29 @@ def test_operator_window_uses_scrollable_three_column_layout() -> None:
                 "POCKET_DETECTED",
                 1,
                 1,
-                payload={"decision_id": "pocket:gui", "group": "solid", "track_id": 2, "pocket_index": 0},
+                payload={"decision_id": "pocket:operator", "group": "solid", "track_id": 2, "pocket_index": 0},
             )
         ]
     )
-    if notices:
-        window._show_desktop_pocket_notice(notices)
+    window._show_desktop_pocket_notice(notices)
     app.processEvents()
 
-    assert window.pocket_notice_label.isVisible() is True
-    assert "全色球进洞" in window.pocket_notice_label.text()
+    popup = window._desktop_pocket_notice_popup
+    assert popup.isVisible() is True
+    assert popup.isModal() is False
+    assert popup.parent() is window
+    assert "全色球进洞" in popup.text()
+    assert popup.windowFlags() & QtCore.Qt.WindowStaysOnTopHint
+    assert popup.testAttribute(QtCore.Qt.WA_ShowWithoutActivating) is True
+    assert popup.windowHandle().screen() is window.windowHandle().screen()
+    assert projection_calls == []
+    assert "进球提示：全色球进洞" in window.log_box.toPlainText()
 
+    window._clear_pocket_notices()
+    app.processEvents()
+    assert popup.isHidden() is True
+
+    window.projection_window = None
     window.close()
     app.processEvents()
 
