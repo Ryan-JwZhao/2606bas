@@ -42,6 +42,10 @@ class PocketEvidence:
     observer_latency_ms: float = 0.0
     associated_track_ids: list[int] = field(default_factory=list)
     evidence_sources: list[str] = field(default_factory=list)
+    visual_lip_observed: bool = False
+    visual_motion_score: float = 0.0
+    visual_foreground_score: float = 0.0
+    visual_lip_last_seen_ns: Optional[int] = None
 
 
 @dataclass
@@ -302,9 +306,9 @@ class PerBallPocketFSM:
         )
 
     def _expire_stale_observed_candidates(self, frame: TracksFrame, events: List[Event]) -> None:
-        timeout_ms = max(1800, int(getattr(self.config, "pocket_visual_confirmation_ms", 1300)) + 400)
         for memory in self._memory.values():
             evidence = memory.evidence
+            timeout_ms = self._observation_timeout_ms(memory)
             if (
                 evidence is None
                 or memory.resolved
@@ -321,6 +325,16 @@ class PerBallPocketFSM:
                 candidate_reason="automatic_observation_timeout",
             )
 
+    def _observation_timeout_ms(self, memory: _PocketMemory) -> int:
+        base = max(1800, int(getattr(self.config, "pocket_visual_confirmation_ms", 1300)) + 400)
+        evidence = memory.evidence
+        if evidence is None or not self._projected_visual_candidate(memory):
+            return base
+        pre_disappearance_ms = 0
+        if memory.nonvisible_since_ns is not None:
+            pre_disappearance_ms = self._elapsed_ms(memory.nonvisible_since_ns, evidence.candidate_since_ns)
+        return max(base, pre_disappearance_ms + self._lip_veto_threshold_ms(memory) + 400)
+
     def _apply_visual_observations(
         self,
         frame: TracksFrame,
@@ -328,6 +342,11 @@ class PerBallPocketFSM:
         events: List[Event],
     ) -> None:
         by_pocket = {int(item.pocket_index): item for item in observations_frame.observations}
+        visible_track_ids = {
+            int(track.track_id)
+            for track in frame.tracks
+            if str(track.visibility).strip().lower() == "visible" and float(track.quality) > 0.25
+        }
         for memory in self._memory.values():
             evidence = memory.evidence
             if evidence is None or memory.resolved:
@@ -363,10 +382,24 @@ class PerBallPocketFSM:
                     continue
                 self._merge_visual_metadata(evidence, observed)
                 if observed.lip_occupied:
+                    live_lip_track = bool(
+                        visible_track_ids & {int(value) for value in observed.associated_track_ids}
+                    )
+                    if (
+                        evidence.visual_status == "stale_lip"
+                        and self._projected_visual_candidate(memory)
+                        and not live_lip_track
+                    ):
+                        # Foreground afterimages may retain a historical track
+                        # vote.  They cannot re-arm a stale lip veto without a
+                        # currently visible ball at the pocket.
+                        continue
                     evidence.visual_status = "lip_occupied"
+                    evidence.visual_lip_observed = True
+                    evidence.visual_lip_last_seen_ns = frame.ts_cam_ns
                     if memory.visual_lip_since_ns is None:
                         memory.visual_lip_since_ns = frame.ts_cam_ns
-                    if self._elapsed_ms(frame.ts_cam_ns, memory.visual_lip_since_ns) >= self._lip_veto_ms():
+                    if self._lip_veto_elapsed_ms(memory, frame.ts_cam_ns) >= self._lip_veto_threshold_ms(memory):
                         self._reject(
                             memory,
                             frame,
@@ -392,6 +425,19 @@ class PerBallPocketFSM:
                     events,
                     missing_ms=self._memory_missing_ms(memory, frame.ts_cam_ns),
                 )
+            elif (
+                evidence is not None
+                and not memory.resolved
+                and evidence.visual_status == "lip_occupied"
+                and evidence.visual_lip_last_seen_ns is not None
+                and self._elapsed_ms(frame.ts_cam_ns, evidence.visual_lip_last_seen_ns) >= 450
+                and self._projected_visual_candidate(memory)
+            ):
+                # The observer no longer associates the old lip foreground with
+                # this candidate.  Preserve that distinction instead of letting
+                # a stale boolean veto the shot indefinitely.
+                evidence.visual_status = "stale_lip"
+                memory.visual_lip_since_ns = None
 
     def _start_visual_candidate(
         self,
@@ -550,6 +596,11 @@ class PerBallPocketFSM:
             if normalized and normalized not in sources:
                 sources.append(normalized)
         evidence.evidence_sources = sources
+        evidence.visual_motion_score = max(float(evidence.visual_motion_score), float(observed.motion_score))
+        evidence.visual_foreground_score = max(
+            float(evidence.visual_foreground_score),
+            float(observed.foreground_score),
+        )
 
     def debug_snapshot(self) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
@@ -1035,6 +1086,16 @@ class PerBallPocketFSM:
                 self._emit_detected_if_ready(memory, frame, events, missing_ms=missing_ms)
             return
         if memory.evidence is not None and memory.evidence.observer_active:
+            if self._projected_visual_candidate(memory):
+                # Lip occupancy has its own longer veto window.  Do not let the
+                # generic commit-ready timer reject a strictly associated fast
+                # entry before the observer can either clear the mouth or prove
+                # that a ball is still sitting on the lip.
+                if memory.visual_lip_since_ns is not None:
+                    if self._lip_veto_elapsed_ms(memory, frame.ts_cam_ns) < self._lip_veto_threshold_ms(memory):
+                        return
+                elif self._confirmation_elapsed_ms(memory, frame.ts_cam_ns) < self._final_confirmation_missing_ms(memory):
+                    return
             self._reject(
                 memory,
                 frame,
@@ -1320,6 +1381,10 @@ class PerBallPocketFSM:
             "observer_latency_ms": float(evidence.observer_latency_ms) if evidence is not None else 0.0,
             "associated_track_ids": list(evidence.associated_track_ids) if evidence is not None else [],
             "evidence_sources": list(evidence.evidence_sources) if evidence is not None else [],
+            "visual_lip_observed": bool(evidence and evidence.visual_lip_observed),
+            "visual_motion_score": float(evidence.visual_motion_score) if evidence is not None else 0.0,
+            "visual_foreground_score": float(evidence.visual_foreground_score) if evidence is not None else 0.0,
+            "visual_lip_last_seen_ns": evidence.visual_lip_last_seen_ns if evidence is not None else None,
             "pocket_index": evidence.pocket_index if evidence is not None else None,
             "distance_mm": memory.last_distance_mm,
             "depth_mm": float(memory.last_depth_mm),
@@ -1508,13 +1573,53 @@ class PerBallPocketFSM:
             return ["insufficient_pocket_evidence"]
         return ["pocket_evidence_ambiguous"]
 
-    @staticmethod
-    def _strong_confirmation_evidence(memory: _PocketMemory) -> bool:
+    def _strong_confirmation_evidence(self, memory: _PocketMemory) -> bool:
         evidence = memory.evidence
         return bool(
             evidence
             and not evidence.visual_outward
-            and (evidence.entered_interior or evidence.crossed_throat or evidence.visual_inward)
+            and (
+                evidence.entered_interior
+                or evidence.crossed_throat
+                or evidence.visual_inward
+                or self._projected_visual_confirmation(memory)
+            )
+        )
+
+    def _projected_visual_candidate(self, memory: _PocketMemory) -> bool:
+        """Strict bridge for a fast ball that vanishes between detector frames.
+
+        A trajectory projection alone remains insufficient.  The bridge also
+        requires the same track at the lip, three independent visual-motion
+        sources, meaningful speed and a narrow projected mouth corridor.
+        """
+
+        evidence = memory.evidence
+        if evidence is None or not evidence.projected_entry or not evidence.observer_active:
+            return False
+        if evidence.visual_outward or memory.reappear_veto or not evidence.visual_lip_observed:
+            return False
+        if evidence.entry_source_track_id != memory.track_id:
+            return False
+        if memory.track_id not in {int(value) for value in evidence.associated_track_ids}:
+            return False
+        required_sources = {"frame_difference", "ball_sized_motion", "foreground_motion"}
+        if not required_sources.issubset({str(value) for value in evidence.evidence_sources}):
+            return False
+        if float(evidence.entry_speed_mm_s) < float(self._trajectory_limits().min_speed_mm_s):
+            return False
+        lateral_limit = 0.75 * max(1.0, float(self.ball_diameter_mm))
+        if abs(float(evidence.projected_lateral_mm)) > lateral_limit:
+            return False
+        return bool(evidence.visual_motion_score >= 0.30 and evidence.visual_foreground_score >= 0.20)
+
+    def _projected_visual_confirmation(self, memory: _PocketMemory) -> bool:
+        evidence = memory.evidence
+        return bool(
+            self._projected_visual_candidate(memory)
+            and evidence is not None
+            and evidence.visual_status in {"clear", "stale_lip"}
+            and memory.visual_lip_since_ns is None
         )
 
     def _occluded_commit_allowed(self, memory: _PocketMemory) -> bool:
@@ -1600,6 +1705,27 @@ class PerBallPocketFSM:
 
     def _lip_veto_ms(self) -> int:
         return max(1, int(getattr(self.config, "pocket_lip_veto_ms", 1100) or 1100))
+
+    def _lip_veto_threshold_ms(self, memory: _PocketMemory) -> int:
+        base = self._lip_veto_ms()
+        if not self._projected_visual_candidate(memory):
+            return base
+        visual_confirmation = max(
+            1,
+            int(getattr(self.config, "pocket_visual_confirmation_ms", 1300) or 1300),
+        )
+        return max(base, visual_confirmation + 300)
+
+    def _lip_veto_elapsed_ms(self, memory: _PocketMemory, now_ns: int) -> int:
+        since = memory.visual_lip_since_ns
+        if since is None:
+            return 0
+        # A moving, still-visible ball may occupy the lip before it actually
+        # disappears into the pocket.  Only the post-disappearance occupancy
+        # is evidence that it remained stuck on the jaw.
+        if memory.nonvisible_since_ns is not None:
+            since = max(int(since), int(memory.nonvisible_since_ns))
+        return self._elapsed_ms(now_ns, since)
 
     def _entry_history_ms(self) -> int:
         return max(100, int(getattr(self.config, "pocket_entry_history_ms", 1500) or 1500))

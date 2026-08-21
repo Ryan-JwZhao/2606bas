@@ -103,6 +103,94 @@ def test_visual_outward_crossing_rejects_bounce() -> None:
     assert "visual_outward_crossing" in rejection.payload["reason_codes"]
 
 
+def test_video_projected_entry_with_associated_lip_motion_can_confirm_after_clear() -> None:
+    """01:39: a fast same-track ball vanished at the lip and never reappeared."""
+
+    sm = _machine()
+    far = _ball(2, "solid", 500, 178)
+    far.velocity_mm_s = (-23.0, -362.0)
+    near = _ball(2, "solid", 500, 52)
+    near.velocity_mm_s = (-3.0, -416.0)
+    sm.update(
+        TracksFrame(1, 1_000_000_000, [far]),
+        _visual(1, 1_000_000_000, clear=True, track_ids=[2]),
+    )
+    candidate = sm.update(
+        TracksFrame(2, 1_100_000_000, [near]),
+        _visual(2, 1_100_000_000, lip=True, track_ids=[2], motion_score=0.95, foreground_score=0.9),
+    )
+    sm.update(
+        TracksFrame(3, 1_200_000_000, []),
+        _visual(3, 1_200_000_000, lip=True, track_ids=[2], motion_score=0.9, foreground_score=0.85),
+    )
+    before_window = sm.update(
+        TracksFrame(4, 2_250_000_000, []),
+        _visual(4, 2_250_000_000, lip=True, track_ids=[2], motion_score=0.8, foreground_score=0.75),
+    )
+    confirmed = sm.update(
+        TracksFrame(5, 2_500_000_000, []),
+        _visual(5, 2_500_000_000, clear=True, track_ids=[2]),
+    )
+
+    assert any(event.name == "POCKET_CANDIDATE" for event in candidate.events)
+    assert not any(event.name == "POCKET_REJECTED" for event in before_window.events)
+    assert any(event.name == "POCKET_DETECTED" for event in confirmed.events)
+
+
+def test_projected_visual_entry_still_rejects_persistent_lip_after_extended_window() -> None:
+    sm = _machine()
+    far = _ball(2, "solid", 500, 178)
+    far.velocity_mm_s = (0.0, -362.0)
+    near = _ball(2, "solid", 500, 52)
+    near.velocity_mm_s = (0.0, -416.0)
+    sm.update(TracksFrame(1, 1_000_000_000, [far]), _visual(1, 1_000_000_000, clear=True, track_ids=[2]))
+    sm.update(
+        TracksFrame(2, 1_100_000_000, [near]),
+        _visual(2, 1_100_000_000, lip=True, track_ids=[2], motion_score=0.95, foreground_score=0.9),
+    )
+    sm.update(
+        TracksFrame(3, 1_200_000_000, []),
+        _visual(3, 1_200_000_000, lip=True, track_ids=[2], motion_score=0.9, foreground_score=0.85),
+    )
+    rejected = sm.update(
+        TracksFrame(4, 2_900_000_000, []),
+        _visual(4, 2_900_000_000, lip=True, track_ids=[2], motion_score=0.8, foreground_score=0.75),
+    )
+
+    event = next(event for event in rejected.events if event.name == "POCKET_REJECTED")
+    assert "persistent_lip_occupancy" in event.payload["reason_codes"]
+    assert not any(event.name == "POCKET_DETECTED" for event in rejected.events)
+
+
+def test_stale_lip_cannot_be_rearmed_by_history_only_foreground() -> None:
+    sm = _machine()
+    far = _ball(2, "solid", 500, 178)
+    far.velocity_mm_s = (0.0, -362.0)
+    near = _ball(2, "solid", 500, 52)
+    near.velocity_mm_s = (0.0, -416.0)
+    sm.update(TracksFrame(1, 1_000_000_000, [far]), _visual(1, 1_000_000_000, clear=True, track_ids=[2]))
+    sm.update(
+        TracksFrame(2, 1_100_000_000, [near]),
+        _visual(2, 1_100_000_000, lip=True, track_ids=[2], motion_score=0.95, foreground_score=0.9),
+    )
+    sm.update(
+        TracksFrame(3, 1_200_000_000, []),
+        _visual(3, 1_200_000_000, lip=True, track_ids=[2], motion_score=0.9, foreground_score=0.85),
+    )
+    sm.update(TracksFrame(4, 1_700_000_000, []), PocketVisualObservationFrame(4, 1_700_000_000, []))
+    history_only = sm.update(
+        TracksFrame(5, 2_100_000_000, []),
+        _visual(5, 2_100_000_000, lip=True, track_ids=[2], motion_score=0.8, foreground_score=0.75),
+    )
+    detected = sm.update(
+        TracksFrame(6, 2_500_000_000, []),
+        PocketVisualObservationFrame(6, 2_500_000_000, []),
+    )
+
+    assert not any(event.name == "POCKET_REJECTED" for event in history_only.events)
+    assert any(event.name == "POCKET_DETECTED" for event in detected.events)
+
+
 def test_persistent_lip_occupancy_vetoes_cue_ball_false_goal() -> None:
     sm = _machine()
     sm.update(TracksFrame(1, 1_000_000_000, [_ball(1, "cue", 500, 70)]), _visual(1, 1_000_000_000, group="cue", inward=True, track_ids=[1]))

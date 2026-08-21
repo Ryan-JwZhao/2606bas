@@ -5,7 +5,7 @@ import math
 import numpy as np
 import pytest
 
-from bas.planning.pocket_clearance import assess_pocket_entry
+from bas.planning.pocket_clearance import assess_pocket_entry, find_pocket_entry_path
 
 
 BALL_RADIUS_MM = 28.575
@@ -125,3 +125,38 @@ def test_missing_or_degenerate_mouth_geometry_fails_closed() -> None:
     assert missing.reason == "missing_mouth"
     assert not degenerate.feasible
     assert degenerate.reason == "degenerate_mouth"
+
+
+def test_video_successful_left_rail_pot_uses_full_ball_entry_corridor() -> None:
+    """The 01:39 solid pot is real even though the fitted-centre ray clips a jaw."""
+
+    pocket, mouth = RECORDED_POCKETS[0]
+    entry = find_pocket_entry_path(
+        (79.05219268798828, 337.2412109375),
+        pocket,
+        mouth,
+        ball_radius_mm=BALL_RADIUS_MM,
+        safety_margin_mm=2.0,
+        max_entrance_angle_deg=50.0,
+    )
+
+    assert entry is not None
+    assert entry.assessment.feasible
+    assert entry.assessment.clearance_margin_mm > 10.0
+    assert entry.assessment.entrance_angle_deg < 30.0
+    assert entry.standard == "full_ball_corridor_v2"
+
+
+def test_entry_corridor_still_rejects_old_impossible_green_side_pocket_route() -> None:
+    pocket, mouth = RECORDED_POCKETS[1]
+
+    entry = find_pocket_entry_path(
+        (797.4368896484375, 216.83296966552734),
+        pocket,
+        mouth,
+        ball_radius_mm=BALL_RADIUS_MM,
+        safety_margin_mm=2.0,
+        max_entrance_angle_deg=50.0,
+    )
+
+    assert entry is None

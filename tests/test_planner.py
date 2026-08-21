@@ -284,6 +284,89 @@ def test_planner_rejects_latest_no_line_route_when_ball_cannot_clear_side_pocket
     assert hook_plan.candidates == []
 
 
+def _set_recorded_top_left_pocket(service: CalibrationService) -> None:
+    service.table.center_playable_polygon_mm = [
+        (31.0, 31.0),
+        (2509.0, 31.0),
+        (2509.0, 1239.0),
+        (31.0, 1239.0),
+    ]
+    service.table.planning_pockets_mm = [(1.504668116569519, -85.4677734375)]
+    service.table.planning_pocket_mouths_mm = [
+        (
+            (-0.16607864201068878, 1.1135486364364624),
+            (82.14236450195312, -51.948265075683594),
+        )
+    ]
+
+
+def test_video_successful_left_rail_ball_gets_a_safe_direct_route() -> None:
+    service = _service_for_table(2540.0, 1270.0)
+    _set_recorded_top_left_pocket(service)
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=3,
+            target_shot_enabled=False,
+            cue_sector_correction_enabled=False,
+            route_stability_enabled=False,
+            route_topology_continuity_enabled=False,
+        ),
+        service,
+    )
+    state = MatchStateFrame(
+        frame_id=855,
+        ts_cam_ns=1,
+        phase="STABLE_IDLE",
+        turn_target_group="solid",
+        layout=[
+            _obs(15, "cue", 183.66494750976562, 539.41064453125),
+            _obs(2, "solid", 79.05219268798828, 337.2412109375),
+        ],
+    )
+
+    plan = planner.plan(state)
+
+    assert plan.best is not None
+    assert plan.best.target_track_id == 2
+    assert plan.best.pocket_index == 0
+    assert plan.best.explanation["pocket_entry_standard"] == "full_ball_corridor_v2"
+    assert plan.best.explanation["pocket_clearance_margin_mm"] > 0.0
+
+
+def test_video_top_rail_ball_gets_only_a_bounded_high_risk_rail_assist() -> None:
+    service = _service_for_table(2540.0, 1270.0)
+    _set_recorded_top_left_pocket(service)
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=3,
+            target_shot_max_rebounds=0,
+            route_stability_enabled=False,
+            route_topology_continuity_enabled=False,
+        ),
+        service,
+    )
+    balls = planner._extract_balls(
+        [
+            _obs(15, "cue", 712.78076171875, 343.4842224121094),
+            _obs(6, "solid", 307.75811767578125, 50.38762664794922),
+        ]
+    )
+
+    candidate = planner.target_shot_planner.plan(
+        cue_ball=balls[0],
+        target=balls[1],
+        balls=balls,
+        decision=SimpleNamespace(status="video_rail_target"),
+    )
+
+    assert candidate is not None
+    assert candidate.explanation["rail_assisted"] is True
+    assert candidate.explanation["rail_assist_rail"] == "top"
+    assert candidate.explanation["rail_assist_deflection_deg"] <= 60.0
+    assert candidate.risk >= 0.75
+    assert len(candidate.object_line) == 3
+
+
 def test_corner_pocket_path_allows_terminal_exit_to_external_fitted_center() -> None:
     playable = np.asarray(
         [[31.0, 31.0], [2509.0, 31.0], [2509.0, 1239.0], [31.0, 1239.0]],

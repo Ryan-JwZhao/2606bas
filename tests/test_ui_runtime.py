@@ -901,7 +901,7 @@ def test_web_state_keeps_confirmed_pocket_notices_for_all_rule_ball_codes() -> N
 
     notices = state["pocket_notices"]
     assert [notice["ball_code"] for notice in notices] == ["wb", "bb", "sob", "stb"]
-    assert [notice["message"] for notice in notices] == ["wb进球", "bb进球", "sob进球", "stb进球"]
+    assert [notice["message"] for notice in notices] == ["白球进洞", "黑八进洞", "全色球进洞", "花色球进洞"]
     assert len({notice["sequence"] for notice in notices}) == 4
 
 

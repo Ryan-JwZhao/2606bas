@@ -65,4 +65,4 @@ def test_pocket_notice_tracker_supports_legacy_pot_event_and_deduplicates_modern
 
     created = tracker.observe([legacy, modern_confirmed, modern_alias], now_s=10.0)
 
-    assert [notice["message"] for notice in created] == ["stb进球", "sob进球"]
+    assert [notice["message"] for notice in created] == ["花色球进洞", "全色球进洞"]

@@ -17,8 +17,9 @@ from .cue_aim import CueStickAimDetector
 from .cue_sector import CueSectorCorrection
 from .hook_shot import HookShotPlanner
 from .learning import create_learning_ranker
-from .pocket_clearance import assess_pocket_entry
+from .pocket_clearance import find_pocket_entry_path
 from .pocket_targets import planning_pocket_mouth, planning_pocket_points
+from .rail_shot import RailAssistedShotPlanner
 from .route_stability import BallPositionMeasurement, PlanningPositionStabilizer, RouteTopologyContinuity
 from .target_shot import TargetShotDecision, TargetShotModeController, TargetShotPlanner
 from .target_lock import TargetLockController, TargetLockDecision
@@ -71,7 +72,8 @@ class GeometryPhysicsPlanner:
         self.cue_sector = CueSectorCorrection(config, calibration, aim_detector=self.aim_detector)
         self.target_lock = TargetLockController(config)
         self.target_shot_mode = TargetShotModeController(config, aim_detector=self.aim_detector)
-        self.target_shot_planner = TargetShotPlanner(config, calibration)
+        self.rail_shot_planner = RailAssistedShotPlanner(config, calibration)
+        self.target_shot_planner = TargetShotPlanner(config, calibration, rail_shot_planner=self.rail_shot_planner)
         self.hook_shot_planner = HookShotPlanner(config, self.target_shot_planner)
         self.position_stability = PlanningPositionStabilizer(config)
         self.route_topology = RouteTopologyContinuity(config)
@@ -183,11 +185,20 @@ class GeometryPhysicsPlanner:
         pockets = [np.asarray(p, dtype=np.float32) for p in planning_pocket_points(self.calibration.table)]
         center_polygon = self.calibration.table.center_playable_polygon_mm or self.calibration.table.inner_polygon_mm
         inner = np.asarray(center_polygon, dtype=np.float32)
+        rail_fallback_candidates: List[ShotCandidate] = []
         for target in targets:
+            target_candidates: List[ShotCandidate] = []
             for pocket_index, pocket in enumerate(pockets):
                 candidate = self._candidate(cue, target, pocket, pocket_index, balls, inner)
                 if candidate is not None:
-                    candidates.append(candidate)
+                    target_candidates.append(candidate)
+            if not target_candidates:
+                rail_fallback_candidates.extend(
+                    self.rail_shot_planner.candidates(cue_ball=cue, target=target, balls=balls)
+                )
+            candidates.extend(target_candidates)
+        if not candidates:
+            candidates = rail_fallback_candidates
         candidates = self.learning_ranker.rerank(candidates, state)
         if locked_target is not None:
             candidates = self._apply_target_lock(candidates, target_lock)
@@ -463,6 +474,8 @@ class GeometryPhysicsPlanner:
             for pocket_index, pocket in enumerate(pockets)
             if (candidate := self._candidate(cue, target, pocket, pocket_index, list(balls), inner)) is not None
         ]
+        if not candidates:
+            candidates = self.rail_shot_planner.candidates(cue_ball=cue, target=target, balls=balls)
         candidates = self.learning_ranker.rerank(candidates, state)
         candidates = [self._annotate_target_lock(candidate, target_lock) for candidate in candidates]
         candidates = self.route_topology.select(
@@ -595,20 +608,23 @@ class GeometryPhysicsPlanner:
         balls: List[_Ball],
         inner_polygon: np.ndarray,
     ) -> Optional[ShotCandidate]:
-        obj_vec = pocket - target.center_mm
-        obj_dist = float(np.linalg.norm(obj_vec))
-        if obj_dist < 1.0:
-            return None
-        obj_dir = unit(obj_vec)
-        entry_assessment = assess_pocket_entry(
+        entry_path = find_pocket_entry_path(
             target.center_mm,
             pocket,
             planning_pocket_mouth(self.calibration.table, pocket_index),
             ball_radius_mm=0.5 * float(self.calibration.table.ball_diameter_mm),
-            safety_margin_mm=float(self.config.object_path_margin_mm) + float(self.config.collision_padding_mm),
+            safety_margin_mm=max(0.0, float(getattr(self.config, "pocket_entry_safety_margin_mm", 2.0))),
+            max_entrance_angle_deg=max(0.0, float(getattr(self.config, "pocket_entry_max_angle_deg", 50.0))),
         )
-        if not entry_assessment.feasible:
+        if entry_path is None:
             return None
+        path_end = np.asarray(entry_path.path_end_mm, dtype=np.float32)
+        entry_assessment = entry_path.assessment
+        obj_vec = path_end - target.center_mm
+        obj_dist = float(np.linalg.norm(obj_vec))
+        if obj_dist < 1.0:
+            return None
+        obj_dir = unit(obj_vec)
         contact_dist = cue.radius_mm + target.radius_mm
         ghost = target.center_mm - obj_dir * contact_dist
         if not self._inside(inner_polygon, ghost, margin_mm=max(2.0, self.config.collision_padding_mm)):
@@ -623,7 +639,7 @@ class GeometryPhysicsPlanner:
             return None
         if not self._segment_inside(inner_polygon, cue.center_mm, ghost, margin_mm=max(0.0, self.config.collision_padding_mm)):
             return None
-        if not self._segment_inside_to_pocket(inner_polygon, target.center_mm, pocket, margin_mm=max(0.0, self.config.collision_padding_mm)):
+        if not self._segment_inside_to_pocket(inner_polygon, target.center_mm, path_end, margin_mm=max(0.0, self.config.collision_padding_mm)):
             return None
         cue_clearance = self._path_clearance(
             cue.center_mm,
@@ -634,7 +650,7 @@ class GeometryPhysicsPlanner:
         )
         obj_clearance = self._path_clearance(
             target.center_mm,
-            pocket,
+            path_end,
             balls,
             ignore={cue.track_id, target.track_id},
             moving_radius=target.radius_mm,
@@ -664,7 +680,7 @@ class GeometryPhysicsPlanner:
             ghost_ball=_pt(ghost),
             pocket_point=_pt(pocket),
             aim_line=[_pt(cue.center_mm), _pt(ghost)],
-            object_line=[_pt(target.center_mm), _pt(pocket)],
+            object_line=[_pt(target.center_mm), _pt(path_end)],
             cut_angle_deg=float(cut),
             cue_distance_mm=float(cue_dist),
             object_distance_mm=float(obj_dist),
@@ -680,6 +696,9 @@ class GeometryPhysicsPlanner:
                 "pocket_jaw_clearance_mm": float(entry_assessment.jaw_clearance_mm),
                 "pocket_required_clearance_mm": float(entry_assessment.required_clearance_mm),
                 "pocket_clearance_margin_mm": float(entry_assessment.clearance_margin_mm),
+                "pocket_entry_standard": entry_path.standard,
+                "pocket_mouth_crossing_mm": entry_assessment.mouth_crossing_mm,
+                "pocket_path_end_mm": entry_path.path_end_mm,
                 "learning_ranker": self.learning_ranker.version,
             },
         )
@@ -710,7 +729,7 @@ class GeometryPhysicsPlanner:
                 t = i / max(1, samples)
                 p = a * (1.0 - t) + b * t
                 remaining = (1.0 - t) * length
-                relaxed = -max(18.0, 2.0 * self.calibration.table.ball_diameter_mm) if remaining < 70.0 else margin_mm
+                relaxed = -max(18.0, 2.5 * self.calibration.table.ball_diameter_mm) if remaining < 70.0 else margin_mm
                 if not self._inside(polygon, p, margin_mm=relaxed):
                     return False
             return True
@@ -719,7 +738,7 @@ class GeometryPhysicsPlanner:
             a,
             b,
             margin_mm=margin_mm,
-            pocket_relief_mm=max(18.0, 2.0 * self.calibration.table.ball_diameter_mm),
+            pocket_relief_mm=max(18.0, 2.5 * self.calibration.table.ball_diameter_mm),
         )
 
     def _path_clearance(self, a: np.ndarray, b: np.ndarray, balls: List[_Ball], ignore: set[int], moving_radius: float) -> float:

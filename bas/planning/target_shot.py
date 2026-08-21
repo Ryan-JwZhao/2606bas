@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, Sequence
 
 import numpy as np
@@ -15,8 +15,9 @@ from ..utils import angle_deg, clamp, point_segment_distance, unit
 from .aim_context import PlannerAimFrameContext
 from .corridor_targeting import rank_object_balls_in_corridor
 from .cue_aim import CueStickAimDetector
-from .pocket_clearance import assess_pocket_entry
+from .pocket_clearance import assess_pocket_entry, find_pocket_entry_path
 from .pocket_targets import planning_pocket_mouth, planning_pocket_points
+from .rail_shot import RailAssistedShotPlanner
 
 
 OBJECT_GROUPS = {"solid", "stripe", "black"}
@@ -60,6 +61,8 @@ class _Route:
     pocket_jaw_clearance_mm: float
     pocket_required_clearance_mm: float
     pocket_clearance_margin_mm: float
+    pocket_entry_standard: str
+    pocket_mouth_crossing_mm: tuple[float, float] | None
 
 
 @dataclass(frozen=True)
@@ -347,11 +350,18 @@ class TargetShotModeController:
 
 
 class TargetShotPlanner:
-    version = "target_shot_route_v1"
+    version = "target_shot_route_v2"
 
-    def __init__(self, config: PlannerConfig, calibration: CalibrationService):
+    def __init__(
+        self,
+        config: PlannerConfig,
+        calibration: CalibrationService,
+        *,
+        rail_shot_planner: RailAssistedShotPlanner | None = None,
+    ):
         self.config = config
         self.calibration = calibration
+        self.rail_shot_planner = rail_shot_planner or RailAssistedShotPlanner(config, calibration)
         self.last_status = "idle"
 
     def plan(
@@ -364,6 +374,27 @@ class TargetShotPlanner:
     ) -> ShotCandidate | None:
         routes = self._routes(cue_ball=cue_ball, target=target, balls=balls)
         if not routes:
+            rail_candidates = self.rail_shot_planner.candidates(
+                cue_ball=cue_ball,
+                target=target,
+                balls=balls,
+            )
+            if rail_candidates:
+                best = rail_candidates[0]
+                explanation = dict(best.explanation)
+                explanation.update(
+                    {
+                        "target_shot": True,
+                        "target_shot_mode_version": TargetShotModeController.version,
+                        "target_shot_route_version": self.version,
+                        "target_shot_status": str(getattr(decision, "status", "rail_assisted")),
+                        "target_shot_rebounds": 0,
+                        "target_shot_rails": [],
+                        "target_shot_independent_of_cue_stick": True,
+                    }
+                )
+                self.last_status = "ok:rail_assisted"
+                return replace(best, explanation=explanation)
             self.last_status = "no_theoretical_route"
             return None
         best = max(routes, key=lambda route: route.score)
@@ -400,18 +431,43 @@ class TargetShotPlanner:
         target_radius = float(max(1.0, getattr(target, "radius_mm", 0.5 * self.calibration.table.ball_diameter_mm)))
         motion = self._motion_rect(target_radius)
 
-        object_points = self._object_path(target_center, pocket, rails, motion)
-        if object_points is None or len(object_points) < 2:
-            return None
-        entry_assessment = assess_pocket_entry(
-            object_points[-2],
-            pocket,
-            planning_pocket_mouth(self.calibration.table, pocket_index),
-            ball_radius_mm=0.5 * float(self.calibration.table.ball_diameter_mm),
-            safety_margin_mm=float(self.config.object_path_margin_mm) + float(self.config.collision_padding_mm),
-        )
-        if not entry_assessment.feasible:
-            return None
+        mouth = planning_pocket_mouth(self.calibration.table, pocket_index)
+        safety_margin = max(0.0, float(getattr(self.config, "pocket_entry_safety_margin_mm", 2.0)))
+        max_entry_angle = max(0.0, float(getattr(self.config, "pocket_entry_max_angle_deg", 50.0)))
+        if not rails:
+            entry_path = find_pocket_entry_path(
+                target_center,
+                pocket,
+                mouth,
+                ball_radius_mm=0.5 * float(self.calibration.table.ball_diameter_mm),
+                safety_margin_mm=safety_margin,
+                max_entrance_angle_deg=max_entry_angle,
+            )
+            if entry_path is None:
+                return None
+            entry_assessment = entry_path.assessment
+            path_end = np.asarray(entry_path.path_end_mm, dtype=np.float32)
+            if not self._direct_segment_reaches_pocket(target_center, path_end, motion):
+                return None
+            object_points = [target_center.astype(np.float32), path_end]
+            entry_standard = entry_path.standard
+        else:
+            object_points = self._object_path(target_center, pocket, rails, motion)
+            if object_points is None or len(object_points) < 2:
+                return None
+            entry_assessment = assess_pocket_entry(
+                object_points[-2],
+                pocket,
+                mouth,
+                ball_radius_mm=0.5 * float(self.calibration.table.ball_diameter_mm),
+                safety_margin_mm=safety_margin,
+            )
+            # Rebound geometry already terminates at the fitted pocket centre.
+            # Keep its established full-jaw-clearance rule; the 50-degree
+            # corridor ceiling applies to the newly searched direct entry aim.
+            if not entry_assessment.feasible:
+                return None
+            entry_standard = "full_ball_fixed_center_v2"
 
         first_dir = unit(object_points[1] - target_center)
         if float(np.linalg.norm(first_dir)) < 1e-6:
@@ -461,6 +517,8 @@ class TargetShotPlanner:
             pocket_jaw_clearance_mm=float(entry_assessment.jaw_clearance_mm),
             pocket_required_clearance_mm=float(entry_assessment.required_clearance_mm),
             pocket_clearance_margin_mm=float(entry_assessment.clearance_margin_mm),
+            pocket_entry_standard=entry_standard,
+            pocket_mouth_crossing_mm=entry_assessment.mouth_crossing_mm,
         )
 
     def _object_path(
@@ -509,7 +567,7 @@ class TargetShotPlanner:
             start,
             pocket,
             margin_mm=max(0.0, float(self.config.collision_padding_mm)),
-            pocket_relief_mm=max(18.0, 2.0 * float(self.calibration.table.ball_diameter_mm)),
+            pocket_relief_mm=max(18.0, 2.5 * float(self.calibration.table.ball_diameter_mm)),
         )
 
     def _segment_reaches_pocket(self, start: np.ndarray, pocket: np.ndarray, rect: _Rect) -> bool:
@@ -642,6 +700,8 @@ class TargetShotPlanner:
             "pocket_jaw_clearance_mm": float(route.pocket_jaw_clearance_mm),
             "pocket_required_clearance_mm": float(route.pocket_required_clearance_mm),
             "pocket_clearance_margin_mm": float(route.pocket_clearance_margin_mm),
+            "pocket_entry_standard": route.pocket_entry_standard,
+            "pocket_mouth_crossing_mm": route.pocket_mouth_crossing_mm,
             "target_shot_independent_of_cue_stick": True,
         }
         return ShotCandidate(

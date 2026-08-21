@@ -14,6 +14,13 @@ BALL_CODE_BY_GROUP = {
     "stripe": "stb",
 }
 
+BALL_MESSAGE_BY_GROUP = {
+    "cue": "白球进洞",
+    "black": "黑八进洞",
+    "solid": "全色球进洞",
+    "stripe": "花色球进洞",
+}
+
 POCKET_NOTICE_EVENT_NAMES = {"POCKET_CONFIRMED", "POT_PROBABLE"}
 
 
@@ -82,7 +89,7 @@ class PocketNoticeTracker:
                 decision_id=str(payload.get("decision_id") or "").strip(),
                 group=group,
                 ball_code=ball_code,
-                message=f"{ball_code}进球",
+                message=BALL_MESSAGE_BY_GROUP[group],
                 track_id=payload.get("track_id"),
                 pocket_index=payload.get("pocket_index"),
             )
@@ -124,4 +131,10 @@ class PocketNoticeTracker:
         )
 
 
-__all__ = ["BALL_CODE_BY_GROUP", "POCKET_NOTICE_EVENT_NAMES", "PocketNotice", "PocketNoticeTracker"]
+__all__ = [
+    "BALL_CODE_BY_GROUP",
+    "BALL_MESSAGE_BY_GROUP",
+    "POCKET_NOTICE_EVENT_NAMES",
+    "PocketNotice",
+    "PocketNoticeTracker",
+]

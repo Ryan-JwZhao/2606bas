@@ -81,6 +81,12 @@ class UserSettings:
     replay_enabled: Optional[bool] = None
     state_machine_engine: Optional[str] = None
     shot_mode: Optional[str] = None
+    planner_pocket_entry_safety_margin_mm: Optional[float] = None
+    planner_pocket_entry_max_angle_deg: Optional[float] = None
+    planner_rail_assist_enabled: Optional[bool] = None
+    planner_rail_assist_max_center_distance_mm: Optional[float] = None
+    planner_rail_assist_max_alignment_angle_deg: Optional[float] = None
+    planner_rail_assist_max_deflection_deg: Optional[float] = None
     planner_route_stability_enabled: Optional[bool] = None
     planner_route_stability_stationary_tau_ms: Optional[float] = None
     planner_route_stability_motion_tau_ms: Optional[float] = None
@@ -313,6 +319,34 @@ class UserSettings:
         if self._has("shot_mode") and self.shot_mode:
             mode = str(self.shot_mode).strip().lower()
             config.planner.shot_mode = "hook" if mode in {"hook", "hook_shot"} else "rule"
+        if self.planner_pocket_entry_safety_margin_mm is not None:
+            config.planner.pocket_entry_safety_margin_mm = max(
+                0.0,
+                min(12.0, float(self.planner_pocket_entry_safety_margin_mm)),
+            )
+        if self.planner_pocket_entry_max_angle_deg is not None:
+            config.planner.pocket_entry_max_angle_deg = max(
+                20.0,
+                min(70.0, float(self.planner_pocket_entry_max_angle_deg)),
+            )
+        if self.planner_rail_assist_enabled is not None:
+            config.planner.rail_assist_enabled = bool(self.planner_rail_assist_enabled)
+        if self._has("planner_rail_assist_max_center_distance_mm"):
+            config.planner.rail_assist_max_center_distance_mm = (
+                None
+                if self.planner_rail_assist_max_center_distance_mm is None
+                else max(1.0, float(self.planner_rail_assist_max_center_distance_mm))
+            )
+        if self.planner_rail_assist_max_alignment_angle_deg is not None:
+            config.planner.rail_assist_max_alignment_angle_deg = max(
+                1.0,
+                min(45.0, float(self.planner_rail_assist_max_alignment_angle_deg)),
+            )
+        if self.planner_rail_assist_max_deflection_deg is not None:
+            config.planner.rail_assist_max_deflection_deg = max(
+                10.0,
+                min(75.0, float(self.planner_rail_assist_max_deflection_deg)),
+            )
         if self.planner_route_stability_enabled is not None:
             config.planner.route_stability_enabled = bool(self.planner_route_stability_enabled)
         if self.planner_route_stability_stationary_tau_ms is not None:
@@ -496,6 +530,12 @@ class UserSettings:
             replay_enabled=config.replay.enabled,
             state_machine_engine=config.state.engine,
             shot_mode=config.planner.shot_mode,
+            planner_pocket_entry_safety_margin_mm=config.planner.pocket_entry_safety_margin_mm,
+            planner_pocket_entry_max_angle_deg=config.planner.pocket_entry_max_angle_deg,
+            planner_rail_assist_enabled=config.planner.rail_assist_enabled,
+            planner_rail_assist_max_center_distance_mm=config.planner.rail_assist_max_center_distance_mm,
+            planner_rail_assist_max_alignment_angle_deg=config.planner.rail_assist_max_alignment_angle_deg,
+            planner_rail_assist_max_deflection_deg=config.planner.rail_assist_max_deflection_deg,
             planner_route_stability_enabled=config.planner.route_stability_enabled,
             planner_route_stability_stationary_tau_ms=config.planner.route_stability_stationary_tau_ms,
             planner_route_stability_motion_tau_ms=config.planner.route_stability_motion_tau_ms,
