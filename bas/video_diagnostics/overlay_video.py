@@ -128,11 +128,18 @@ def _detection_to_dict(detection: Detection) -> dict[str, Any]:
         ),
         "geometry_quality": float(detection.geometry_quality),
         "geometry_method": str(detection.geometry_method),
+        "axis_endpoints_px": (
+            [[float(value) for value in point] for point in detection.axis_endpoints_px]
+            if detection.axis_endpoints_px is not None
+            else None
+        ),
+        "axis_quality": float(detection.axis_quality),
     }
 
 
 def _detection_from_dict(payload: dict[str, Any]) -> Detection:
     center = payload.get("refined_center_px")
+    axis = payload.get("axis_endpoints_px")
     return Detection(
         bbox=tuple(float(value) for value in payload["bbox"]),  # type: ignore[arg-type]
         conf=float(payload["conf"]),
@@ -144,6 +151,15 @@ def _detection_from_dict(payload: dict[str, Any]) -> Detection:
         ),
         geometry_quality=float(payload.get("geometry_quality", 0.45)),
         geometry_method=str(payload.get("geometry_method", "bbox")),
+        axis_endpoints_px=(
+            (
+                (float(axis[0][0]), float(axis[0][1])),
+                (float(axis[1][0]), float(axis[1][1])),
+            )
+            if axis is not None
+            else None
+        ),
+        axis_quality=float(payload.get("axis_quality", 0.0)),
     )
 
 

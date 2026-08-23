@@ -1,0 +1,67 @@
+{
+  "schema": "bas_cue_direction_video_labels_v1",
+  "video_basename": "no_line_video_20260818_184518.mp4",
+  "cases": [
+    {
+      "name": "杆身远离白球",
+      "frame": 0,
+      "cue_center_px": [908, 506],
+      "cue_radius_px": 24,
+      "expect_none": true,
+      "preview_frames": [0]
+    },
+    {
+      "name": "右上杆身指向左下",
+      "frame": 90,
+      "cue_center_px": [1643, 311],
+      "cue_radius_px": 24,
+      "expected_direction_px": [-0.98, 0.20],
+      "min_dot": 0.95,
+      "preview_frames": [90]
+    },
+    {
+      "name": "左侧水平杆指向右侧",
+      "frame": 270,
+      "cue_center_px": [235, 182],
+      "cue_radius_px": 25,
+      "expected_direction_px": [1.0, 0.0],
+      "min_dot": 0.95,
+      "preview_frames": [270]
+    },
+    {
+      "name": "杆尖仍远离白球",
+      "frame": 360,
+      "cue_center_px": [1554, 536],
+      "cue_radius_px": 24,
+      "expect_none": true,
+      "preview_frames": [360]
+    },
+    {
+      "name": "左下连续瞄准",
+      "frame_start": 510,
+      "frame_end": 590,
+      "cue_center_px": [225, 932],
+      "cue_radius_px": 24,
+      "expected_direction_px": [0.88, -0.48],
+      "min_dot": 0.80,
+      "min_detection_ratio": 0.95,
+      "preview_frames": [527, 540, 580]
+    },
+    {
+      "name": "上方杆身与白球无关",
+      "frame": 720,
+      "cue_center_px": [880, 824],
+      "cue_radius_px": 24,
+      "expect_none": true,
+      "preview_frames": [720]
+    },
+    {
+      "name": "下方杆身与白球无关",
+      "frame": 810,
+      "cue_center_px": [747, 293],
+      "cue_radius_px": 24,
+      "expect_none": true,
+      "preview_frames": [810]
+    }
+  ]
+}

@@ -49,6 +49,8 @@ class Detection:
     refined_radius_px: Optional[float] = None
     geometry_quality: float = 0.45
     geometry_method: str = "bbox"
+    axis_endpoints_px: Optional[Tuple[Point, Point]] = None
+    axis_quality: float = 0.0
 
     @property
     def center(self) -> Point:
@@ -94,6 +96,8 @@ class TrackObservation:
     visibility: str = "visible"
     geometry_quality: float = 1.0
     geometry_method: str = "unknown"
+    axis_endpoints_px: Optional[Tuple[Point, Point]] = None
+    axis_quality: float = 0.0
 
 
 @dataclass

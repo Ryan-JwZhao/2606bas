@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional, Sequence
 
 import numpy as np
 
 from ..schemas import TrackObservation
 from .cue_aim import CueStickAimDetector, CueStickAimPx
+from .cue_direction_stability import CueDirectionStabilizer
 
 
 @dataclass
@@ -18,6 +19,7 @@ class PlannerAimFrameContext:
     inner_polygon_px: Optional[np.ndarray]
     aim_detector: CueStickAimDetector
     min_stick_quality: float
+    direction_stabilizer: Optional[CueDirectionStabilizer] = None
     detect_call_count: int = 0
     _shared_aim_ready: bool = field(default=False, init=False, repr=False)
     _shared_aim: Optional[CueStickAimPx] = field(default=None, init=False, repr=False)
@@ -33,7 +35,7 @@ class PlannerAimFrameContext:
     def shared_aim(self) -> Optional[CueStickAimPx]:
         if not self._shared_aim_ready:
             self.detect_call_count += 1
-            self._shared_aim = self.aim_detector.detect(
+            raw_aim = self.aim_detector.detect(
                 frame_bgr=self.frame_bgr,
                 tracks=self.tracks,
                 cue_center_px=self.cue_center_px,
@@ -43,5 +45,21 @@ class PlannerAimFrameContext:
                 prefer_tracks=False,
                 allow_edge_detection=True,
             )
+            if raw_aim is None:
+                if self.direction_stabilizer is not None:
+                    self.direction_stabilizer.reset()
+                self._shared_aim = None
+            elif self.direction_stabilizer is None:
+                self._shared_aim = raw_aim
+            else:
+                decision = self.direction_stabilizer.stabilize(
+                    raw_aim.direction_px,
+                    raw_aim.direction_px,
+                )
+                self._shared_aim = replace(
+                    raw_aim,
+                    direction_px=np.asarray(decision.direction_px, dtype=np.float32),
+                    stability_status=str(decision.status),
+                )
             self._shared_aim_ready = True
         return self._shared_aim

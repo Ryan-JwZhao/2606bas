@@ -23,6 +23,8 @@ class _Track:
     geometry_quality: float
     geometry_method: str
     geometry_continuity: BallGeometryContinuity
+    axis_endpoints_px: Optional[Tuple[Tuple[float, float], Tuple[float, float]]]
+    axis_quality: float
     votes: Deque[str]
     last_ts_ns: int
     velocity: np.ndarray = field(default_factory=lambda: np.zeros((2,), dtype=np.float32))
@@ -66,6 +68,15 @@ class TemporalTracker:
             tr.consecutive_hits = 0
             dt = max(1e-6, (detections_frame.ts_cam_ns - tr.last_ts_ns) / 1e9)
             tr.center = tr.center + tr.velocity * min(dt, 0.1)
+            axis_shift = tr.velocity * min(dt, 0.1)
+            if tr.axis_endpoints_px is not None:
+                tr.axis_endpoints_px = tuple(
+                    (
+                        float(point[0] + axis_shift[0]),
+                        float(point[1] + axis_shift[1]),
+                    )
+                    for point in tr.axis_endpoints_px
+                )
             x1, y1, x2, y2 = tr.bbox
             w = x2 - x1
             h = y2 - y1
@@ -96,6 +107,8 @@ class TemporalTracker:
                 geometry_quality=float(np.clip(det.geometry_quality, 0.0, 1.0)),
                 geometry_method=str(det.geometry_method or "unknown"),
                 geometry_continuity=geometry_continuity,
+                axis_endpoints_px=det.axis_endpoints_px,
+                axis_quality=float(np.clip(det.axis_quality, 0.0, 1.0)),
                 votes=deque([det.cls_name], maxlen=int(self.config.vote_window)),
                 last_ts_ns=detections_frame.ts_cam_ns,
                 confirmed=max(1, int(self.config.min_confirmed_hits)) <= 1,
@@ -170,6 +183,8 @@ class TemporalTracker:
         track.confidence = float(det.conf)
         track.geometry_quality = float(np.clip(det.geometry_quality, 0.0, 1.0))
         track.geometry_method = str(det.geometry_method or "unknown")
+        track.axis_endpoints_px = det.axis_endpoints_px
+        track.axis_quality = float(np.clip(det.axis_quality, 0.0, 1.0))
         track.votes.append(det.cls_name)
         track.last_ts_ns = int(ts_ns)
         track.age += 1
@@ -199,6 +214,8 @@ class TemporalTracker:
             visibility=visibility,
             geometry_quality=float(track.geometry_quality),
             geometry_method=str(track.geometry_method),
+            axis_endpoints_px=track.axis_endpoints_px,
+            axis_quality=float(track.axis_quality),
         )
 
     def _max_match_distance(self, track: _Track, det: Detection, dt: float) -> float:

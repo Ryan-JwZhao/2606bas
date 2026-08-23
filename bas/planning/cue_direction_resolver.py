@@ -18,6 +18,7 @@ class ResolvedCueDirectionPx:
     rear_support_px: float
     forward_overlap_px: float
     center_overlap_px: float
+    confidence: float
     status: str
 
 
@@ -43,7 +44,7 @@ class CueDirectionResolver:
     def __init__(
         self,
         *,
-        exclusion_radius_factor: float = 0.22,
+        exclusion_radius_factor: float = 0.85,
         ambiguity_margin_px: float = 6.0,
     ) -> None:
         self.exclusion_radius_factor = float(exclusion_radius_factor)
@@ -79,11 +80,14 @@ class CueDirectionResolver:
             forward_px=-axis,
         )
         if positive.score >= negative.score:
-            best, other = positive, negative
+            best = positive
         else:
-            best, other = negative, positive
-        margin = float(best.score - other.score)
-        status = "body_side_strong" if margin >= self.ambiguity_margin_px else "body_side_ambiguous"
+            best = negative
+        support_total = float(best.rear_support_px + best.forward_overlap_px)
+        margin = max(0.0, float(best.rear_support_px - best.forward_overlap_px))
+        confidence = float(np.clip(margin / max(1.0, support_total), 0.0, 1.0))
+        ambiguity_margin = max(self.ambiguity_margin_px, 0.5 * float(cue_radius_px))
+        status = "body_side_strong" if margin >= ambiguity_margin else "body_side_ambiguous"
         return ResolvedCueDirectionPx(
             tip_px=best.tip_px,
             tail_px=best.tail_px,
@@ -93,6 +97,7 @@ class CueDirectionResolver:
             rear_support_px=float(best.rear_support_px),
             forward_overlap_px=float(best.forward_overlap_px),
             center_overlap_px=float(best.center_overlap_px),
+            confidence=confidence,
             status=status,
         )
 

@@ -126,14 +126,18 @@ class CueSectorCorrection:
             self.last_status = "invalid_cue_direction"
             self._reset_aim_state()
             return None
-        direction_decision = self.direction_stabilizer.stabilize(aim.direction_px, aim.direction_mm)
-        aim = replace(
-            aim,
-            direction_px=direction_decision.direction_px,
-            direction_mm=direction_decision.direction_mm,
-        )
-        self._store_debug_view(cue_center_px, aim, (), direction_decision.status)
-        self.last_status = f"aim_active:{aim_px.source}/{direction_decision.status}"
+        if frame_context is None:
+            direction_decision = self.direction_stabilizer.stabilize(aim.direction_px, aim.direction_mm)
+            aim = replace(
+                aim,
+                direction_px=direction_decision.direction_px,
+                direction_mm=direction_decision.direction_mm,
+            )
+            stability_status = direction_decision.status
+        else:
+            stability_status = str(getattr(aim_px, "stability_status", "shared"))
+        self._store_debug_view(cue_center_px, aim, (), stability_status)
+        self.last_status = f"aim_active:{aim_px.source}/{stability_status}"
         return aim
 
     @staticmethod

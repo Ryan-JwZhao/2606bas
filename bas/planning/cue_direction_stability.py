@@ -47,16 +47,6 @@ class CueDirectionStabilizer:
                 status="seed",
             )
 
-        if float(np.dot(current_px, self._held_px)) >= 0.0:
-            self._held_px = current_px
-            self._held_mm = current_mm
-            self._clear_pending()
-            return CueDirectionDecision(
-                direction_px=(float(current_px[0]), float(current_px[1])),
-                direction_mm=(float(current_mm[0]), float(current_mm[1])),
-                status="forward_track",
-            )
-
         aligned_px, aligned_mm, flipped = self._align_to_held(current_px, current_mm)
         axis_delta = angle_deg(aligned_px, self._held_px)
         same_axis_limit = max(1.0, float(getattr(self.config, "cue_sector_angle_deg", 15.0)))
@@ -68,7 +58,7 @@ class CueDirectionStabilizer:
             return CueDirectionDecision(
                 direction_px=(float(aligned_px[0]), float(aligned_px[1])),
                 direction_mm=(float(aligned_mm[0]), float(aligned_mm[1])),
-                status="axis_flip_hold" if flipped else "axis_track",
+                status="axis_flip_hold" if flipped else "forward_track",
             )
 
         if self._pending_px is not None and self._pending_mm is not None:

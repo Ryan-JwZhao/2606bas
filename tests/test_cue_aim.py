@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 from bas.planning.cue_aim import CueStickAimDetector
@@ -75,3 +76,54 @@ def test_prefer_tracks_skips_edge_detection_when_track_is_available(monkeypatch)
     )
 
     assert aim is not None
+
+
+def test_frame_edges_stay_associated_with_detected_cue_stick() -> None:
+    frame = np.zeros((600, 600, 3), dtype=np.uint8)
+    cv2.line(frame, (70, 300), (275, 300), (255, 255, 255), 6)
+    cv2.line(frame, (300, 40), (300, 280), (255, 255, 255), 6)
+
+    aim = CueStickAimDetector().detect(
+        frame_bgr=frame,
+        tracks=[_stick(1, 70.0, 294.0, 275.0, 306.0)],
+        cue_center_px=np.asarray([300.0, 300.0], dtype=np.float32),
+        cue_radius_px=15.0,
+        min_stick_quality=0.0,
+    )
+
+    assert aim is not None
+    assert float(aim.direction_px[0]) > 0.95
+    assert abs(float(aim.direction_px[1])) < 0.10
+
+
+def test_frame_edges_reject_line_that_misses_cue_ball_center() -> None:
+    frame = np.zeros((600, 600, 3), dtype=np.uint8)
+    cv2.line(frame, (80, 340), (280, 340), (255, 255, 255), 6)
+
+    aim = CueStickAimDetector().detect(
+        frame_bgr=frame,
+        tracks=[],
+        cue_center_px=np.asarray([300.0, 300.0], dtype=np.float32),
+        cue_radius_px=15.0,
+        min_stick_quality=0.0,
+    )
+
+    assert aim is None
+
+
+def test_track_fallback_uses_oriented_axis_when_available() -> None:
+    track = _stick(1, 400.0, 400.0, 460.0, 460.0)
+    track.axis_endpoints_px = ((400.0, 400.0), (460.0, 460.0))
+    track.axis_quality = 0.95
+
+    aim = CueStickAimDetector().detect(
+        frame_bgr=None,
+        tracks=[track],
+        cue_center_px=np.asarray([500.0, 500.0], dtype=np.float32),
+        cue_radius_px=15.0,
+        min_stick_quality=0.0,
+    )
+
+    assert aim is not None
+    expected = np.asarray([1.0, 1.0], dtype=np.float32) / np.sqrt(2.0)
+    np.testing.assert_allclose(aim.direction_px, expected, atol=1.0e-3)

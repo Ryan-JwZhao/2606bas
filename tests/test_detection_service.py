@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from bas.perception.detector import Detector
+from bas.perception.detector import Detector, _cue_axis_from_polygon
 from bas.perception.regions import DetectionRegionPolicy
 from bas.perception.service import DetectService
 from bas.schemas import Detection, FramePacket
@@ -101,3 +101,27 @@ def test_disabled_region_policy_skips_detector_and_drops_cached_results() -> Non
     assert disabled.detector_version == "region_disabled"
     assert detector.calls == 2
     assert resumed.detections[0].cls_name == "call_2"
+
+
+def test_cue_axis_is_fitted_from_segmentation_polygon() -> None:
+    axis = np.asarray([1.0, 1.0], dtype=np.float32) / np.sqrt(2.0)
+    normal = np.asarray([-axis[1], axis[0]], dtype=np.float32)
+    center = np.asarray([100.0, 80.0], dtype=np.float32)
+    polygon = np.asarray(
+        [
+            center - axis * 70.0 - normal * 4.0,
+            center + axis * 70.0 - normal * 4.0,
+            center + axis * 70.0 + normal * 4.0,
+            center - axis * 70.0 + normal * 4.0,
+            center - axis * 60.0 - normal * 4.0,
+        ],
+        dtype=np.float32,
+    )
+
+    endpoints, quality = _cue_axis_from_polygon(polygon)
+
+    assert endpoints is not None
+    detected_axis = np.asarray(endpoints[1], dtype=np.float32) - np.asarray(endpoints[0], dtype=np.float32)
+    detected_axis = detected_axis / np.linalg.norm(detected_axis)
+    assert abs(float(np.dot(detected_axis, axis))) > 0.99
+    assert quality > 0.5

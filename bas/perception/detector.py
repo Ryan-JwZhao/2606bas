@@ -239,14 +239,18 @@ class UltralyticsDetector(Detector):
                     continue
             cls_id = int(cls_np[i])
             cls_name = self.class_names[cls_id] if 0 <= cls_id < len(self.class_names) else str(cls_id)
+            polygon = mask_polygons_all[i] if i < len(mask_polygons_all) else None
             geometry = None
             if group_from_class(cls_name) in {"cue", "solid", "stripe", "black"}:
-                polygon = mask_polygons_all[i] if i < len(mask_polygons_all) else None
                 geometry = BALL_CENTER_REFINER.refine(
                     frame_bgr,
                     (x1, y1, x2, y2),
                     mask_polygon=polygon,
                 )
+            axis_endpoints_px = None
+            axis_quality = 0.0
+            if group_from_class(cls_name) == "cue_stick":
+                axis_endpoints_px, axis_quality = _cue_axis_from_polygon(polygon)
             out.append(
                 Detection(
                     bbox=(x1, y1, x2, y2),
@@ -257,9 +261,46 @@ class UltralyticsDetector(Detector):
                     refined_radius_px=geometry.radius_px if geometry is not None else None,
                     geometry_quality=geometry.quality if geometry is not None else 0.45,
                     geometry_method=geometry.method if geometry is not None else "bbox",
+                    axis_endpoints_px=axis_endpoints_px,
+                    axis_quality=float(axis_quality),
                 )
             )
         return _filter_ball_geometry_outliers(out)
+
+
+def _cue_axis_from_polygon(
+    polygon: Optional[np.ndarray],
+) -> tuple[Optional[Tuple[Tuple[float, float], Tuple[float, float]]], float]:
+    if polygon is None:
+        return None, 0.0
+    points = np.asarray(polygon, dtype=np.float32).reshape((-1, 2))
+    if points.shape[0] < 5 or not np.all(np.isfinite(points)):
+        return None, 0.0
+    center = np.mean(points, axis=0)
+    centered = points - center
+    covariance = np.cov(centered, rowvar=False)
+    if covariance.shape != (2, 2) or not np.all(np.isfinite(covariance)):
+        return None, 0.0
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    order = np.argsort(eigenvalues)
+    major_value = max(0.0, float(eigenvalues[order[-1]]))
+    minor_value = max(0.0, float(eigenvalues[order[0]]))
+    if major_value <= 1.0e-6:
+        return None, 0.0
+    axis = np.asarray(eigenvectors[:, order[-1]], dtype=np.float32)
+    projections = centered @ axis
+    low, high = np.percentile(projections, [2.0, 98.0])
+    length = float(high - low)
+    if length < 12.0:
+        return None, 0.0
+    p1 = center + axis * float(low)
+    p2 = center + axis * float(high)
+    elongation = major_value / max(1.0e-6, minor_value)
+    quality = float(clamp((elongation - 2.0) / 18.0, 0.0, 1.0))
+    return (
+        ((float(p1[0]), float(p1[1])), (float(p2[0]), float(p2[1]))),
+        quality,
+    )
 
 
 def create_detector(config: DetectorConfig) -> Detector:

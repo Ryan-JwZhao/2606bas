@@ -414,6 +414,7 @@ class GeometryPhysicsPlanner:
             inner_polygon_px=self._inner_polygon_px(frame_bgr.shape if frame_bgr is not None else None),
             aim_detector=self.aim_detector,
             min_stick_quality=min_stick_quality,
+            direction_stabilizer=self.cue_sector.direction_stabilizer,
         )
 
     def _inner_polygon_px(self, frame_shape: Optional[tuple[int, ...]]) -> Optional[np.ndarray]:
