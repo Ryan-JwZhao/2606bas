@@ -809,6 +809,79 @@ def test_modern_keeps_current_target_when_only_stable_zero_visibility_suggests_c
     assert "review_required" not in sm.debug_snapshot()["target_resolution"]
 
 
+def test_detected_open_table_group_projects_immediately_and_rejection_rolls_back() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern"))
+    detected = Event(
+        "POCKET_DETECTED",
+        1,
+        1,
+        payload={"decision_id": "pocket:solid", "group": "solid", "pocket_index": 2},
+    )
+    rejected = Event(
+        "POCKET_REJECTED",
+        2,
+        2,
+        payload={**detected.payload, "reason_codes": ["reappeared_same_track"]},
+    )
+
+    sm._sync_provisional_pocket_events([detected])
+
+    assert sm.turn_target_group == "solid"
+    assert sm.rule_state.actor_group is None
+    assert sm.ledger.remaining["solid"] == 7
+
+    sm._sync_provisional_pocket_events([rejected])
+
+    assert sm.turn_target_group is None
+
+
+def test_detected_last_group_ball_projects_black_and_rejection_restores_group() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern"))
+    sm.set_turn_target_group("solid")
+    sm.ledger.remaining["solid"] = 1
+    detected = Event(
+        "POCKET_DETECTED",
+        1,
+        1,
+        payload={"decision_id": "pocket:last-solid", "group": "solid", "pocket_index": 3},
+    )
+
+    sm._sync_provisional_pocket_events([detected])
+
+    assert sm.turn_target_group == "black"
+
+    sm._sync_provisional_pocket_events(
+        [Event("POCKET_REJECTED", 2, 2, payload=dict(detected.payload))]
+    )
+
+    assert sm.turn_target_group == "solid"
+
+
+def test_open_table_provisional_group_falls_through_to_next_detected_group() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern"))
+    solid = Event(
+        "POCKET_DETECTED",
+        1,
+        1,
+        payload={"decision_id": "pocket:solid", "group": "solid", "pocket_index": 0},
+    )
+    stripe = Event(
+        "POCKET_DETECTED",
+        2,
+        2,
+        payload={"decision_id": "pocket:stripe", "group": "stripe", "pocket_index": 1},
+    )
+
+    sm._sync_provisional_pocket_events([solid, stripe])
+    assert sm.turn_target_group == "solid"
+
+    sm._sync_provisional_pocket_events(
+        [Event("POCKET_REJECTED", 3, 3, payload=dict(solid.payload))]
+    )
+
+    assert sm.turn_target_group == "stripe"
+
+
 def test_black_commit_emits_game_status_change_only_once() -> None:
     sm = ModernMatchStateMachine(StateConfig(engine="modern"))
     sm.rule_state.table_state = "closed"

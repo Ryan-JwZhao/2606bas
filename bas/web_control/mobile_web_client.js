@@ -29,6 +29,7 @@ const elements = {
   cancelShotOverride: document.getElementById('cancelShotOverrideButton'),
   replay: document.getElementById('replayButton'),
   pocketNotice: document.getElementById('pocketNotice'),
+  pocketNoticeTitle: document.getElementById('pocketNoticeTitle'),
   pocketNoticeMessage: document.getElementById('pocketNoticeMessage'),
   toast: document.getElementById('toast'),
 };
@@ -50,9 +51,12 @@ function showToast(message) {
   toastTimer = window.setTimeout(() => elements.toast.classList.remove('is-visible'), 2300);
 }
 
-function showPocketNotice(message) {
+function showPocketNotice(message, status = 'detected') {
   if (!message || !elements.pocketNotice || !elements.pocketNoticeMessage) return;
   window.clearTimeout(pocketNoticeTimer);
+  if (elements.pocketNoticeTitle) {
+    elements.pocketNoticeTitle.textContent = status === 'rejected' ? '判定撤销' : '进球！';
+  }
   elements.pocketNoticeMessage.textContent = message;
   elements.pocketNotice.hidden = false;
   elements.pocketNotice.classList.remove('is-visible');
@@ -81,7 +85,9 @@ function renderPocketNotices(notices) {
   const messages = unseen
     .map((notice) => String(notice?.message || `${String(notice?.ball_code || '').toLowerCase()}进球`).trim())
     .filter(Boolean);
-  showPocketNotice(messages.join(' · '));
+  const statuses = unseen.map((notice) => String(notice?.status || '').toLowerCase());
+  const status = statuses.length && statuses.every((value) => value === 'rejected') ? 'rejected' : 'detected';
+  showPocketNotice(messages.join(' · '), status);
 }
 
 function setConnectionState(kind) {

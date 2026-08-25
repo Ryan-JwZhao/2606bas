@@ -34,7 +34,7 @@ def test_pocket_notice_tracker_expires_notices_and_keeps_sequences_monotonic_aft
     assert after_reset[0]["notice_id"] != created[0]["notice_id"]
 
 
-def test_pocket_notice_tracker_waits_for_confirmation_and_deduplicates_aliases() -> None:
+def test_pocket_notice_tracker_announces_detection_and_deduplicates_confirmation_aliases() -> None:
     tracker = PocketNoticeTracker()
     legacy = Event(
         "POT_PROBABLE",
@@ -65,11 +65,11 @@ def test_pocket_notice_tracker_waits_for_confirmation_and_deduplicates_aliases()
 
     created = tracker.observe([legacy, modern_confirmed, modern_alias], now_s=10.0)
 
-    assert detected == []
-    assert [notice["message"] for notice in created] == ["花色球进洞", "全色球进洞"]
+    assert [notice["message"] for notice in detected] == ["全色球进洞"]
+    assert [notice["message"] for notice in created] == ["花色球进洞"]
 
 
-def test_pocket_notice_waits_for_irreversible_confirmation() -> None:
+def test_confirmation_alias_does_not_repeat_an_immediate_detection_notice() -> None:
     tracker = PocketNoticeTracker()
     detected = Event(
         "POCKET_DETECTED",
@@ -84,7 +84,33 @@ def test_pocket_notice_waits_for_irreversible_confirmation() -> None:
         payload=dict(detected.payload),
     )
 
-    assert tracker.observe([detected], now_s=1.0) == []
-    created = tracker.observe([confirmed], now_s=2.0)
+    created = tracker.observe([detected], now_s=1.0)
+    confirmed_alias = tracker.observe([confirmed], now_s=2.0)
 
     assert [notice["message"] for notice in created] == ["全色球进洞"]
+    assert confirmed_alias == []
+
+
+def test_pocket_notice_announces_detection_and_reports_later_retraction() -> None:
+    tracker = PocketNoticeTracker()
+    detected = Event(
+        "POCKET_DETECTED",
+        1,
+        1,
+        payload={"decision_id": "pocket:retractable", "group": "stripe", "track_id": 9, "pocket_index": 3},
+    )
+    rejected = Event(
+        "POCKET_REJECTED",
+        2,
+        2,
+        payload={**detected.payload, "reason_codes": ["reappeared_same_track"]},
+    )
+
+    created = tracker.observe([detected], now_s=1.0)
+    retracted = tracker.observe([rejected], now_s=2.0)
+
+    assert created[0]["status"] == "detected"
+    assert created[0]["message"] == "花色球进洞"
+    assert retracted[0]["status"] == "rejected"
+    assert retracted[0]["message"] == "花色球进洞判定撤销"
+    assert tracker.current(now_s=2.0) == retracted

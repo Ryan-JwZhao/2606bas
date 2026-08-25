@@ -9,7 +9,7 @@ import numpy as np
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5 import QtCore, QtWidgets
+from PyQt5 import QtCore, QtTest, QtWidgets
 
 from bas.config import AppConfig
 from bas.capture import VideoTimelineState
@@ -63,7 +63,7 @@ def test_operator_window_uses_scrollable_three_column_layout() -> None:
     app.processEvents()
 
 
-def test_confirmed_pocket_event_shows_the_preview_popup_on_the_operator_frontend_only() -> None:
+def test_detected_pocket_event_shows_the_preview_popup_on_the_operator_frontend_only() -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())
     projection_calls: list[str] = []
@@ -94,11 +94,12 @@ def test_confirmed_pocket_event_shows_the_preview_popup_on_the_operator_frontend
             )
         ]
     )
-    window._show_desktop_pocket_notice(notices)
+    window._show_desktop_pocket_notice(provisional)
     app.processEvents()
 
     popup = window.pocket_notice_label
-    assert provisional == []
+    assert len(provisional) == 1
+    assert notices == []
     assert popup.isVisible() is True
     assert popup.parent() is window.preview_frame
     assert "全色球进洞" in popup.text()
@@ -110,6 +111,46 @@ def test_confirmed_pocket_event_shows_the_preview_popup_on_the_operator_frontend
     assert popup.isHidden() is True
 
     window.projection_window = None
+    window.close()
+    app.processEvents()
+
+
+def test_visible_pocket_popup_flashes_before_showing_the_next_notice() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    window.show()
+    app.processEvents()
+    window._show_desktop_pocket_notice([{"message": "全色球进洞"}])
+    app.processEvents()
+    assert window.pocket_notice_label.isVisible() is True
+
+    window._show_desktop_pocket_notice([{"message": "花色球进洞"}])
+    app.processEvents()
+
+    assert window.pocket_notice_label.isHidden() is True
+    QtTest.QTest.qWait(120)
+    app.processEvents()
+    assert window.pocket_notice_label.isVisible() is True
+    assert "花色球进洞" in window.pocket_notice_label.text()
+    assert window._desktop_pocket_notice_timer.isActive() is True
+
+    window.close()
+    app.processEvents()
+
+
+def test_rejected_pocket_notice_uses_retraction_title() -> None:
+    app = _app()
+    window = main_window.OperatorWindow(AppConfig())
+    window.show()
+    app.processEvents()
+
+    window._show_desktop_pocket_notice(
+        [{"message": "花色球进洞判定撤销", "status": "rejected"}]
+    )
+    app.processEvents()
+
+    assert window.pocket_notice_label.text().startswith("判定撤销\n")
+
     window.close()
     app.processEvents()
 

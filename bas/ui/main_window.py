@@ -1908,6 +1908,7 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         self._desktop_pocket_notice_timer = QtCore.QTimer(self)
         self._desktop_pocket_notice_timer.setSingleShot(True)
         self._desktop_pocket_notice_timer.timeout.connect(self.pocket_notice_label.hide)
+        self._desktop_pocket_notice_generation = 0
         self.preview_layout.addWidget(self.preview_frame, 1)
         self.video_timeline_widget = QtWidgets.QWidget()
         self.video_timeline_widget.setObjectName("videoTimeline")
@@ -1970,14 +1971,38 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
         messages = [message for message in messages if message]
         if not messages:
             return
-        self.pocket_notice_label.setText(f"进球！\n{' · '.join(messages)}")
+        statuses = [str(notice.get("status") or "").strip().lower() for notice in notices]
+        title = "判定撤销" if statuses and all(status == "rejected" for status in statuses) else "进球！"
+        self._desktop_pocket_notice_generation += 1
+        generation = int(self._desktop_pocket_notice_generation)
+        self._desktop_pocket_notice_timer.stop()
+        was_visible = self.pocket_notice_label.isVisible()
+        self.pocket_notice_label.setText(f"{title}\n{' · '.join(messages)}")
         self.pocket_notice_label.adjustSize()
         self._position_desktop_pocket_notice()
-        self.pocket_notice_label.show()
-        self.pocket_notice_label.raise_()
-        self._desktop_pocket_notice_timer.start(4500)
+        if was_visible:
+            self.pocket_notice_label.hide()
+            QtCore.QTimer.singleShot(
+                90,
+                lambda current_generation=generation: self._reveal_desktop_pocket_notice(
+                    current_generation
+                ),
+            )
+        else:
+            self._reveal_desktop_pocket_notice(generation)
         self._append_log(f"进球提示：{' · '.join(messages)}")
         LOGGER.info("Operator pocket notice displayed: %s", " | ".join(messages))
+
+    def _reveal_desktop_pocket_notice(self, generation: int) -> None:
+        if int(generation) != int(getattr(self, "_desktop_pocket_notice_generation", -1)):
+            return
+        label = getattr(self, "pocket_notice_label", None)
+        if label is None:
+            return
+        self._position_desktop_pocket_notice()
+        label.show()
+        label.raise_()
+        self._desktop_pocket_notice_timer.start(4500)
 
     def _position_desktop_pocket_notice(self) -> None:
         label = getattr(self, "pocket_notice_label", None)
@@ -1991,6 +2016,9 @@ class OperatorWindow(WebControlOperatorMixin, QtWidgets.QMainWindow):
 
     def _clear_pocket_notices(self) -> None:
         self._pocket_notice_tracker().reset()
+        self._desktop_pocket_notice_generation = int(
+            getattr(self, "_desktop_pocket_notice_generation", 0)
+        ) + 1
         label = getattr(self, "pocket_notice_label", None)
         if label is not None:
             label.hide()

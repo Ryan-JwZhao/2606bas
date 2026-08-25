@@ -31,6 +31,7 @@ class ModernMatchStateMachine:
         self.reconciler = ObservationReconciler(config)
         self.break_lifecycle = BreakShotLifecycle(config)
         self._turn_target_group: Optional[str] = None
+        self._provisional_pocket_groups: dict[str, str] = {}
         self._snapshot_layout: List[TrackObservation] = []
         self._last_layout: List[TrackObservation] = []
         self._operator_hold = False
@@ -75,6 +76,7 @@ class ModernMatchStateMachine:
         self.reconciler.reset()
         self.break_lifecycle.reset()
         self._turn_target_group = None
+        self._provisional_pocket_groups.clear()
         self._snapshot_layout = []
         self._last_layout = []
         self._operator_hold = False
@@ -172,6 +174,7 @@ class ModernMatchStateMachine:
         reason: str = "operator",
     ) -> None:
         normalized = str(group or "").strip().lower()
+        self._provisional_pocket_groups.clear()
         self._turn_target_group = normalized if normalized in {"solid", "stripe", "black"} else None
         object_group = normalize_object_group(normalized)
         if object_group is not None:
@@ -194,6 +197,7 @@ class ModernMatchStateMachine:
         snapshot["visible_track_ids"] = list(snapshot.get("visible_track_ids", []))
         snapshot["ledger"] = dict(self.ledger.remaining)
         snapshot["removed_confirmed"] = dict(self.ledger.removed_confirmed)
+        snapshot["provisional_pocket_groups"] = dict(self._provisional_pocket_groups)
         snapshot["rule_state"] = {
             "table_state": self.rule_state.table_state,
             "actor_group": self.rule_state.actor_group,
@@ -301,6 +305,7 @@ class ModernMatchStateMachine:
             self._annotate_shot_ids(pocket_events, ts_ms=ts_ms)
             self.aggregator.ingest(pocket_events, ts_ms=ts_ms, rule_state=self.rule_state)
             self._process_turn_resolve_if_needed(tracks_frame, events)
+            self._sync_provisional_pocket_events(events)
             state = self._state_frame(tracks_frame, events, tracks, confidence=0.85, suffix="+operator_override")
             self._last_debug_snapshot = self._build_debug_snapshot(
                 tracks_frame,
@@ -330,6 +335,7 @@ class ModernMatchStateMachine:
         self._annotate_shot_ids(events, ts_ms=ts_ms)
         self.aggregator.ingest(events, ts_ms=ts_ms, rule_state=self.rule_state)
         self._process_turn_resolve_if_needed(tracks_frame, events)
+        self._sync_provisional_pocket_events(events)
         self._remember_motion(tracks)
 
         confidence = 1.0
@@ -414,6 +420,7 @@ class ModernMatchStateMachine:
         target_resolution = self._target_resolution(
             reconcile_result=reconcile_result,
             ledger=commit_ledger,
+            include_provisional=False,
         )
         observation_reasons = [
             str(item.get("mode", ""))
@@ -996,7 +1003,7 @@ class ModernMatchStateMachine:
             return
         self.rule_state.active_shot_is_break = self.break_lifecycle.mark_shot_started()
         shot_ctx = self.aggregator.begin_if_needed(ts_ms=ts_ms, rule_state=self.rule_state)
-        shot_ctx.legal_first_group = self._target_resolution().target_group
+        shot_ctx.legal_first_group = self._target_resolution(include_provisional=False).target_group
 
     @staticmethod
     def _retract_observation_contradicted_pockets(
@@ -1092,6 +1099,7 @@ class ModernMatchStateMachine:
         *,
         reconcile_result: object | None = None,
         ledger: InventoryLedger | None = None,
+        include_provisional: bool = True,
     ) -> TargetGroupResolution:
         active_ledger = ledger or self.ledger
         result = (
@@ -1099,15 +1107,51 @@ class ModernMatchStateMachine:
             if reconcile_result is not None
             else self.reconciler.current_observation_result(active_ledger)
         )
-        return resolve_turn_target_group(
-            self._normalized_turn_target_group(),
-            actor_group=self.rule_state.actor_group,
+        effective_remaining = dict(
+            getattr(result, "effective_remaining", active_ledger.remaining)
+            or active_ledger.remaining
+        )
+        provisional_object_group: Optional[str] = None
+        if include_provisional:
+            for group in self._provisional_pocket_groups.values():
+                if group in effective_remaining and group != "cue":
+                    effective_remaining[group] = max(0, int(effective_remaining.get(group, 0)) - 1)
+                if provisional_object_group is None and group in {"solid", "stripe"}:
+                    provisional_object_group = group
+        raw_hint = self._normalized_turn_target_group()
+        actor_group = self.rule_state.actor_group
+        if include_provisional and actor_group is None and raw_hint is None:
+            raw_hint = provisional_object_group
+            actor_group = provisional_object_group
+        resolution = resolve_turn_target_group(
+            raw_hint,
+            actor_group=actor_group,
             ledger_remaining=active_ledger.remaining,
-            observation_effective_remaining=getattr(result, "effective_remaining", {}),
+            observation_effective_remaining=effective_remaining,
             visible_counts=getattr(result, "visible_counts", {}),
             stable_frames=getattr(result, "stable_frames", {}),
             stable_frames_required=int(getattr(self.config, "observation_reconcile_stable_frames", 12)),
         )
+        if include_provisional and self._provisional_pocket_groups:
+            return TargetGroupResolution(
+                target_group=resolution.target_group,
+                effective_remaining=resolution.effective_remaining,
+                reasons=[*resolution.reasons, "provisional_pocket_detection"],
+            )
+        return resolution
+
+    def _sync_provisional_pocket_events(self, events: List[Event]) -> None:
+        for event in events:
+            payload = dict(event.payload or {})
+            decision_id = str(payload.get("decision_id") or "").strip()
+            if not decision_id:
+                continue
+            if event.name == "POCKET_DETECTED":
+                group = str(payload.get("group") or "").strip().lower()
+                if group in {"solid", "stripe", "black", "cue"}:
+                    self._provisional_pocket_groups[decision_id] = group
+            elif event.name in {"POCKET_REJECTED", "POCKET_CONFIRMED", "POT_PROBABLE"}:
+                self._provisional_pocket_groups.pop(decision_id, None)
 
     @staticmethod
     def _ts_ms(ts_cam_ns: int) -> int:

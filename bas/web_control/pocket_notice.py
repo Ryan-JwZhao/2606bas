@@ -21,7 +21,12 @@ BALL_MESSAGE_BY_GROUP = {
     "stripe": "花色球进洞",
 }
 
-POCKET_NOTICE_EVENT_NAMES = {"POCKET_CONFIRMED", "POT_PROBABLE"}
+POCKET_NOTICE_EVENT_NAMES = {
+    "POCKET_DETECTED",
+    "POCKET_CONFIRMED",
+    "POT_PROBABLE",
+    "POCKET_REJECTED",
+}
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,7 @@ class PocketNotice:
     group: str
     ball_code: str
     message: str
+    status: str = "confirmed"
     track_id: object = None
     pocket_index: object = None
 
@@ -43,6 +49,7 @@ class PocketNotice:
             "group": self.group,
             "ball_code": self.ball_code,
             "message": self.message,
+            "status": self.status,
             "track_id": self.track_id,
             "pocket_index": self.pocket_index,
         }
@@ -60,36 +67,65 @@ class PocketNoticeTracker:
         self._notices: deque[tuple[float, PocketNotice]] = deque()
         self._seen_keys: set[str] = set()
         self._seen_order: deque[str] = deque()
+        self._announced_decisions: dict[str, str] = {}
 
     def reset(self) -> None:
         self._notices.clear()
         self._seen_keys.clear()
         self._seen_order.clear()
+        self._announced_decisions.clear()
 
     def observe(self, events: Iterable[object], *, now_s: Optional[float] = None) -> list[dict[str, object]]:
         now = time.monotonic() if now_s is None else float(now_s)
         self._expire(now)
         created: list[dict[str, object]] = []
         for event in list(events or []):
-            if str(getattr(event, "name", "")).strip().upper() not in POCKET_NOTICE_EVENT_NAMES:
+            event_name = str(getattr(event, "name", "")).strip().upper()
+            if event_name not in POCKET_NOTICE_EVENT_NAMES:
                 continue
             payload = dict(getattr(event, "payload", None) or {})
+            decision_id = str(payload.get("decision_id") or "").strip()
             group = str(payload.get("group") or "").strip().lower()
+            if event_name == "POCKET_REJECTED":
+                if not decision_id or decision_id not in self._announced_decisions:
+                    continue
+                group = group or self._announced_decisions[decision_id]
             ball_code = BALL_CODE_BY_GROUP.get(group)
             if ball_code is None:
                 continue
-            key = self._event_key(event, payload, group)
+            key = (
+                f"rejected:{decision_id}"
+                if event_name == "POCKET_REJECTED" and decision_id
+                else self._event_key(event, payload, group)
+            )
             if key in self._seen_keys:
                 continue
             self._remember_key(key)
+            if event_name == "POCKET_REJECTED":
+                status = "rejected"
+                message = f"{BALL_MESSAGE_BY_GROUP[group]}判定撤销"
+                self._announced_decisions.pop(decision_id, None)
+                self._notices = deque(
+                    (expires_at, current_notice)
+                    for expires_at, current_notice in self._notices
+                    if current_notice.decision_id != decision_id
+                )
+            else:
+                status = "detected" if event_name == "POCKET_DETECTED" else "confirmed"
+                message = BALL_MESSAGE_BY_GROUP[group]
+                if decision_id:
+                    self._announced_decisions[decision_id] = group
+                    while len(self._announced_decisions) > self.max_seen:
+                        self._announced_decisions.pop(next(iter(self._announced_decisions)))
             self._sequence += 1
             notice = PocketNotice(
                 notice_id=f"{self._session_id}:{self._sequence}",
                 sequence=self._sequence,
-                decision_id=str(payload.get("decision_id") or "").strip(),
+                decision_id=decision_id,
                 group=group,
                 ball_code=ball_code,
-                message=BALL_MESSAGE_BY_GROUP[group],
+                message=message,
+                status=status,
                 track_id=payload.get("track_id"),
                 pocket_index=payload.get("pocket_index"),
             )
