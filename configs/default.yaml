@@ -153,6 +153,8 @@ planner:
   enabled: true
   shot_mode: rule
   max_cut_angle_deg: 80.0
+  # 候选评分达到此值才显示；角度×距离联动会让远距离薄球自然跌破门槛。
+  minimum_route_score: 0.0
   top_k: 5
   cue_path_margin_mm: 3.0
   object_path_margin_mm: 3.0

@@ -1028,3 +1028,29 @@ logs/calibration/YYYYMMDD/时间_流程_会话ID/
 ```powershell
 .\.venv\Scripts\python.exe -m pytest -q tests\test_route_stability.py tests\test_planner.py tests\test_display_geometry.py tests\test_projection_interaction.py tests\test_projection_window.py tests\test_ui_runtime.py
 ```
+
+## 进洞路线的角度×距离联动评分（2026-08-25）
+
+规则路线、目标击球和勾球路线现在共用 `bas/planning/shot_difficulty.py` 的难度评分。目标球沿预期方向获得的速度近似随切角的 `cos(角度)` 变化，而滚动距离随速度平方变化，因此评分把目标球实际路程换算为：
+
+```text
+切角距离传递率 = max(cos²(切角), 0.06)
+等效目标球距离 = 目标球实际总路程 / 切角距离传递率
+```
+
+正球的传递率为 `1.0`，继续使用原有距离评分。薄球的传递率快速下降，同一目标球路程会产生更高的距离惩罚；`60° / 75°` 分别采用约 `25% / 6.7%` 的理论传递率，约 `76°–80°` 的极薄区域采用 `6%` 的经验下限。该下限以 `300 mm / 79°` 仍有小概率入袋为基准，使其以接近最低门槛的分数保留；`600 mm / 79°` 及更远路线继续过滤。
+
+默认 `planner.minimum_route_score` 为 `0.0`。几何、碰撞和袋口检查通过后，最终分数达到该门槛的候选才会显示。候选说明新增以下审计字段：
+
+- `cut_distance_transfer_factor`：本路线的 `cos²` 距离传递率。
+- `effective_object_distance_mm`：结合切角后的等效目标球路程。
+- `minimum_route_score`：当前最低显示分数。
+- `route_difficulty_version`：当前共享评分实现版本。
+
+本轮保持现有直线、一库、两库几何以及碰库点计算。撞库路线仍使用原有总折线路程和每库固定惩罚，角度×距离联动会作用于该总路程。后续可在真实撞库样本齐备后单独重构库边几何与速度损失。
+
+定向验证命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q tests\test_shot_difficulty.py tests\test_planner.py tests\test_route_stability.py
+```

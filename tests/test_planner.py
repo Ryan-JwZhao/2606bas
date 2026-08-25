@@ -123,6 +123,70 @@ def test_planner_generates_candidate() -> None:
     assert plan.best.score > -5
 
 
+def _single_top_middle_route(*, cut_angle_deg: float, target_y_mm: float, target_shot: bool = False):
+    service = _service_for_table(2540.0, 1270.0)
+    _set_test_pockets(service, [(1270.0, 0.0)])
+    planner = GeometryPhysicsPlanner(
+        PlannerConfig(
+            top_k=3,
+            target_shot_enabled=False,
+            target_shot_max_rebounds=0,
+            cue_sector_correction_enabled=False,
+            route_stability_enabled=False,
+            route_topology_continuity_enabled=False,
+        ),
+        service,
+    )
+    radius_probe = planner._extract_balls([_obs(2, "solid", 1270.0, target_y_mm)])[0]
+    contact_distance = 2.0 * float(radius_probe.radius_mm)
+    ghost = np.asarray((1270.0, target_y_mm + contact_distance), dtype=np.float32)
+    radians = np.radians(float(cut_angle_deg))
+    cue_direction = np.asarray((np.sin(radians), -np.cos(radians)), dtype=np.float32)
+    cue_center = ghost - cue_direction * 50.0
+    layout = [
+        _obs(1, "cue", float(cue_center[0]), float(cue_center[1])),
+        _obs(2, "solid", 1270.0, target_y_mm),
+    ]
+    if target_shot:
+        balls = planner._extract_balls(layout)
+        return planner.target_shot_planner.plan(
+            cue_ball=balls[0],
+            target=balls[1],
+            balls=balls,
+            decision=SimpleNamespace(status="difficulty_regression"),
+        )
+    return planner.plan(
+        MatchStateFrame(
+            frame_id=1,
+            ts_cam_ns=1,
+            phase="STABLE_IDLE",
+            turn_target_group="solid",
+            layout=layout,
+        )
+    ).best
+
+
+def test_rule_planner_keeps_long_straight_route_and_rejects_long_grazing_route() -> None:
+    straight = _single_top_middle_route(cut_angle_deg=0.0, target_y_mm=1080.0)
+    grazing = _single_top_middle_route(cut_angle_deg=79.0, target_y_mm=1080.0)
+
+    assert straight is not None
+    assert grazing is None
+
+
+def test_rule_planner_keeps_short_grazing_route_as_low_score_candidate() -> None:
+    grazing = _single_top_middle_route(cut_angle_deg=79.0, target_y_mm=250.0)
+
+    assert grazing is not None
+    assert 0.0 <= grazing.score <= 0.20
+
+
+def test_target_shot_planner_rejects_long_grazing_direct_route() -> None:
+    grazing = _single_top_middle_route(cut_angle_deg=79.0, target_y_mm=1080.0, target_shot=True)
+
+    assert grazing is None
+
+
 def test_planner_recomputes_current_route_from_stable_table_space_centres() -> None:
     service = _service_for_table(2540.0, 1270.0)
     stable_planner = GeometryPhysicsPlanner(
@@ -1243,6 +1307,7 @@ def test_target_shot_mode_keeps_edge_detection_available_when_scanning_candidate
             top_k=20,
             target_lock_enabled=False,
             target_shot_activate_hold_ms=1000,
+            minimum_route_score=-999.0,
         ),
         service,
     )

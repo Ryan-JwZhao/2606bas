@@ -204,6 +204,7 @@ class PlannerConfig:
     enabled: bool = True
     shot_mode: str = "rule"  # rule | hook; legacy free values migrate to hook
     max_cut_angle_deg: float = 80.0
+    minimum_route_score: float = 0.0
     top_k: int = 5
     cue_path_margin_mm: float = 4.0
     object_path_margin_mm: float = 4.0

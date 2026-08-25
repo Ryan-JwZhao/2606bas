@@ -20,6 +20,12 @@ from .learning import create_learning_ranker
 from .pocket_clearance import find_pocket_entry_path
 from .pocket_targets import planning_pocket_mouth, planning_pocket_points
 from .route_stability import BallPositionMeasurement, PlanningPositionStabilizer, RouteTopologyContinuity
+from .shot_difficulty import (
+    DIFFICULTY_VERSION,
+    RouteDifficultyMetrics,
+    RouteScoringProfile,
+    evaluate_route_difficulty,
+)
 from .target_shot import TargetShotDecision, TargetShotModeController, TargetShotPlanner
 from .target_lock import TargetLockController, TargetLockDecision
 
@@ -651,12 +657,22 @@ class GeometryPhysicsPlanner:
             return None
 
         table_diag = math.hypot(self.calibration.table.width_mm, self.calibration.table.height_mm)
-        cut_penalty = (cut / max(1.0, self.config.max_cut_angle_deg)) ** 1.8
-        dist_penalty = (cue_dist + 0.55 * obj_dist) / max(1.0, table_diag)
         clearance_norm = clamp(min(cue_clearance / 80.0, obj_clearance / 80.0), 0.0, 1.0)
-        pocket_angle_penalty = self._pocket_angle_penalty(entry_assessment.entrance_angle_deg)
-        risk = clamp(0.45 * cut_penalty + 0.35 * dist_penalty + 0.20 * (1.0 - clearance_norm), 0.0, 1.0)
-        score = float(2.0 - 1.3 * cut_penalty - 0.9 * dist_penalty - 0.35 * pocket_angle_penalty + 0.25 * clearance_norm)
+        difficulty = evaluate_route_difficulty(
+            RouteDifficultyMetrics(
+                cut_angle_deg=cut,
+                max_cut_angle_deg=float(self.config.max_cut_angle_deg),
+                cue_distance_mm=cue_dist,
+                object_distance_mm=obj_dist,
+                table_diagonal_mm=table_diag,
+                clearance_norm=clearance_norm,
+                pocket_entry_angle_deg=entry_assessment.entrance_angle_deg,
+            ),
+            profile=RouteScoringProfile.RULE,
+            minimum_score=float(getattr(self.config, "minimum_route_score", 0.0)),
+        )
+        if not difficulty.accepted:
+            return None
 
         cid = f"f{target.track_id}_p{pocket_index}_{int(cue_dist)}"
         return ShotCandidate(
@@ -674,14 +690,18 @@ class GeometryPhysicsPlanner:
             cut_angle_deg=float(cut),
             cue_distance_mm=float(cue_dist),
             object_distance_mm=float(obj_dist),
-            score=score,
-            risk=float(risk),
+            score=difficulty.score,
+            risk=difficulty.risk,
             explanation={
                 "cue_clearance_mm": float(cue_clearance),
                 "object_clearance_mm": float(obj_clearance),
-                "cut_penalty": float(cut_penalty),
-                "distance_penalty": float(dist_penalty),
-                "pocket_angle_penalty": float(pocket_angle_penalty),
+                "cut_penalty": difficulty.cut_penalty,
+                "cut_distance_transfer_factor": difficulty.cut_distance_transfer_factor,
+                "effective_object_distance_mm": difficulty.effective_object_distance_mm,
+                "distance_penalty": difficulty.distance_penalty,
+                "pocket_angle_penalty": difficulty.pocket_angle_penalty,
+                "minimum_route_score": difficulty.minimum_score,
+                "route_difficulty_version": DIFFICULTY_VERSION,
                 "pocket_entry_angle_deg": float(entry_assessment.entrance_angle_deg),
                 "pocket_jaw_clearance_mm": float(entry_assessment.jaw_clearance_mm),
                 "pocket_required_clearance_mm": float(entry_assessment.required_clearance_mm),
@@ -742,11 +762,6 @@ class GeometryPhysicsPlanner:
             clearance = d - ball.radius_mm - moving_radius
             min_clearance = min(min_clearance, float(clearance))
         return min_clearance if np.isfinite(min_clearance) else 9999.0
-
-    @staticmethod
-    def _pocket_angle_penalty(entrance_angle_deg: float) -> float:
-        return float(max(0.0, (float(entrance_angle_deg) - 20.0) / 70.0) ** 1.5)
-
 
 def _pt(arr: np.ndarray) -> Point:
     return (float(arr[0]), float(arr[1]))

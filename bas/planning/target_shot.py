@@ -17,6 +17,12 @@ from .corridor_targeting import rank_object_balls_in_corridor
 from .cue_aim import CueStickAimDetector
 from .pocket_clearance import assess_pocket_entry, find_pocket_entry_path
 from .pocket_targets import planning_pocket_mouth, planning_pocket_points
+from .shot_difficulty import (
+    DIFFICULTY_VERSION,
+    RouteDifficultyMetrics,
+    RouteScoringProfile,
+    evaluate_route_difficulty,
+)
 
 
 OBJECT_GROUPS = {"solid", "stripe", "black"}
@@ -53,6 +59,12 @@ class _Route:
     cue_distance_mm: float
     object_distance_mm: float
     cut_angle_deg: float
+    cut_penalty: float
+    cut_distance_transfer_factor: float
+    effective_object_distance_mm: float
+    distance_penalty: float
+    pocket_angle_penalty: float
+    minimum_route_score: float
     score: float
     risk: float
     clearance_mm: float
@@ -468,13 +480,23 @@ class TargetShotPlanner:
 
         object_distance = float(sum(np.linalg.norm(b - a) for a, b in zip(object_points, object_points[1:])))
         table_diag = max(1.0, math.hypot(float(self.calibration.table.width_mm), float(self.calibration.table.height_mm)))
-        cut_penalty = (cut / max(1.0, float(self.config.max_cut_angle_deg))) ** 1.8
-        distance_penalty = (cue_distance + 0.65 * object_distance) / table_diag
-        rebound_penalty = 0.18 * len(rails)
         clearance_norm = clamp(min(cue_clearance, object_clearance) / 80.0, 0.0, 1.0)
-        pocket_angle_penalty = float(max(0.0, (entry_assessment.entrance_angle_deg - 20.0) / 70.0) ** 1.5)
-        score = float(2.6 - 1.25 * cut_penalty - 0.85 * distance_penalty - rebound_penalty - 0.30 * pocket_angle_penalty + 0.25 * clearance_norm)
-        risk = clamp(0.45 * cut_penalty + 0.35 * distance_penalty + rebound_penalty + 0.15 * pocket_angle_penalty + 0.20 * (1.0 - clearance_norm), 0.0, 1.0)
+        difficulty = evaluate_route_difficulty(
+            RouteDifficultyMetrics(
+                cut_angle_deg=cut,
+                max_cut_angle_deg=float(self.config.max_cut_angle_deg),
+                cue_distance_mm=cue_distance,
+                object_distance_mm=object_distance,
+                table_diagonal_mm=table_diag,
+                clearance_norm=clearance_norm,
+                pocket_entry_angle_deg=entry_assessment.entrance_angle_deg,
+                rebounds=len(rails),
+            ),
+            profile=RouteScoringProfile.TARGET,
+            minimum_score=float(getattr(self.config, "minimum_route_score", 0.0)),
+        )
+        if not difficulty.accepted:
+            return None
         return _Route(
             pocket_index=int(pocket_index),
             pocket=pocket.astype(np.float32),
@@ -485,8 +507,14 @@ class TargetShotPlanner:
             cue_distance_mm=cue_distance,
             object_distance_mm=object_distance,
             cut_angle_deg=float(cut),
-            score=score,
-            risk=float(risk),
+            cut_penalty=difficulty.cut_penalty,
+            cut_distance_transfer_factor=difficulty.cut_distance_transfer_factor,
+            effective_object_distance_mm=difficulty.effective_object_distance_mm,
+            distance_penalty=difficulty.distance_penalty,
+            pocket_angle_penalty=difficulty.pocket_angle_penalty,
+            minimum_route_score=difficulty.minimum_score,
+            score=difficulty.score,
+            risk=difficulty.risk,
             clearance_mm=float(min(cue_clearance, object_clearance, entry_assessment.clearance_margin_mm)),
             pocket_entry_angle_deg=float(entry_assessment.entrance_angle_deg),
             pocket_jaw_clearance_mm=float(entry_assessment.jaw_clearance_mm),
@@ -671,6 +699,13 @@ class TargetShotPlanner:
             "target_shot_rebounds": int(route.rebounds),
             "target_shot_rails": list(route.rails),
             "target_shot_clearance_mm": float(route.clearance_mm),
+            "cut_penalty": float(route.cut_penalty),
+            "cut_distance_transfer_factor": float(route.cut_distance_transfer_factor),
+            "effective_object_distance_mm": float(route.effective_object_distance_mm),
+            "distance_penalty": float(route.distance_penalty),
+            "pocket_angle_penalty": float(route.pocket_angle_penalty),
+            "minimum_route_score": float(route.minimum_route_score),
+            "route_difficulty_version": DIFFICULTY_VERSION,
             "pocket_entry_angle_deg": float(route.pocket_entry_angle_deg),
             "pocket_jaw_clearance_mm": float(route.pocket_jaw_clearance_mm),
             "pocket_required_clearance_mm": float(route.pocket_required_clearance_mm),
