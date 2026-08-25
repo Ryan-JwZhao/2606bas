@@ -130,6 +130,15 @@ BAS 是一个台球辅助系统，主要能力包括：
 
 进球观察器现在把帧间运动和背景前景统一投影到袋口局部坐标，并以可撤销的终端穿越证据覆盖低帧率快速进球。球在连续两帧之间从袋口前方直接消失时，只要视觉运动沿袋口方向推进到终端走廊、关联到唯一的最近消失球，状态机即可形成内部检测，立即刷新桌面与 Web 提示，并把该决定投影到临时库存和下一球目标花色；后续重现或反向证据会回滚临时花色并显示“判定撤销”，正式规则状态仍等待回合确认。
 
+同一袋口在 5 秒内连续进球时，每次成熟的 `POCKET_DETECTED` 都会封存自己的物理球身份。跟踪器复用同一 `track_id`、切换到新 ID 或修正花色后，下一次向内穿越会生成新的 `decision_id`，首球继续保留到正式账本提交。身份刚切换的第一帧只初始化新球，后续轨迹或视觉穿越负责建立候选，避免把邻球历史速度带入新决定。回合结算会按活动候选的完整确认/观察窗口动态等待，`turn_resolve_grace_ms` 仅作为基础下限；提示和临时目标花色仍在 `POCKET_DETECTED` 时立即刷新。Modern 击球投票同时改为真实的相邻帧速度跃迁和加速度判断，匀速母球不会按冷却周期重复产生新杆投票。
+
+本次现场回归使用 `no_line_video_20260824_183732_fixed.mp4` 的 01:35 右下袋连续两球：修复后分别在回放帧 `793` 和 `825` 产生花色球检测，离线验收为 `matched=2/2`。自动测试还覆盖同 ID、新 ID、花色变化、接近 5 秒边界和三球连续同 ID 入同袋并一次性写入账本；运行命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q --basetemp .pytest_tmp tests\test_pocket_visual_state.py tests\test_state_modern.py
+.\.venv\Scripts\python.exe scripts\evaluate_pocket_video.py --replay replays\session_20260825_153850_299256 --video local_settings\captures\no_line_video_20260824_183732_fixed.mp4 --labels tests\fixtures\pocket_rapid_same_pocket_20260825_labels.json --allow-context-mismatch --stop-frame 850
+```
+
 袋唇占用与进球穿越分别携带球 ID。同袋口另一颗静止球继续保留袋唇反证，同时不会阻断本次已消失球的进球决定。无轨迹前景会比较当前画面、背景画面与台呢颜色：当前画面仍包含球体时继续声明袋唇占用，背景旧球离开后的空位按反向残影处理。高速跨帧接力按最近轨迹速度和证据年龄动态扩展，斜入袋与模糊单帧兜底统一使用标定袋口捕获宽度。
 
 快速回归：

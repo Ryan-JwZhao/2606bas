@@ -1,0 +1,13 @@
+{
+  "name": "no_line_video_20260824_183732_fixed_rapid_same_pocket",
+  "partial": true,
+  "video_frame_offset": 0,
+  "max_notice_delay_ms": 1800,
+  "max_match_frame_gap": 30,
+  "max_estimated_frame_rate_drop_pct": 6.0,
+  "goals": [
+    {"shot": 8, "contact_frame": 779, "pocket_index": 3, "group": "stripe", "ball_code": "stb"},
+    {"shot": 8, "contact_frame": 805, "pocket_index": 3, "group": "stripe", "ball_code": "stb"}
+  ],
+  "no_goals": []
+}

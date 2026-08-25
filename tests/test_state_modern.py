@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 
 from bas.config import AppConfig, StateConfig
-from bas.schemas import Event, MatchPhase, TrackObservation, TracksFrame
+from bas.schemas import (
+    Event,
+    MatchPhase,
+    PocketVisualObservation,
+    PocketVisualObservationFrame,
+    TrackObservation,
+    TracksFrame,
+)
 from bas.state import LegacyMatchStateMachine, ModernMatchStateMachine, create_match_state_machine
 from bas.state.models import InventoryLedger, MatchRuleState, ShotContext
 from bas.state.reconcile import ObservationReconciler
@@ -262,6 +269,77 @@ def test_modern_defers_turn_resolve_until_pending_pocket_confirms() -> None:
     assert any(event.name == "TURN_RESOLVE_COMMITTED" for event in out.events)
     assert any(event.name == "REFEREE_INTENT" for event in out.events)
     assert sm.ledger.remaining["solid"] == 6
+
+
+def test_turn_resolve_waits_for_full_visual_confirmation_window() -> None:
+    sm = ModernMatchStateMachine(
+        StateConfig(
+            engine="modern",
+            pocket_visual_confirmation_ms=1300,
+            turn_resolve_grace_ms=900,
+        )
+    )
+    sm.set_table_context(
+        inner_polygon_mm=[(0, 0), (1000, 0), (1000, 500), (0, 500)],
+        pockets_mm=[(0, 0)],
+        ball_diameter_mm=56,
+    )
+    sm.phase = MatchPhase.SHOT_ACTIVE
+
+    def clear_visual(frame_id: int, ts_ns: int) -> PocketVisualObservationFrame:
+        return PocketVisualObservationFrame(
+            frame_id=frame_id,
+            ts_cam_ns=ts_ns,
+            observations=[
+                PocketVisualObservation(
+                    pocket_index=0,
+                    clear=True,
+                    group="solid",
+                    confidence=0.9,
+                    associated_track_ids=[2],
+                )
+            ],
+        )
+
+    sm.update(
+        TracksFrame(1, 1_000_000_000, [_ball(2, "solid", -50, -25, -20, -10)]),
+        clear_visual(1, 1_000_000_000),
+    )
+    sm.update(TracksFrame(2, 1_100_000_000, []), clear_visual(2, 1_100_000_000))
+    sm.force_phase(MatchPhase.TURN_RESOLVE, frame_id=3, ts_cam_ns=1_200_000_000)
+    deferred = sm.update(TracksFrame(3, 1_200_000_000, []), clear_visual(3, 1_200_000_000))
+    nominal_grace_expired = sm.update(
+        TracksFrame(4, 2_110_000_000, []),
+        clear_visual(4, 2_110_000_000),
+    )
+    confirmed = sm.update(TracksFrame(5, 2_300_000_000, []), clear_visual(5, 2_300_000_000))
+
+    assert any(event.name == "TURN_RESOLVE_DEFERRED" for event in deferred.events)
+    assert not any(
+        event.name in {"POCKET_REJECTED", "TURN_RESOLVE_COMMITTED"}
+        for event in nominal_grace_expired.events
+    )
+    assert any(event.name == "POCKET_DETECTED" for event in confirmed.events)
+    assert any(event.name == "TURN_RESOLVE_COMMITTED" for event in confirmed.events)
+    assert not any(event.name == "POCKET_REJECTED" for event in confirmed.events)
+
+
+def test_constant_cue_motion_does_not_repeat_shot_start_votes() -> None:
+    sm = ModernMatchStateMachine(StateConfig(engine="modern", event_cooldown_frames=2))
+    events = []
+
+    for frame_id in range(1, 8):
+        events.extend(
+            sm.update(
+                TracksFrame(
+                    frame_id,
+                    1_000_000_000 + frame_id * 100_000_000,
+                    [_ball(1, "cue", 100 + 10 * frame_id, 100, 100, 0)],
+                )
+            ).events
+        )
+
+    assert sum(event.name == "SHOT_START_VOTED" for event in events) == 1
 
 
 def test_350ms_missing_then_same_track_reappears_without_confirmation() -> None:
@@ -551,7 +629,7 @@ def test_operator_turn_resolve_frame_still_checks_commit_ready_reappearance() ->
     assert sm.aggregator.active is None or sm.aggregator.active.potted_confirmed["solid"] == 0
 
 
-def test_operator_turn_resolve_with_short_grace_cannot_bypass_reappear_window() -> None:
+def test_operator_turn_resolve_with_short_grace_still_waits_for_reappear_window() -> None:
     sm = ModernMatchStateMachine(
         StateConfig(
             engine="modern",
@@ -571,11 +649,16 @@ def test_operator_turn_resolve_with_short_grace_cannot_bypass_reappear_window() 
     sm.update(TracksFrame(3, 1_400_000_000, []))
     sm.force_phase(MatchPhase.TURN_RESOLVE, frame_id=4, ts_cam_ns=1_450_000_000)
     deferred = sm.update(TracksFrame(4, 1_450_000_000, [_ball(1, "cue", 100, 100)]))
-    resolved = sm.update(TracksFrame(5, 1_510_000_000, [_ball(1, "cue", 100, 100)]))
+    still_waiting = sm.update(TracksFrame(5, 1_510_000_000, [_ball(1, "cue", 100, 100)]))
+    resolved = sm.update(TracksFrame(6, 1_900_000_000, [_ball(1, "cue", 100, 100)]))
 
     assert any(event.name == "TURN_RESOLVE_DEFERRED" for event in deferred.events)
-    assert any(event.name == "POCKET_REJECTED" for event in resolved.events)
-    assert not any(event.name == "POCKET_CONFIRMED" for event in [*deferred.events, *resolved.events])
+    assert not any(
+        event.name in {"POCKET_REJECTED", "TURN_RESOLVE_COMMITTED"}
+        for event in still_waiting.events
+    )
+    assert any(event.name == "POCKET_CONFIRMED" for event in resolved.events)
+    assert not any(event.name == "POCKET_REJECTED" for event in [*deferred.events, *still_waiting.events, *resolved.events])
     assert sm.rule_state.shot_number == 1
 
 

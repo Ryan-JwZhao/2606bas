@@ -122,6 +122,7 @@ class PerBallPocketFSM:
         self.pocket_curves_mm: list[list[tuple[float, float]]] = []
         self.ball_diameter_mm = 57.15
         self._memory: Dict[int, _PocketMemory] = {}
+        self._sealed_decisions: Dict[str, _PocketMemory] = {}
         self._deferred_visual_crossings: list[_DeferredPocketObservation] = []
         self._decision_seq = 1
         self._geometry_context_fingerprint: Optional[tuple[object, ...]] = None
@@ -133,6 +134,7 @@ class PerBallPocketFSM:
 
     def reset(self) -> None:
         self._memory.clear()
+        self._sealed_decisions.clear()
         self._deferred_visual_crossings.clear()
         self._decision_seq = 1
 
@@ -202,6 +204,7 @@ class PerBallPocketFSM:
                 continue
             memory = self._memory.get(track.track_id)
             memory_created_this_frame = False
+            identity_restarted_this_frame = False
             if memory is None:
                 if track.visibility != "visible" or float(track.quality) <= 0.25:
                     continue
@@ -212,6 +215,12 @@ class PerBallPocketFSM:
                 memory = self._new_memory(track, group, frame)
                 self._memory[track.track_id] = memory
                 memory_created_this_frame = True
+            elif self._detected_identity_has_reappeared(memory, track):
+                self._seal_detected_identity(memory)
+                memory = self._new_memory(track, group, frame)
+                self._memory[track.track_id] = memory
+                memory_created_this_frame = True
+                identity_restarted_this_frame = True
 
             seen_ids.add(track.track_id)
             if track.visibility == "visible" and float(track.quality) > 0.25:
@@ -222,7 +231,7 @@ class PerBallPocketFSM:
                     and self._apply_cross_track_reappear_veto(memory, track, sample, frame, events)
                 )
                 trajectory: Optional[PocketEntryAssessment] = None
-                if active and not cross_track_vetoed:
+                if active and not cross_track_vetoed and not identity_restarted_this_frame:
                     trajectory = self._entry_trajectory(
                         memory,
                         track,
@@ -677,7 +686,8 @@ class PerBallPocketFSM:
 
     def debug_snapshot(self) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
-        for memory in self._memory.values():
+        sealed_ids = set(self._sealed_decisions)
+        for memory in self._decision_memories():
             evidence = memory.evidence
             rows.append(
                 {
@@ -715,6 +725,7 @@ class PerBallPocketFSM:
                     "reappear_veto": bool(memory.reappear_veto),
                     "reappear_group": memory.reappear_group,
                     "reason_codes": list(memory.reason_codes),
+                    "identity_sealed": bool(evidence and evidence.decision_id in sealed_ids),
                 }
             )
         return rows
@@ -746,6 +757,40 @@ class PerBallPocketFSM:
 
     def has_pending_resolution(self, now_ns: int) -> bool:
         return bool(self.pending_candidates(now_ns))
+
+    def resolution_wait_budget_ms(self, now_ns: int) -> int:
+        """Return the time required for every active candidate to reach a terminal decision."""
+
+        budgets: list[int] = []
+        for memory in self._memory.values():
+            evidence = memory.evidence
+            if memory.resolved or evidence is None:
+                continue
+            if memory.state not in {"candidate", "tentative", "commit_ready"}:
+                continue
+            confirmation_elapsed_ms = self._confirmation_elapsed_ms(memory, now_ns)
+            confirmation_target_ms = self._final_confirmation_missing_ms(memory)
+            if memory.state == "commit_ready" and confirmation_elapsed_ms >= confirmation_target_ms:
+                continue
+            confirmation_remaining_ms = max(0, confirmation_target_ms - confirmation_elapsed_ms)
+            if evidence.observer_active:
+                observation_elapsed_ms = self._elapsed_ms(now_ns, evidence.candidate_since_ns)
+                observation_remaining_ms = max(
+                    0,
+                    self._observation_timeout_ms(memory) - observation_elapsed_ms,
+                )
+                budgets.append(max(confirmation_remaining_ms, observation_remaining_ms))
+            else:
+                if memory.nonvisible_since_ns is None and memory.absent_since_ns is None:
+                    # A ball that remains visible cannot mature through a
+                    # disappearance window. The configured turn grace remains
+                    # its bounded ambiguity deadline.
+                    budgets.append(0)
+                    continue
+                # Reserve one low-frame-rate observation after the threshold so
+                # the FSM can emit its terminal event before turn resolution.
+                budgets.append(confirmation_remaining_ms + 200)
+        return max(budgets, default=0)
 
     def pending_candidates(self, now_ns: int) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
@@ -781,7 +826,7 @@ class PerBallPocketFSM:
 
     def mark_confirmed(self, decision_ids: list[str]) -> None:
         wanted = {str(value) for value in decision_ids if str(value).strip()}
-        for memory in self._memory.values():
+        for memory in self._decision_memories():
             evidence = memory.evidence
             if evidence is None or evidence.decision_id not in wanted or memory.state == "rejected":
                 continue
@@ -792,7 +837,7 @@ class PerBallPocketFSM:
 
     def mark_rejected(self, decision_ids: list[str]) -> None:
         wanted = {str(value) for value in decision_ids if str(value).strip()}
-        for memory in self._memory.values():
+        for memory in self._decision_memories():
             evidence = memory.evidence
             if evidence is None or evidence.decision_id not in wanted or memory.state == "confirmed":
                 continue
@@ -818,6 +863,36 @@ class PerBallPocketFSM:
             last_bbox_aspect=self._bbox_aspect(track),
             last_bbox_horizontal=self._bbox_horizontal(track),
         )
+
+    @staticmethod
+    def _detected_identity_has_reappeared(memory: _PocketMemory, track: TrackObservation) -> bool:
+        return bool(
+            memory.detected_emitted
+            and not memory.resolved
+            and memory.evidence is not None
+            and memory.nonvisible_since_ns is not None
+            and track.visibility == "visible"
+            and float(track.quality) > 0.25
+        )
+
+    def _seal_detected_identity(self, memory: _PocketMemory) -> None:
+        """Detach a mature pocket decision from a tracker id that became reusable."""
+
+        evidence = memory.evidence
+        if evidence is not None:
+            self._sealed_decisions[evidence.decision_id] = memory
+
+    def _decision_memories(self) -> list[_PocketMemory]:
+        """Return active identities plus sealed decisions exactly once."""
+
+        rows = list(self._memory.values())
+        active_object_ids = {id(memory) for memory in rows}
+        rows.extend(
+            memory
+            for memory in self._sealed_decisions.values()
+            if id(memory) not in active_object_ids
+        )
+        return rows
 
     def _handle_visible(
         self,
@@ -1330,6 +1405,10 @@ class PerBallPocketFSM:
         for candidate in self._memory.values():
             evidence = candidate.evidence
             if candidate.track_id == memory.track_id or candidate.resolved or evidence is None:
+                continue
+            if candidate.detected_emitted:
+                # A mature inward-and-clear decision owns a sealed physical-ball
+                # identity. A later track at this pocket can describe another ball.
                 continue
             if candidate.state not in {"on_table", *self._REAPPEAR_STATES}:
                 continue

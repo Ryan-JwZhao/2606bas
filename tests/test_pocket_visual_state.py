@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from bas.config import StateConfig
 from bas.schemas import (
     MatchPhase,
@@ -95,6 +97,131 @@ def test_visual_crossing_confirms_once_after_1_3_seconds() -> None:
     assert event.payload["decision_latency_ms"] == 1300
     assert "pocket_visual_inward" in event.payload["evidence_sources"]
     assert not any(event.name == "POCKET_DETECTED" for event in duplicate.events)
+
+
+@pytest.mark.parametrize(
+    ("second_track_id", "second_group", "second_delay_ms"),
+    [
+        (112, "solid", 1100),
+        (113, "solid", 1100),
+        (112, "stripe", 1100),
+        (112, "solid", 3500),
+    ],
+)
+def test_two_same_pocket_goals_within_five_seconds_keep_independent_identities(
+    second_track_id: int,
+    second_group: str,
+    second_delay_ms: int,
+) -> None:
+    """01:35: fast physical balls stay independent across tracker id churn and reuse."""
+
+    sm = _machine()
+    events = []
+    events.extend(
+        sm.update(
+            TracksFrame(1, 1_000_000_000, [_ball(112, "solid", 500, 170)]),
+            _visual(1, 1_000_000_000, clear=True, track_ids=[112]),
+        ).events
+    )
+    events.extend(
+        sm.update(
+            TracksFrame(2, 1_100_000_000, []),
+            _visual(2, 1_100_000_000, inward=True, track_ids=[112]),
+        ).events
+    )
+    events.extend(
+        sm.update(
+            TracksFrame(3, 2_400_000_000, []),
+            _visual(3, 2_400_000_000, clear=True, track_ids=[112]),
+        ).events
+    )
+
+    # A second physical ball reaches the same pocket quickly enough for both
+    # detections to remain inside five seconds. Trackers may reuse the id,
+    # allocate a new id, or also revise the colour classification.
+    second_visible_ns = 2_400_000_000 + second_delay_ms * 1_000_000
+    second_crossing_ns = second_visible_ns + 100_000_000
+    second_detected_ns = second_crossing_ns + 1_300_000_000
+    events.extend(
+        sm.update(
+            TracksFrame(4, second_visible_ns, [_ball(second_track_id, second_group, 500, 170)]),
+            _visual(
+                4,
+                second_visible_ns,
+                group=second_group,
+                clear=True,
+                track_ids=[second_track_id],
+            ),
+        ).events
+    )
+    events.extend(
+        sm.update(
+            TracksFrame(5, second_crossing_ns, []),
+            _visual(
+                5,
+                second_crossing_ns,
+                group=second_group,
+                inward=True,
+                track_ids=[second_track_id],
+            ),
+        ).events
+    )
+    events.extend(
+        sm.update(
+            TracksFrame(6, second_detected_ns, []),
+            _visual(
+                6,
+                second_detected_ns,
+                group=second_group,
+                clear=True,
+                track_ids=[second_track_id],
+            ),
+        ).events
+    )
+
+    detected = [event for event in events if event.name == "POCKET_DETECTED"]
+    assert len(detected) == 2
+    assert len({event.payload["decision_id"] for event in detected}) == 2
+    assert not any(event.name in {"POCKET_REAPPEARED", "POCKET_REJECTED"} for event in events)
+
+
+def test_three_rapid_same_track_goals_are_all_committed_at_turn_resolve() -> None:
+    sm = _machine()
+    sm.rule_state.table_state = "closed"
+    sm.rule_state.actor_group = "solid"
+    sm.rule_state.opponent_group = "stripe"
+    events = []
+
+    for sequence in range(3):
+        frame_id = sequence * 3 + 1
+        visible_ns = 1_000_000_000 + sequence * 1_500_000_000
+        crossing_ns = visible_ns + 100_000_000
+        detected_ns = crossing_ns + 1_300_000_000
+        events.extend(
+            sm.update(
+                TracksFrame(frame_id, visible_ns, [_ball(112, "solid", 500, 170)]),
+                _visual(frame_id, visible_ns, clear=True, track_ids=[112]),
+            ).events
+        )
+        events.extend(
+            sm.update(
+                TracksFrame(frame_id + 1, crossing_ns, []),
+                _visual(frame_id + 1, crossing_ns, inward=True, track_ids=[112]),
+            ).events
+        )
+        events.extend(
+            sm.update(
+                TracksFrame(frame_id + 2, detected_ns, []),
+                _visual(frame_id + 2, detected_ns, clear=True, track_ids=[112]),
+            ).events
+        )
+
+    sm.force_phase(MatchPhase.TURN_RESOLVE, frame_id=10, ts_cam_ns=5_600_000_000)
+    resolved = sm.update(TracksFrame(10, 5_600_000_000, [_ball(1, "cue", 700, 250)]))
+
+    assert sum(event.name == "POCKET_DETECTED" for event in events) == 3
+    assert sum(event.name == "POCKET_CONFIRMED" for event in resolved.events) == 3
+    assert sm.ledger.remaining["solid"] == 4
 
 
 def test_visual_outward_crossing_rejects_bounce() -> None:

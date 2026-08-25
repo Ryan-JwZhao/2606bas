@@ -49,6 +49,7 @@ class ModernMatchStateMachine:
         self._pocket_curves_mm: list[list[tuple[float, float]]] = []
         self._ball_diameter_mm = 57.15
         self._previous_velocities: dict[int, tuple[float, float]] = {}
+        self._previous_motion_ts_ns: Optional[int] = None
 
     @property
     def phase(self) -> MatchPhase:
@@ -88,6 +89,7 @@ class ModernMatchStateMachine:
         self._last_shot_payload = {}
         self._pending_turn_resolve = None
         self._previous_velocities = {}
+        self._previous_motion_ts_ns = None
 
     def set_table_context(
         self,
@@ -287,7 +289,7 @@ class ModernMatchStateMachine:
                 self._empty_signals(),
                 operator_hold_short_circuit=True,
             )
-            self._remember_motion(tracks)
+            self._remember_motion(tracks, tracks_frame.ts_cam_ns)
             return state
 
         if self._operator_lock_frames > 0:
@@ -313,7 +315,7 @@ class ModernMatchStateMachine:
                 self._empty_signals(),
                 operator_override_short_circuit=True,
             )
-            self._remember_motion(tracks)
+            self._remember_motion(tracks, tracks_frame.ts_cam_ns)
             return state
 
         self._tick_event_cooldowns()
@@ -336,7 +338,7 @@ class ModernMatchStateMachine:
         self.aggregator.ingest(events, ts_ms=ts_ms, rule_state=self.rule_state)
         self._process_turn_resolve_if_needed(tracks_frame, events)
         self._sync_provisional_pocket_events(events)
-        self._remember_motion(tracks)
+        self._remember_motion(tracks, tracks_frame.ts_cam_ns)
 
         confidence = 1.0
         if phase == MatchPhase.ANOMALY_RECOVERY:
@@ -586,7 +588,9 @@ class ModernMatchStateMachine:
         return int(getattr(self.config, "turn_resolve_grace_ms", 900)) > 0
 
     def _start_pending_turn_resolve(self, tracks_frame: TracksFrame, events: List[Event]) -> None:
-        grace_ms = max(1, int(getattr(self.config, "turn_resolve_grace_ms", 900)))
+        configured_grace_ms = max(1, int(getattr(self.config, "turn_resolve_grace_ms", 900)))
+        pocket_wait_ms = self.pocket_fsm.resolution_wait_budget_ms(tracks_frame.ts_cam_ns)
+        grace_ms = max(configured_grace_ms, pocket_wait_ms)
         self._pending_turn_resolve = {
             "frame_id": int(tracks_frame.frame_id),
             "ts_cam_ns": int(tracks_frame.ts_cam_ns),
@@ -599,6 +603,8 @@ class ModernMatchStateMachine:
                 frame_id=tracks_frame.frame_id,
                 payload={
                     "grace_ms": grace_ms,
+                    "configured_grace_ms": configured_grace_ms,
+                    "pocket_wait_ms": pocket_wait_ms,
                     "pending_pockets": self.pocket_fsm.pending_candidates(tracks_frame.ts_cam_ns),
                 },
                 confidence=1.0,
@@ -609,6 +615,12 @@ class ModernMatchStateMachine:
         pending = self._pending_turn_resolve
         if pending is None:
             return False
+        pocket_wait_ms = self.pocket_fsm.resolution_wait_budget_ms(tracks_frame.ts_cam_ns)
+        if pocket_wait_ms > 0:
+            pending["deadline_ns"] = max(
+                int(pending.get("deadline_ns", tracks_frame.ts_cam_ns)),
+                int(tracks_frame.ts_cam_ns) + pocket_wait_ms * 1_000_000,
+            )
         if int(tracks_frame.ts_cam_ns) >= int(pending.get("deadline_ns", tracks_frame.ts_cam_ns)):
             return False
         return self.pocket_fsm.has_pending_resolution(tracks_frame.ts_cam_ns)
@@ -813,9 +825,33 @@ class ModernMatchStateMachine:
         if cue is None:
             return None
         cue_speed = self._speed(cue)
+        previous_velocity = self._previous_velocities.get(int(cue.track_id))
+        previous_speed = (
+            float(np.linalg.norm(np.asarray(previous_velocity, dtype=np.float32)))
+            if previous_velocity is not None
+            else 0.0
+        )
+        dt_s = (
+            max(1e-3, (int(tracks_frame.ts_cam_ns) - int(self._previous_motion_ts_ns)) / 1e9)
+            if self._previous_motion_ts_ns is not None
+            else 1.0
+        )
+        speed_delta = cue_speed - previous_speed
+        speed_jump_threshold = float(
+            self.config.shot_speed_jump_mm_s
+            if cue.velocity_mm_s is not None
+            else self.config.moving_speed_px_s * 0.35
+        )
+        acceleration = speed_delta / dt_s
+        acceleration_threshold = float(
+            self.config.shot_accel_mm_s2
+            if cue.velocity_mm_s is not None
+            else self.config.moving_speed_px_s * 3.0
+        )
         votes = {
             "cue_ball_motion": cue_speed >= self._moving_threshold(cue),
-            "cue_ball_accel_peak": cue_speed >= float(self.config.shot_speed_jump_mm_s if cue.velocity_mm_s is not None else self.config.moving_speed_px_s),
+            "cue_ball_speed_jump": speed_delta >= speed_jump_threshold,
+            "cue_ball_accel_peak": acceleration >= acceleration_threshold,
             "cue_stick_seen": any(
                 t.group == "cue_stick"
                 and t.visibility == "visible"
@@ -824,7 +860,8 @@ class ModernMatchStateMachine:
                 for t in tracks_frame.tracks
             ),
         }
-        if sum(1 for value in votes.values() if value) < 2:
+        has_impulse = bool(votes["cue_ball_speed_jump"] or votes["cue_ball_accel_peak"])
+        if not has_impulse or sum(1 for value in votes.values() if value) < 2:
             return None
         key = self._cooldown_key("SHOT_START_VOTED", cue.track_id)
         if key in self._event_cooldowns:
@@ -834,7 +871,16 @@ class ModernMatchStateMachine:
             name="SHOT_START_VOTED",
             ts_cam_ns=tracks_frame.ts_cam_ns,
             frame_id=tracks_frame.frame_id,
-            payload={"cue_track_id": cue.track_id, "votes": votes, "cue_speed": cue_speed},
+            payload={
+                "cue_track_id": cue.track_id,
+                "votes": votes,
+                "vote_count": sum(1 for value in votes.values() if value),
+                "cue_speed": cue_speed,
+                "prev_cue_speed": previous_speed,
+                "cue_speed_delta": speed_delta,
+                "cue_accel": acceleration,
+                "dt_s": dt_s,
+            },
             confidence=0.78,
         )
 
@@ -916,12 +962,13 @@ class ModernMatchStateMachine:
         cosine = float(np.dot(before, after) / max(1e-6, before_speed * after_speed))
         return cosine <= float(np.cos(np.deg2rad(25.0)))
 
-    def _remember_motion(self, tracks: List[TrackObservation]) -> None:
+    def _remember_motion(self, tracks: List[TrackObservation], ts_cam_ns: int) -> None:
         self._previous_velocities = {
             int(track.track_id): self._velocity(track)
             for track in tracks
             if track.visibility == "visible" and bool(track.confirmed) and track.quality > 0.25
         }
+        self._previous_motion_ts_ns = int(ts_cam_ns)
 
     def _table_bounds(self) -> Optional[tuple[float, float, float, float]]:
         if len(self._table_inner_polygon_mm) < 3:
