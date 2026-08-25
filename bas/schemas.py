@@ -121,11 +121,13 @@ class PocketVisualObservation:
     group: Optional[str] = None
     confidence: float = 0.0
     associated_track_ids: List[int] = field(default_factory=list)
+    lip_track_ids: List[int] = field(default_factory=list)
     evidence_sources: List[str] = field(default_factory=list)
     motion_score: float = 0.0
     foreground_score: float = 0.0
     foreground_center_px: Optional[Point] = None
     foreground_depth_diameters: Optional[float] = None
+    entry_depth_diameters: Optional[float] = None
 
 
 @dataclass

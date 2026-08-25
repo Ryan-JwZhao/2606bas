@@ -58,18 +58,15 @@ class FfmpegH264Recorder:
         if process is None:
             self._close_log()
             return 0
-        if process.stdin is not None:
-            try:
-                process.stdin.close()
-            except Exception:
-                pass
         try:
-            code = int(process.wait(timeout=8.0))
-        except subprocess.TimeoutExpired:
-            process.kill()
-            code = int(process.wait(timeout=2.0))
-        self._close_log()
-        return code
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except Exception:
+                    pass
+            return int(process.wait())
+        finally:
+            self._close_log()
 
     def _close_log(self) -> None:
         if self._stderr_file is not None:
@@ -118,8 +115,6 @@ class FfmpegH264Recorder:
             "veryfast",
             "-pix_fmt",
             "yuv420p",
-            "-movflags",
-            "+faststart",
             str(self.path),
         ]
 

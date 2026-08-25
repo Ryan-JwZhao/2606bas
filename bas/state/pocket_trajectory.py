@@ -48,7 +48,7 @@ def assess_reported_entry(
         pocketward_speed_mm_s=speed,
         tangential_speed_mm_s=probe.tangential_speed_mm_s,
     )
-    if abs(projected_lateral) > _capture_half_width(probe, limits):
+    if abs(projected_lateral) > capture_half_width_mm(probe, limits):
         return None
     return PocketEntryAssessment(
         pocket_index=int(probe.pocket_index),
@@ -82,7 +82,7 @@ def assess_track_handoff(
     ):
         return None
 
-    source_gate = _capture_half_width(source, limits) + max(0.0, -float(source.depth_mm)) * 0.45
+    source_gate = capture_half_width_mm(source, limits) + max(0.0, -float(source.depth_mm)) * 0.45
     if abs(float(source.signed_lateral_mm)) > source_gate:
         return None
 
@@ -108,7 +108,7 @@ def assess_track_handoff(
         pocketward_speed_mm_s=pocketward_speed,
         tangential_speed_mm_s=tangential_speed,
     )
-    if abs(projected_lateral) > _capture_half_width(current, limits):
+    if abs(projected_lateral) > capture_half_width_mm(current, limits):
         return None
     return PocketEntryAssessment(
         pocket_index=int(current.pocket_index),
@@ -144,7 +144,7 @@ def projected_entry_has_reversed(
     )
     if float(probe.depth_mm) < -limits.candidate_depth_mm - predictive_lead - hysteresis:
         return True
-    if abs(float(probe.signed_lateral_mm)) > _capture_half_width(probe, limits) + hysteresis:
+    if abs(float(probe.signed_lateral_mm)) > capture_half_width_mm(probe, limits) + hysteresis:
         return True
     return False
 
@@ -161,11 +161,11 @@ def _current_position_is_eligible(
     predictive_lead = min(limits.ball_diameter_mm * 3.0, speed * 0.18)
     if float(probe.depth_mm) < -limits.candidate_depth_mm - predictive_lead:
         return False
-    lateral_allowance = _capture_half_width(probe, limits) + max(0.0, -float(probe.depth_mm)) * 0.18
+    lateral_allowance = capture_half_width_mm(probe, limits) + max(0.0, -float(probe.depth_mm)) * 0.18
     return abs(float(probe.signed_lateral_mm)) <= lateral_allowance
 
 
-def _capture_half_width(probe: PocketApproachProbe, limits: PocketTrajectoryLimits) -> float:
+def capture_half_width_mm(probe: PocketApproachProbe, limits: PocketTrajectoryLimits) -> float:
     return max(1.0, float(probe.mouth_half_width_mm) + limits.ball_diameter_mm * 0.5)
 
 
@@ -187,5 +187,6 @@ __all__ = [
     "PocketTrajectoryLimits",
     "assess_reported_entry",
     "assess_track_handoff",
+    "capture_half_width_mm",
     "projected_entry_has_reversed",
 ]

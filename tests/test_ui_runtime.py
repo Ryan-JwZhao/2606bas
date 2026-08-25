@@ -63,7 +63,7 @@ def test_operator_window_uses_scrollable_three_column_layout() -> None:
     app.processEvents()
 
 
-def test_pocket_event_shows_the_preview_popup_on_the_operator_frontend_only() -> None:
+def test_confirmed_pocket_event_shows_the_preview_popup_on_the_operator_frontend_only() -> None:
     app = _app()
     window = main_window.OperatorWindow(AppConfig())
     projection_calls: list[str] = []
@@ -74,7 +74,7 @@ def test_pocket_event_shows_the_preview_popup_on_the_operator_frontend_only() ->
     window.show()
     app.processEvents()
 
-    notices = window._observe_web_events(
+    provisional = window._observe_web_events(
         [
             Event(
                 "POCKET_DETECTED",
@@ -84,10 +84,21 @@ def test_pocket_event_shows_the_preview_popup_on_the_operator_frontend_only() ->
             )
         ]
     )
+    notices = window._observe_web_events(
+        [
+            Event(
+                "POCKET_CONFIRMED",
+                2,
+                2,
+                payload={"decision_id": "pocket:operator", "group": "solid", "track_id": 2, "pocket_index": 0},
+            )
+        ]
+    )
     window._show_desktop_pocket_notice(notices)
     app.processEvents()
 
     popup = window.pocket_notice_label
+    assert provisional == []
     assert popup.isVisible() is True
     assert popup.parent() is window.preview_frame
     assert "全色球进洞" in popup.text()

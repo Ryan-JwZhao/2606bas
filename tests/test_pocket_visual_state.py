@@ -41,6 +41,8 @@ def _visual(
     motion_score: float = 0.0,
     foreground_score: float = 0.0,
     foreground_depth_diameters: float | None = None,
+    entry_depth_diameters: float | None = None,
+    lip_track_ids: list[int] | None = None,
 ) -> PocketVisualObservationFrame:
     return PocketVisualObservationFrame(
         frame_id=frame_id,
@@ -55,10 +57,12 @@ def _visual(
                 group=group,
                 confidence=0.9,
                 associated_track_ids=list(track_ids or []),
+                lip_track_ids=list(lip_track_ids or []),
                 evidence_sources=["frame_difference", "ball_sized_motion", "foreground_motion"],
                 motion_score=motion_score,
                 foreground_score=foreground_score,
                 foreground_depth_diameters=foreground_depth_diameters,
+                entry_depth_diameters=entry_depth_diameters,
             )
         ],
         latency_ms=1.0,
@@ -451,6 +455,109 @@ def test_narrow_same_track_terminal_disappearance_confirms_without_lip_flag() ->
     )
 
     assert any(event.name == "POCKET_CANDIDATE" for event in candidate.events)
+    assert any(event.name == "POCKET_DETECTED" for event in detected.events)
+
+
+def test_low_fps_terminal_visual_crossing_can_start_stationary_lip_departure() -> None:
+    """A collision-potted lip ball relies on terminal visual motion when its last track was static."""
+
+    sm = _machine()
+    ball = _ball(41, "stripe", 500, 72)
+    ball.velocity_mm_s = (0.0, 0.0)
+    sm.update(
+        TracksFrame(1, 1_000_000_000, [ball]),
+        _visual(1, 1_000_000_000, clear=True, track_ids=[41]),
+    )
+    candidate = sm.update(
+        TracksFrame(2, 1_116_000_000, []),
+        _visual(
+            2,
+            1_116_000_000,
+            group="stripe",
+            inward=True,
+            track_ids=[41],
+            motion_score=1.0,
+            foreground_score=1.0,
+            foreground_depth_diameters=-0.65,
+            entry_depth_diameters=-0.65,
+        ),
+    )
+    detected = sm.update(
+        TracksFrame(3, 2_416_000_000, []),
+        _visual(3, 2_416_000_000, group="stripe", clear=True, track_ids=[41]),
+    )
+
+    assert any(event.name == "POCKET_CANDIDATE" for event in candidate.events)
+    assert any(event.name == "POCKET_DETECTED" for event in detected.events)
+
+
+def test_other_live_lip_ball_does_not_veto_disappeared_crossing_track() -> None:
+    """Two same-group balls at one pocket keep independent crossing and lip identities."""
+
+    sm = _machine()
+    target = _ball(14, "solid", 500, 72)
+    target.velocity_mm_s = (0.0, -320.0)
+    static = _ball(4, "solid", 535, 45)
+    static.velocity_mm_s = (0.0, 0.0)
+    sm.update(
+        TracksFrame(1, 1_000_000_000, [target, static]),
+        _visual(1, 1_000_000_000, clear=True),
+    )
+    candidate = sm.update(
+        TracksFrame(2, 1_100_000_000, [static]),
+        _visual(
+            2,
+            1_100_000_000,
+            inward=True,
+            lip=True,
+            track_ids=[14],
+            lip_track_ids=[4],
+            motion_score=1.0,
+            foreground_score=1.0,
+            foreground_depth_diameters=-0.4,
+            entry_depth_diameters=-0.4,
+        ),
+    )
+    detected = sm.update(
+        TracksFrame(3, 2_400_000_000, [static]),
+        _visual(3, 2_400_000_000, lip=True, track_ids=[14], lip_track_ids=[4]),
+    )
+
+    assert any(event.name == "POCKET_CANDIDATE" for event in candidate.events)
+    assert any(event.name == "POCKET_DETECTED" for event in detected.events)
+
+
+def test_calibrated_terminal_corridor_accepts_projected_safe_off_axis_entry() -> None:
+    """Terminal confirmation uses the calibrated mouth corridor accepted by trajectory projection."""
+
+    sm = _machine()
+    far = _ball(52, "stripe", 570, 178)
+    far.velocity_mm_s = (-160.0, -362.0)
+    near = _ball(52, "stripe", 550, 52)
+    near.velocity_mm_s = (-200.0, -416.0)
+    sm.update(
+        TracksFrame(1, 1_000_000_000, [far]),
+        _visual(1, 1_000_000_000, clear=True),
+    )
+    candidate = sm.update(
+        TracksFrame(2, 1_100_000_000, [near]),
+        _visual(2, 1_100_000_000, group="stripe", track_ids=[52], motion_score=1.0, foreground_score=1.0),
+    )
+    sm.update(
+        TracksFrame(3, 1_216_000_000, []),
+        _visual(3, 1_216_000_000, group="stripe", track_ids=[52], motion_score=1.0, foreground_score=1.0),
+    )
+    sm.update(
+        TracksFrame(4, 1_950_000_000, []),
+        _visual(4, 1_950_000_000, group="stripe", clear=True, track_ids=[52]),
+    )
+    detected = sm.update(
+        TracksFrame(5, 2_450_000_000, []),
+        _visual(5, 2_450_000_000, group="stripe", clear=True, track_ids=[52]),
+    )
+
+    event = next(event for event in candidate.events if event.name == "POCKET_CANDIDATE")
+    assert abs(float(event.payload["evidence"]["entry_lateral_mm"])) > 0.75 * 56.0
     assert any(event.name == "POCKET_DETECTED" for event in detected.events)
 
 

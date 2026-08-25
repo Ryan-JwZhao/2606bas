@@ -34,7 +34,7 @@ def test_pocket_notice_tracker_expires_notices_and_keeps_sequences_monotonic_aft
     assert after_reset[0]["notice_id"] != created[0]["notice_id"]
 
 
-def test_pocket_notice_tracker_announces_detection_and_deduplicates_confirmation_aliases() -> None:
+def test_pocket_notice_tracker_waits_for_confirmation_and_deduplicates_aliases() -> None:
     tracker = PocketNoticeTracker()
     legacy = Event(
         "POT_PROBABLE",
@@ -65,5 +65,26 @@ def test_pocket_notice_tracker_announces_detection_and_deduplicates_confirmation
 
     created = tracker.observe([legacy, modern_confirmed, modern_alias], now_s=10.0)
 
-    assert [notice["message"] for notice in detected] == ["全色球进洞"]
-    assert [notice["message"] for notice in created] == ["花色球进洞"]
+    assert detected == []
+    assert [notice["message"] for notice in created] == ["花色球进洞", "全色球进洞"]
+
+
+def test_pocket_notice_waits_for_irreversible_confirmation() -> None:
+    tracker = PocketNoticeTracker()
+    detected = Event(
+        "POCKET_DETECTED",
+        1,
+        1,
+        payload={"decision_id": "pocket:provisional", "group": "solid", "track_id": 2, "pocket_index": 3},
+    )
+    confirmed = Event(
+        "POCKET_CONFIRMED",
+        2,
+        2,
+        payload=dict(detected.payload),
+    )
+
+    assert tracker.observe([detected], now_s=1.0) == []
+    created = tracker.observe([confirmed], now_s=2.0)
+
+    assert [notice["message"] for notice in created] == ["全色球进洞"]

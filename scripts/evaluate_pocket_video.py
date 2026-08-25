@@ -428,8 +428,12 @@ def _evaluate(
 ) -> dict[str, Any]:
     expected = [dict(item) for item in labels.get("goals") or []]
     forbidden = {int(item["shot"]) for item in labels.get("no_goals") or []}
+    partial_labels = bool(labels.get("partial", False))
+    labeled_shots = forbidden | {int(item["shot"]) for item in expected}
     max_delay = int(labels.get("max_notice_delay_ms", 1500))
     max_frame_gap = max(1, int(labels.get("max_match_frame_gap", 90)))
+    max_observer_p95_ms = float(labels.get("max_observer_p95_ms", 8.0))
+    max_estimated_drop_pct = float(labels.get("max_estimated_frame_rate_drop_pct", 5.0))
     by_shot: dict[int, list[dict[str, Any]]] = {}
     for item in detected:
         if item["shot"] is not None:
@@ -483,6 +487,7 @@ def _evaluate(
         if index not in used_indices
         and index not in duplicate_indices
         and index not in wrong_indices
+        and (not partial_labels or int(item.get("shot") or -1) in labeled_shots)
         and (
             int(item.get("shot") or -1) in forbidden
             or not any(
@@ -504,8 +509,8 @@ def _evaluate(
     estimated_drop = observer_mean / source_interval_mean * 100.0 if source_interval_mean > 0.0 else 0.0
     passed = (
         not (misses or duplicates or wrong or false_positives or late)
-        and p95 <= 8.0
-        and estimated_drop <= 5.0
+        and p95 <= max_observer_p95_ms
+        and estimated_drop <= max_estimated_drop_pct
     )
     return {
         "passed": passed,

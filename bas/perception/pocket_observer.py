@@ -8,6 +8,10 @@ from typing import Deque, Optional
 import cv2
 import numpy as np
 
+from ..pocket_evidence import (
+    VISUAL_TERMINAL_ADVANCE_DIAMETERS,
+    VISUAL_TERMINAL_DEPTH_DIAMETERS,
+)
 from ..schemas import (
     FramePacket,
     PocketVisualObservation,
@@ -17,6 +21,11 @@ from ..schemas import (
 )
 from ..utils import group_from_class
 from .regions import BALL_GROUPS, DetectionRegionPolicy, PocketGuardRegion
+
+
+RECENT_ASSOCIATION_BASE_DISTANCE_DIAMETERS = 6.0
+RECENT_ASSOCIATION_MAX_DISTANCE_DIAMETERS = 12.0
+RECENT_ASSOCIATION_TERMINAL_MARGIN_DIAMETERS = 2.0
 
 
 @dataclass
@@ -41,7 +50,7 @@ class PocketObserver:
     without a ball association is deliberately diagnostic-only.
     """
 
-    version = "pocket_observer_v1"
+    version = "pocket_observer_v2"
 
     def __init__(self, *, history_ms: int = 1500) -> None:
         self.history_ms = max(100, int(history_ms))
@@ -100,8 +109,8 @@ class PocketObserver:
         while history.votes and history.votes[0][0] < cutoff:
             history.votes.popleft()
 
-        motion_score, motion_center = _motion_measure(history.previous_gray, crop, mask, guard.ball_diameter_px)
-        foreground_score, foreground_center = _foreground_measure(
+        motion_score, motion_centers = _motion_measure(history.previous_gray, crop, mask, guard.ball_diameter_px)
+        foreground_score, foreground_center, foreground_object_present = _foreground_measure(
             history.background_image,
             crop_image,
             mask,
@@ -145,24 +154,36 @@ class PocketObserver:
                 float(foreground_center[0] + offset[0]),
                 float(foreground_center[1] + offset[1]),
             )
-        motion_global = None
-        if motion_center is not None:
-            motion_global = (
-                float(motion_center[0] + offset[0]),
-                float(motion_center[1] + offset[1]),
-            )
+        motion_globals = [
+            (float(center[0] + offset[0]), float(center[1] + offset[1]))
+            for center in motion_centers
+        ]
+
+        visual_points: list[tuple[float, tuple[float, float]]] = []
+        if foreground_gate and foreground_global is not None and _point_in_entry_gate(
+            foreground_global, guard, table_center
+        ):
+            depth, _ = _entry_coordinates(foreground_global, guard, table_center)
+            visual_points.append((float(depth), foreground_global))
+        if motion_gate:
+            for motion_global in motion_globals:
+                if not _point_in_entry_gate(motion_global, guard, table_center):
+                    continue
+                depth, _ = _entry_coordinates(motion_global, guard, table_center)
+                visual_points.append((float(depth), motion_global))
+        visual_points.sort(key=lambda item: item[0], reverse=True)
+        entry_depth_diameters = visual_points[0][0] / scale if visual_points else None
+        visual_global = visual_points[0][1] if visual_points else None
 
         selected = track_inward or track_outward
         group = _vote_group(selected, history.votes, ts_ns)
         associated_ids = sorted({int(track.track_id) for track in selected})
-        visual_global = foreground_global if foreground_gate else motion_global if motion_gate else None
         if not associated_ids and visual_global is not None:
-            # A high-speed ball can still be detected just outside the guard
-            # polygon on the frame where its visual blob has already reached
-            # the pocket mouth.  Give that current, spatially matching track a
-            # chance before falling back to stale disappeared tracks.  The
-            # guard-centre limit prevents unrelated table balls from competing.
-            visual_candidates = {
+            # Rank a current visible ball against a very recent disappeared
+            # ball. A moving, spatially closer visible ball wins; otherwise a
+            # disappearance owns the terminal motion instead of a stationary
+            # neighbour at the same pocket.
+            visible_candidates = {
                 int(track.track_id): track
                 for track in (*associated, *current_visible_tracks)
                 if float(
@@ -184,27 +205,11 @@ class PocketObserver:
                         ),
                         track,
                     )
-                    for track in visual_candidates.values()
+                    for track in visible_candidates.values()
                 ),
                 key=lambda item: (item[0], int(item[1].track_id)),
             )
-            if nearby and nearby[0][0] <= scale * 2.5:
-                selected = [nearby[0][1]]
-                group = _vote_group(selected, history.votes, ts_ns)
-                associated_ids = [int(selected[0].track_id)]
-                if _point_in_entry_gate(visual_global, guard, table_center):
-                    visual_depth, _ = _entry_coordinates(visual_global, guard, table_center)
-                    track_depth, _ = _entry_coordinates(selected[0].center_px, guard, table_center)
-                    inward = bool(
-                        (motion_gate or foreground_gate)
-                        and visual_depth >= -scale * 0.15
-                        and visual_depth >= track_depth + scale * 0.25
-                    )
-        if not associated_ids and (motion_gate or foreground_gate):
-            # A fast object ball may disappear at impact and traverse the whole
-            # guard ROI before YOLO sees it again.  Do not let an unrelated,
-            # stationary ball beside the pocket steal that crossing.  Prefer a
-            # track which was visible very recently but is absent now.
+            visible_choice = nearby[0] if nearby and nearby[0][0] <= scale * 2.5 else None
             fallback = self._recent_global_association(
                 guard,
                 table_center,
@@ -212,35 +217,51 @@ class PocketObserver:
                 excluded_track_ids=current_visible_ids,
                 max_age_ms=450.0,
             )
+            fallback_distance = None
             if fallback is not None:
-                _, fallback_id, fallback_group, fallback_center, _ = fallback
-                associated_ids = [int(fallback_id)]
-                group = fallback_group
-                fallback_entry_depths: list[float] = []
-                inward = bool(
-                    foreground_gate
-                    and foreground_advance >= scale * 0.12
-                    and foreground_global is not None
-                    and _point_in_entry_gate(foreground_global, guard, table_center)
+                fallback_distance = min(
+                    float(
+                        np.linalg.norm(
+                            np.asarray(fallback[3], dtype=np.float32) - np.asarray(point, dtype=np.float32)
+                        )
+                    )
+                    for _, point in visual_points
                 )
-                if foreground_gate and foreground_global is not None and _point_in_entry_gate(
-                    foreground_global, guard, table_center
-                ):
-                    foreground_depth, _ = _entry_coordinates(foreground_global, guard, table_center)
-                    fallback_entry_depths.append(float(foreground_depth))
-                    track_depth, _ = _entry_coordinates(fallback_center, guard, table_center)
-                    inward = inward or foreground_depth >= track_depth + scale * 0.25
-                if motion_gate and motion_global is not None and _point_in_entry_gate(
-                    motion_global, guard, table_center
-                ):
-                    motion_depth, _ = _entry_coordinates(motion_global, guard, table_center)
-                    fallback_entry_depths.append(float(motion_depth))
-                    track_depth, _ = _entry_coordinates(fallback_center, guard, table_center)
-                    inward = inward or motion_depth >= track_depth + scale * 0.25
-                # Approaching the jaw is not a crossing.  With no live track in
-                # the ROI, independent motion must reach beyond the pocket
-                # centre before it can be promoted to an inward event.
-                inward = bool(inward and any(depth >= -scale * 0.15 for depth in fallback_entry_depths))
+            prefer_visible = bool(
+                visible_choice is not None
+                and (
+                    fallback is None
+                    or (
+                        not _track_is_stationary(visible_choice[1], scale)
+                        and fallback_distance is not None
+                        and visible_choice[0] + scale * 0.5 < fallback_distance
+                    )
+                )
+            )
+            selected_center: tuple[float, float] | None = None
+            if prefer_visible and visible_choice is not None:
+                selected = [visible_choice[1]]
+                selected_center = tuple(map(float, visible_choice[1].center_px))
+                group = _vote_group(selected, history.votes, ts_ns)
+                associated_ids = [int(visible_choice[1].track_id)]
+            elif fallback is not None:
+                _, fallback_id, fallback_group, fallback_center, _ = fallback
+                selected_center = fallback_center
+                group = fallback_group
+                associated_ids = [int(fallback_id)]
+            elif visible_choice is not None:
+                selected = [visible_choice[1]]
+                selected_center = tuple(map(float, visible_choice[1].center_px))
+                group = _vote_group(selected, history.votes, ts_ns)
+                associated_ids = [int(visible_choice[1].track_id)]
+
+            if selected_center is not None and visual_points:
+                track_depth, _ = _entry_coordinates(selected_center, guard, table_center)
+                terminal_depth = scale * VISUAL_TERMINAL_DEPTH_DIAMETERS
+                minimum_advance = scale * VISUAL_TERMINAL_ADVANCE_DIAMETERS
+                advanced = any(depth >= track_depth + minimum_advance for depth, _ in visual_points)
+                terminal = any(depth >= terminal_depth for depth, _ in visual_points)
+                inward = bool((motion_gate or foreground_gate) and advanced and terminal)
                 fallback_outward = foreground_gate and foreground_advance <= -scale * 0.12
                 history.outward_streak = history.outward_streak + 1 if fallback_outward else 0
                 outward = bool(outward or history.outward_streak >= 2)
@@ -260,6 +281,12 @@ class PocketObserver:
             inward = False
             outward = False
 
+        local_foreground_center = None
+        foreground_depth_diameters = None
+        if foreground_center is not None:
+            local_foreground_center = np.asarray(foreground_center, dtype=np.float32) + np.asarray(offset, dtype=np.float32)
+            foreground_depth, _ = _entry_coordinates(tuple(local_foreground_center), guard, table_center)
+            foreground_depth_diameters = foreground_depth / scale
         foreground_stable = False
         if foreground_center is not None:
             if history.foreground_center is None or float(
@@ -268,28 +295,26 @@ class PocketObserver:
                 history.foreground_stable_since_ns = ts_ns
             elif history.foreground_stable_since_ns is None:
                 history.foreground_stable_since_ns = ts_ns
-            foreground_stable = (
+            foreground_stable = bool(
                 history.foreground_stable_since_ns is not None
-                and (ts_ns - history.foreground_stable_since_ns) >= 350_000_000
+                and ts_ns - history.foreground_stable_since_ns >= 350_000_000
             )
         else:
             history.foreground_stable_since_ns = None
-        local_foreground_center = None
-        foreground_depth_diameters = None
-        if foreground_center is not None:
-            local_foreground_center = np.asarray(foreground_center, dtype=np.float32) + np.asarray(offset, dtype=np.float32)
-            foreground_depth, _ = _entry_coordinates(tuple(local_foreground_center), guard, table_center)
-            foreground_depth_diameters = foreground_depth / scale
+        lip_tracks = [
+            track
+            for track in associated
+            if _track_is_stationary(track, scale)
+            and _point_on_table_side_lip(track.center_px, guard, table_center)
+        ]
+        lip_track_ids = sorted({int(track.track_id) for track in lip_tracks})
         foreground_on_lip = bool(
             foreground_stable
+            and foreground_object_present
             and local_foreground_center is not None
             and _point_on_table_side_lip(tuple(local_foreground_center), guard, table_center)
         )
-        lip_occupied = any(
-            _track_is_stationary(track, scale)
-            and _point_on_table_side_lip(track.center_px, guard, table_center)
-            for track in associated
-        ) or foreground_on_lip
+        lip_occupied = bool(lip_track_ids or foreground_on_lip)
         clear = not associated and foreground_score < 0.05 and motion_score < 0.04
         if outward:
             history.inward_latched = False
@@ -337,6 +362,7 @@ class PocketObserver:
             group=group,
             confidence=float(min(0.98, 0.45 + motion_score + (0.25 if associated_ids else 0.0))),
             associated_track_ids=associated_ids,
+            lip_track_ids=lip_track_ids,
             evidence_sources=sources,
             motion_score=float(motion_score),
             foreground_score=float(foreground_score),
@@ -348,6 +374,7 @@ class PocketObserver:
             foreground_depth_diameters=(
                 float(foreground_depth_diameters) if foreground_depth_diameters is not None else None
             ),
+            entry_depth_diameters=(float(entry_depth_diameters) if entry_depth_diameters is not None else None),
         )
 
     def _record_global_tracks(self, ts_ns: int, tracks: list[TrackObservation]) -> None:
@@ -382,7 +409,14 @@ class PocketObserver:
             latest_by_track[int(row[1])] = row
         candidates: list[tuple[float, float, tuple[int, int, str, tuple[float, float], float]]] = []
         center = np.asarray(guard.center_px, dtype=np.float32)
-        max_distance = max(1.0, float(guard.ball_diameter_px) * 12.0)
+        base_distance = max(
+            1.0,
+            float(guard.ball_diameter_px) * RECENT_ASSOCIATION_BASE_DISTANCE_DIAMETERS,
+        )
+        maximum_distance = max(
+            base_distance,
+            float(guard.ball_diameter_px) * RECENT_ASSOCIATION_MAX_DISTANCE_DIAMETERS,
+        )
         excluded = excluded_track_ids or set()
         for row in latest_by_track.values():
             if int(row[1]) in excluded:
@@ -393,6 +427,7 @@ class PocketObserver:
             if max_age_ms is not None and age_ms > float(max_age_ms):
                 continue
             track_rows = [candidate for candidate in self._global_votes if int(candidate[1]) == int(row[1])]
+            candidate_distance_limit = base_distance
             previous_distinct = next(
                 (
                     candidate
@@ -417,6 +452,16 @@ class PocketObserver:
                     lateral = float(abs(remaining[0] * heading[1] - remaining[1] * heading[0]))
                     if forward <= 0.0 or lateral > float(guard.ball_diameter_px) * 2.5:
                         continue
+                    elapsed_ms = max(1e-3, (int(row[0]) - int(previous_distinct[0])) / 1_000_000.0)
+                    measured_speed_px_ms = travel_norm / elapsed_ms
+                    projected_reach = measured_speed_px_ms * age_ms
+                    terminal_margin = (
+                        float(guard.ball_diameter_px) * RECENT_ASSOCIATION_TERMINAL_MARGIN_DIAMETERS
+                    )
+                    candidate_distance_limit = min(
+                        maximum_distance,
+                        max(base_distance, projected_reach + terminal_margin),
+                    )
             if age_ms > 300.0 and max_age_ms is None:
                 previous = track_rows[-2] if len(track_rows) >= 2 else None
                 if previous is None:
@@ -427,7 +472,7 @@ class PocketObserver:
                 if not short_detection and current_depth < previous_depth + float(guard.ball_diameter_px) * 0.08:
                     continue
             distance = float(np.linalg.norm(np.asarray(row[3], dtype=np.float32) - center))
-            if distance <= max_distance:
+            if distance <= candidate_distance_limit:
                 candidates.append((distance, age_ms, row))
         if not candidates:
             return None
@@ -483,9 +528,9 @@ def _motion_measure(
     current: np.ndarray,
     mask: np.ndarray,
     diameter_px: float,
-) -> tuple[float, Optional[tuple[float, float]]]:
+) -> tuple[float, list[tuple[float, float]]]:
     if previous is None or previous.shape != current.shape or current.size <= 1:
-        return 0.0, None
+        return 0.0, []
     diff = cv2.absdiff(previous, current)
     threshold = max(10.0, float(np.percentile(diff[mask > 0], 75)) if np.any(mask > 0) else 10.0)
     binary = np.where((diff >= threshold) & (mask > 0), 255, 0).astype(np.uint8)
@@ -508,9 +553,10 @@ def _motion_measure(
         center = (float(moments["m10"] / moments["m00"]), float(moments["m01"] / moments["m00"]))
         candidates.append((area, center))
     if not candidates:
-        return 0.0, None
-    area, center = max(candidates, key=lambda item: item[0])
-    return min(1.0, area / ball_area), center
+        return 0.0, []
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    area = candidates[0][0]
+    return min(1.0, area / ball_area), [center for _, center in candidates]
 
 
 def _foreground_measure(
@@ -518,17 +564,19 @@ def _foreground_measure(
     current: np.ndarray,
     mask: np.ndarray,
     diameter_px: float,
-) -> tuple[float, Optional[tuple[float, float]]]:
+) -> tuple[float, Optional[tuple[float, float]], bool]:
     if background is None or background.shape != current.shape or current.size <= 1:
-        return 0.0, None
-    diff = cv2.absdiff(background.astype(np.uint8), current)
+        return 0.0, None, False
+    background_u8 = background.astype(np.uint8)
+    color_diff = cv2.absdiff(background_u8, current)
+    diff = color_diff
     if diff.ndim == 3:
         diff = np.max(diff, axis=2)
     binary = np.where((diff >= 18) & (mask > 0), 255, 0).astype(np.uint8)
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, np.ones((3, 3), dtype=np.uint8))
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     ball_area = max(1.0, np.pi * (max(1.0, float(diameter_px)) * 0.5) ** 2)
-    candidates: list[tuple[float, tuple[float, float]]] = []
+    candidates: list[tuple[float, tuple[float, float], np.ndarray]] = []
     for contour in contours:
         area = float(cv2.contourArea(contour))
         if area < ball_area * 0.08 or area > ball_area * 3.2:
@@ -541,11 +589,43 @@ def _foreground_measure(
         if abs(float(moments["m00"])) <= 1e-6:
             continue
         center = (float(moments["m10"] / moments["m00"]), float(moments["m01"] / moments["m00"]))
-        candidates.append((area, center))
+        candidates.append((area, center, contour))
     if not candidates:
-        return 0.0, None
-    area, center = max(candidates, key=lambda item: item[0])
-    return min(1.0, area / ball_area), center
+        return 0.0, None, False
+    area, center, contour = max(candidates, key=lambda item: item[0])
+    current_object_present = _foreground_represents_current_object(
+        background_u8,
+        current,
+        mask,
+        contour,
+    )
+    return min(1.0, area / ball_area), center, current_object_present
+
+
+def _foreground_represents_current_object(
+    background: np.ndarray,
+    current: np.ndarray,
+    mask: np.ndarray,
+    contour: np.ndarray,
+) -> bool:
+    contour_mask = np.zeros(mask.shape, dtype=np.uint8)
+    cv2.drawContours(contour_mask, [contour], -1, 255, thickness=-1)
+    object_pixels = contour_mask > 0
+    felt_pixels = (mask > 0) & ~object_pixels
+    if not np.any(object_pixels) or np.count_nonzero(felt_pixels) < 16:
+        return False
+
+    if current.ndim == 3:
+        felt_color = np.median(current[felt_pixels], axis=0).astype(np.float32)
+        current_color = np.median(current[object_pixels], axis=0).astype(np.float32)
+        background_color = np.median(background[object_pixels], axis=0).astype(np.float32)
+    else:
+        felt_color = np.asarray([np.median(current[felt_pixels])], dtype=np.float32)
+        current_color = np.asarray([np.median(current[object_pixels])], dtype=np.float32)
+        background_color = np.asarray([np.median(background[object_pixels])], dtype=np.float32)
+    current_distance = float(np.linalg.norm(current_color - felt_color))
+    background_distance = float(np.linalg.norm(background_color - felt_color))
+    return current_distance >= background_distance + 8.0
 
 
 def _near_guard(point: tuple[float, float], guard: PocketGuardRegion) -> bool:

@@ -3,9 +3,11 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from bas.config import StateConfig
 from bas.perception.pocket_observer import PocketObserver
 from bas.perception.regions import DetectionRegionPolicy, PocketGuardRegion
-from bas.schemas import FramePacket, TrackObservation, TracksFrame
+from bas.schemas import FramePacket, MatchPhase, TrackObservation, TracksFrame
+from bas.state.pocket import PerBallPocketFSM
 
 
 def _track(track_id: int, group: str, x: float, y: float, vy: float) -> TrackObservation:
@@ -252,3 +254,192 @@ def test_visual_centroid_prefers_nearby_visible_ball_over_disappeared_fallback()
     assert observed.inward_crossing is True
     assert observed.group == "stripe"
     assert observed.associated_track_ids == [11]
+
+
+def test_low_fps_terminal_crossing_can_emit_before_reaching_pocket_center() -> None:
+    """A ball may advance into the terminal corridor and disappear between source frames."""
+
+    observer = PocketObserver(history_ms=1500)
+    policy = _policy()
+    empty = _image(None)
+    observer.update(FramePacket(1, 1_000_000_000, "cam", image=empty), TracksFrame(1, 1_000_000_000, []), policy)
+    observer.update(
+        FramePacket(2, 1_100_000_000, "cam", image=_image(35)),
+        TracksFrame(2, 1_100_000_000, [_track(31, "stripe", 50, 35, 0)]),
+        policy,
+    )
+    vanished = _track(31, "stripe", 50, 35, 0)
+    vanished.visibility = "occluded"
+    vanished.lost_frames = 1
+
+    out = observer.update(
+        FramePacket(3, 1_216_000_000, "cam", image=_image(16)),
+        TracksFrame(3, 1_216_000_000, [vanished]),
+        policy,
+    )
+
+    observed = out.observations[0]
+    assert observed.inward_crossing is True
+    assert observed.group == "stripe"
+    assert observed.associated_track_ids == [31]
+    assert observed.entry_depth_diameters is not None
+    assert observed.entry_depth_diameters >= -0.75
+
+
+def test_recently_disappeared_crossing_beats_stationary_visible_lip_ball() -> None:
+    """The moving disappearance owns the crossing when another ball remains by the pocket."""
+
+    observer = PocketObserver(history_ms=1500)
+    policy = _policy()
+
+    def image_with(*balls: tuple[int, int, int]) -> np.ndarray:
+        image = np.zeros((100, 100, 3), dtype=np.uint8)
+        for x, y, value in balls:
+            cv2.circle(image, (x, y), 6, (value, value, value), -1)
+        return image
+
+    static = _track(4, "solid", 58, 22, 0)
+    target = _track(14, "stripe", 50, 35, 0)
+    observer.update(
+        FramePacket(1, 1_000_000_000, "cam", image=image_with((58, 22, 120), (50, 35, 240))),
+        TracksFrame(1, 1_000_000_000, [static, target]),
+        policy,
+    )
+    target.visibility = "occluded"
+    target.lost_frames = 1
+
+    out = observer.update(
+        FramePacket(2, 1_116_000_000, "cam", image=image_with((58, 22, 120), (50, 16, 240))),
+        TracksFrame(2, 1_116_000_000, [static, target]),
+        policy,
+    )
+
+    observed = out.observations[0]
+    assert observed.inward_crossing is True
+    assert observed.group == "stripe"
+    assert observed.associated_track_ids == [14]
+    assert observed.lip_track_ids == [4]
+
+
+def test_departed_background_ball_does_not_become_unassociated_lip_occupancy() -> None:
+    """Absolute background difference after a ball leaves is clear evidence, not a live lip ball."""
+
+    observer = PocketObserver(history_ms=1500)
+    policy = _policy()
+    observer.update(
+        FramePacket(1, 1_000_000_000, "cam", image=_image(20)),
+        TracksFrame(1, 1_000_000_000, [_track(9, "solid", 50, 20, 0)]),
+        policy,
+    )
+    observer.update(FramePacket(2, 1_100_000_000, "cam", image=_image(None)), TracksFrame(2, 1_100_000_000, []), policy)
+
+    out = observer.update(
+        FramePacket(3, 1_500_000_000, "cam", image=_image(None)),
+        TracksFrame(3, 1_500_000_000, []),
+        policy,
+    )
+
+    observed = out.observations[0]
+    assert observed.foreground_score > 0.08
+    assert observed.lip_occupied is False
+    assert observed.lip_track_ids == []
+
+
+def test_terminal_motion_does_not_relay_to_distant_disappeared_track() -> None:
+    """A remote history vote cannot claim unrelated ball-sized pocket motion."""
+
+    observer = PocketObserver(history_ms=1500)
+    policy = _policy()
+    empty = _image(None)
+    observer.update(FramePacket(1, 1_000_000_000, "cam", image=empty), TracksFrame(1, 1_000_000_000, []), policy)
+    observer.update(
+        FramePacket(2, 1_100_000_000, "cam", image=empty),
+        TracksFrame(2, 1_100_000_000, [_track(77, "solid", 50, 90, 0)]),
+        policy,
+    )
+    vanished = _track(77, "solid", 50, 90, 0)
+    vanished.visibility = "occluded"
+    vanished.lost_frames = 1
+
+    out = observer.update(
+        FramePacket(3, 1_216_000_000, "cam", image=_image(16)),
+        TracksFrame(3, 1_216_000_000, [vanished]),
+        policy,
+    )
+
+    observed = out.observations[0]
+    assert observed.inward_crossing is False
+    assert observed.associated_track_ids == []
+
+
+def test_fast_aligned_history_can_extend_recent_association_beyond_base_distance() -> None:
+    """A measured high-speed heading may extend the relay beyond the conservative base radius."""
+
+    observer = PocketObserver(history_ms=1500)
+    policy = _policy()
+    empty = _image(None)
+    observer.update(
+        FramePacket(1, 1_000_000_000, "cam", image=empty),
+        TracksFrame(1, 1_000_000_000, [_track(88, "stripe", 50, 160, -700)]),
+        policy,
+    )
+    observer.update(
+        FramePacket(2, 1_100_000_000, "cam", image=empty),
+        TracksFrame(2, 1_100_000_000, [_track(88, "stripe", 50, 90, -700)]),
+        policy,
+    )
+    vanished = _track(88, "stripe", 50, 90, -700)
+    vanished.visibility = "occluded"
+    vanished.lost_frames = 1
+
+    out = observer.update(
+        FramePacket(3, 1_216_000_000, "cam", image=_image(16)),
+        TracksFrame(3, 1_216_000_000, [vanished]),
+        policy,
+    )
+
+    observed = out.observations[0]
+    assert observed.inward_crossing is True
+    assert observed.associated_track_ids == [88]
+
+
+def test_untracked_ball_still_on_lip_blocks_state_detection() -> None:
+    """Current-image lip occupancy remains a veto after the detector loses the ball."""
+
+    observer = PocketObserver(history_ms=1500)
+    policy = _policy()
+    fsm = PerBallPocketFSM(StateConfig(engine="modern", pocket_visual_confirmation_ms=1300))
+    fsm.set_table_context(
+        inner_polygon_mm=[(10, 20), (90, 20), (90, 90), (10, 90)],
+        pockets_mm=[(50, 8)],
+        ball_diameter_mm=12,
+    )
+    observer.update(
+        FramePacket(0, 900_000_000, "cam", image=_image(None)),
+        TracksFrame(0, 900_000_000, []),
+        policy,
+    )
+    visible = _track(31, "stripe", 50, 35, 0)
+    first_tracks = TracksFrame(1, 1_000_000_000, [visible])
+    first_visual = observer.update(FramePacket(1, 1_000_000_000, "cam", image=_image(35)), first_tracks, policy)
+    fsm.update(first_tracks, MatchPhase.SHOT_ACTIVE, first_visual)
+    vanished = _track(31, "stripe", 50, 35, 0)
+    vanished.visibility = "occluded"
+    vanished.lost_frames = 1
+    crossing_tracks = TracksFrame(2, 1_100_000_000, [vanished])
+    crossing_visual = observer.update(
+        FramePacket(2, 1_100_000_000, "cam", image=_image(16)),
+        crossing_tracks,
+        policy,
+    )
+    candidate = fsm.update(crossing_tracks, MatchPhase.SHOT_ACTIVE, crossing_visual)
+    lip_tracks = TracksFrame(3, 1_500_000_000, [])
+    lip_visual = observer.update(FramePacket(3, 1_500_000_000, "cam", image=_image(16)), lip_tracks, policy)
+    fsm.update(lip_tracks, MatchPhase.SHOT_ACTIVE, lip_visual)
+    final_tracks = TracksFrame(4, 2_400_000_000, [])
+    final_visual = observer.update(FramePacket(4, 2_400_000_000, "cam", image=_image(16)), final_tracks, policy)
+    final = fsm.update(final_tracks, MatchPhase.SHOT_ACTIVE, final_visual)
+
+    assert any(event.name == "POCKET_CANDIDATE" for event in candidate)
+    assert lip_visual.observations[0].lip_occupied is True
+    assert not any(event.name == "POCKET_DETECTED" for event in final)

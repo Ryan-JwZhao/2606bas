@@ -190,3 +190,33 @@ def test_no_goal_shot_still_rejects_unmatched_detection() -> None:
 
     assert result["passed"] is False
     assert result["false_positives"] == [detection]
+
+
+def test_partial_labels_ignore_unlisted_shots_but_keep_labeled_shot_false_positives() -> None:
+    labels = {
+        "partial": True,
+        "goals": [
+            {
+                "shot": 4,
+                "contact_frame": 100,
+                "pocket_index": 2,
+                "group": "stripe",
+                "ball_code": "stb",
+            }
+        ],
+        "no_goals": [{"shot": 5, "reason": "lip stop"}],
+    }
+    matched = {
+        "shot": 4,
+        "frame_id": 110,
+        "group": "stripe",
+        "ball_code": "stb",
+        "pocket_index": 2,
+        "decision_latency_ms": 1000,
+    }
+    unlisted = {**matched, "shot": 3, "frame_id": 50, "pocket_index": 1}
+    labeled_false_positive = {**matched, "shot": 5, "frame_id": 150, "pocket_index": 0}
+
+    result = _evaluate(labels, [unlisted, matched, labeled_false_positive], [1.0], [80.0])
+
+    assert result["false_positives"] == [labeled_false_positive]

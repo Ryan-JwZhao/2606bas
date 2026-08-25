@@ -1,0 +1,21 @@
+{
+  "name": "no_line_video_20260824_183732_fixed_current_geometry",
+  "partial": true,
+  "video_frame_offset": -44249,
+  "max_notice_delay_ms": 1800,
+  "max_match_frame_gap": 30,
+  "max_estimated_frame_rate_drop_pct": 6.0,
+  "goals": [
+    {"shot": 10, "contact_frame": 44860, "pocket_index": 3, "group": "cue", "ball_code": "wb"},
+    {"shot": 11, "contact_frame": 45028, "pocket_index": 3, "group": "stripe", "ball_code": "stb"},
+    {"shot": 23, "contact_frame": 46165, "pocket_index": 3, "group": "solid", "ball_code": "sob"},
+    {"shot": 37, "contact_frame": 48110, "pocket_index": 2, "group": "solid", "ball_code": "sob"},
+    {"shot": 42, "contact_frame": 48533, "pocket_index": 5, "group": "stripe", "ball_code": "stb"},
+    {"shot": 42, "contact_frame": 48593, "pocket_index": 4, "group": "stripe", "ball_code": "stb"},
+    {"shot": 43, "contact_frame": 48720, "pocket_index": 1, "group": "stripe", "ball_code": "stb"},
+    {"shot": 77, "contact_frame": 53165, "pocket_index": 0, "group": "stripe", "ball_code": "stb"}
+  ],
+  "no_goals": [
+    {"shot": 41, "reason": "cue ball remains visible on the top-left pocket lip"}
+  ]
+}

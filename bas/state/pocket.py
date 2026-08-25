@@ -7,6 +7,7 @@ from typing import Deque, Dict, List, Optional
 import numpy as np
 
 from ..config import StateConfig
+from ..pocket_evidence import VISUAL_TERMINAL_DEPTH_DIAMETERS
 from ..schemas import Event, MatchPhase, PocketVisualObservation, PocketVisualObservationFrame, TrackObservation, TracksFrame
 from .models import Group, normalize_group
 from .pocket_geometry import PocketApproachProbe, PocketGeometryContext, PocketGeometryModel, PocketSample
@@ -15,6 +16,7 @@ from .pocket_trajectory import (
     PocketTrajectoryLimits,
     assess_reported_entry,
     assess_track_handoff,
+    capture_half_width_mm,
     projected_entry_has_reversed,
 )
 
@@ -351,12 +353,16 @@ class PerBallPocketFSM:
             and self._elapsed_ms(now_ns, memory.last_visible_ts_ns)
             <= self._trajectory_limits().handoff_ms
         )
-        depth = observed.foreground_depth_diameters
+        depth = (
+            observed.entry_depth_diameters
+            if observed.entry_depth_diameters is not None
+            else observed.foreground_depth_diameters
+        )
         strong_crossing_shape = bool(
             float(observed.motion_score) >= 0.35
             and float(observed.foreground_score) >= 0.20
             and depth is not None
-            and float(depth) >= 0.20
+            and float(depth) >= VISUAL_TERMINAL_DEPTH_DIAMETERS
         )
         newborn_visible_crossing = bool(
             currently_visible
@@ -457,6 +463,16 @@ class PerBallPocketFSM:
                     continue
                 self._merge_visual_metadata(evidence, observed)
                 if observed.lip_occupied:
+                    explicit_lip_ids = {int(value) for value in observed.lip_track_ids}
+                    candidate_ids = {int(memory.track_id)}
+                    candidate_ids.update(int(value) for value in evidence.associated_track_ids)
+                    if evidence.entry_source_track_id is not None:
+                        candidate_ids.add(int(evidence.entry_source_track_id))
+                    if explicit_lip_ids and explicit_lip_ids.isdisjoint(candidate_ids):
+                        # Another ball may remain beside the same pocket after
+                        # this decision's ball has crossed. Keep their lip and
+                        # crossing identities independent.
+                        continue
                     live_lip_track = bool(
                         visible_track_ids & {int(value) for value in observed.associated_track_ids}
                     )
@@ -1005,8 +1021,8 @@ class PerBallPocketFSM:
         axis_alignment = abs(float(direction[0] if memory.last_bbox_horizontal else direction[1])) / direction_norm
         if axis_alignment < 0.80:
             return
-        corridor_slope = 1.20 if pocket_index in {0, 2, 3, 5} else 0.65
-        capture_half_width = float(probe.mouth_half_width_mm) + max(0.0, -float(probe.depth_mm)) * corridor_slope
+        limits = self._trajectory_limits()
+        capture_half_width = capture_half_width_mm(probe, limits) + max(0.0, -float(probe.depth_mm)) * 0.45
         if abs(float(probe.signed_lateral_mm)) > capture_half_width:
             return
         memory.evidence = PocketEvidence(
@@ -1694,7 +1710,7 @@ class PerBallPocketFSM:
         limits = self._trajectory_limits()
         if float(evidence.entry_speed_mm_s) < float(limits.min_speed_mm_s):
             return
-        corridor_half_width = 0.75 * max(1.0, float(self.ball_diameter_mm))
+        corridor_half_width = self._terminal_lateral_limit_mm(memory)
         if abs(float(evidence.entry_lateral_mm)) > corridor_half_width:
             return
         if abs(float(evidence.projected_lateral_mm)) > corridor_half_width:
@@ -1719,6 +1735,20 @@ class PerBallPocketFSM:
             and abs(float(probe.signed_lateral_mm)) <= lateral_limit
         )
 
+    def _terminal_lateral_limit_mm(self, memory: _PocketMemory) -> float:
+        base = 0.75 * max(1.0, float(self.ball_diameter_mm))
+        probe = memory.last_approach_probe
+        evidence = memory.evidence
+        if (
+            probe is None
+            or evidence is None
+            or not probe.geometry_valid
+            or probe.pocket_index != int(evidence.pocket_index)
+        ):
+            return base
+        calibrated_capture = capture_half_width_mm(probe, self._trajectory_limits())
+        return max(base, calibrated_capture)
+
     def _projected_visual_candidate(self, memory: _PocketMemory) -> bool:
         """Strict bridge for a fast ball that vanishes between detector frames.
 
@@ -1741,7 +1771,7 @@ class PerBallPocketFSM:
             return False
         if float(evidence.entry_speed_mm_s) < float(self._trajectory_limits().min_speed_mm_s):
             return False
-        lateral_limit = 0.75 * max(1.0, float(self.ball_diameter_mm))
+        lateral_limit = self._terminal_lateral_limit_mm(memory)
         if abs(float(evidence.projected_lateral_mm)) > lateral_limit:
             return False
         return bool(evidence.visual_motion_score >= 0.30 and evidence.visual_foreground_score >= 0.20)
